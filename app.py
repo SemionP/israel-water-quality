@@ -1,4 +1,3 @@
-
 import ee
 import json
 import streamlit as st
@@ -8,18 +7,16 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 # ==============================
-# אימות GEE עם Service Account
+# אימות GEE עם Streamlit Secrets
 # ==============================
 @st.cache_resource
 def init_gee():
     creds_dict = dict(st.secrets["gee_credentials"])
     creds_json = json.dumps(creds_dict)
-    
     import tempfile, os
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         f.write(creds_json)
         tmp_path = f.name
-    
     service_account = creds_dict["client_email"]
     credentials = ee.ServiceAccountCredentials(service_account, tmp_path)
     ee.Initialize(credentials)
@@ -32,6 +29,16 @@ init_gee()
 # ==============================
 HAIFA_CENTER = [32.4, 34.85]
 HAIFA_BBOX = ee.Geometry.Rectangle([34.50, 31.55, 35.15, 33.10])
+
+ISRAEL_TERRITORIAL = ee.Geometry.Polygon([[
+    [34.95, 33.10], [34.60, 33.10],
+    [34.20, 32.60], [34.15, 32.00],
+    [34.20, 31.55], [34.55, 31.30],
+    [34.75, 31.25], [34.95, 31.30],
+    [35.00, 31.55], [35.00, 32.00],
+    [35.10, 32.60], [35.10, 33.10],
+    [34.95, 33.10]
+]])
 
 BEACHES = [
     {"name": "ראש הנקרה",   "lat": 33.074, "lon": 35.100},
@@ -60,7 +67,7 @@ BEACHES = [
 SCORE_COLORS = {0: "#AAAAAA", 1: "#27AE60", 2: "#F1C40F", 3: "#E67E22", 4: "#E74C3C", 5: "#8E44AD"}
 
 # ==============================
-# פונקציות
+# טעינת נתונים
 # ==============================
 @st.cache_data(ttl=3600)
 def load_data(start_date, end_date):
@@ -143,62 +150,60 @@ def load_data(start_date, end_date):
 
     return df, image_date, processed
 
+# ==============================
+# מפת חום ברמת פיקסל
+# ==============================
+def get_heatmap_url(processed):
+    ndwi      = processed.normalizedDifference(["B3","B8"])
+    chl_proxy = processed.select("B5").divide(processed.select("B4"))
+    turbidity = processed.select("B4")
 
-def get_heatmap_url(s2_processed):
-    """מחשב ציון משוכלל לכל פיקסל ומחזיר Tile URL."""
-    
-    # מים טריטוריאליים של ישראל — פולימגון ~12 מייל ימי מהחוף
-    israel_territorial = ee.Geometry.Polygon([[
-        [34.95, 33.10], [34.60, 33.10],
-        [34.20, 32.60], [34.15, 32.00],
-        [34.20, 31.55], [34.55, 31.30],
-        [34.75, 31.25], [34.95, 31.30],
-        [35.00, 31.55], [35.00, 32.00],
-        [35.10, 32.60], [35.10, 33.10],
-        [34.95, 33.10]
-    ]])
-    
-    # חישוב אינדקסים לכל פיקסל
-    ndwi      = s2_processed.normalizedDifference(["B3","B8"])
-    chl_proxy = s2_processed.select("B5").divide(s2_processed.select("B4"))
-    turbidity = s2_processed.select("B4")
-    
-    # ציון NDWI: 0-100
     ndwi_score = ndwi.add(0.3).divide(1.1).multiply(100).clamp(0, 100)
-    
-    # ציון כלורופיל: 0-100 (הפוך)
-    chl_score = ee.Image(2.5).subtract(chl_proxy).divide(1.5).multiply(100).clamp(0, 100)
-    
-    # ציון עכירות: 0-100 (הפוך)
+    chl_score  = ee.Image(2.5).subtract(chl_proxy).divide(1.5).multiply(100).clamp(0, 100)
     turb_score = ee.Image(1000).subtract(turbidity).divide(1000).multiply(100).clamp(0, 100)
-    
-    # ציון משוכלל
+
     composite = (ndwi_score.multiply(0.4)
                  .add(chl_score.multiply(0.35))
                  .add(turb_score.multiply(0.25)))
-    
-    # מסכה — רק מים (NDWI > 0)
+
     water_mask = ndwi.gt(0)
-    composite = composite.updateMask(water_mask).clip(israel_territorial)
-    
-    # פלטה: אדום (0) → צהוב (50) → ירוק (100)
+    composite  = composite.updateMask(water_mask).clip(ISRAEL_TERRITORIAL)
+
     vis_params = {
         "min": 0, "max": 100,
         "palette": ["#8B0000","#E74C3C","#E67E22","#F1C40F","#27AE60","#1A5E20"]
     }
-    
     try:
-        tile_url = composite.getMapId(vis_params)["tile_fetcher"].url_format
-        return tile_url
-    except Exception as e:
-        print(f"שגיאה בטעינת מפת חום: {e}")
+        return composite.getMapId(vis_params)["tile_fetcher"].url_format
+    except:
         return None
 
+# ==============================
+# בניית מפה
+# ==============================
 def build_map(df, image_date, processed):
     m = folium.Map(location=HAIFA_CENTER, zoom_start=8, tiles="CartoDB positron", control_scale=True)
 
-    beaches_group = folium.FeatureGroup(name="📍 נקודות דיגום", show=True)
+    satellite_group = folium.FeatureGroup(name="🛰️ לווין RGB",          show=False)
+    heatmap_group   = folium.FeatureGroup(name="🌡️ מפת חום (ציון משוכלל)", show=True)
+    beaches_group   = folium.FeatureGroup(name="📍 נקודות דיגום",        show=True)
 
+    # שכבת לווין RGB
+    try:
+        rgb_url = processed.getMapId({"bands":["B4","B3","B2"],"min":0,"max":3000})["tile_fetcher"].url_format
+        folium.TileLayer(tiles=rgb_url, name="RGB", attr="GEE", overlay=True, opacity=0.8).add_to(satellite_group)
+    except:
+        pass
+
+    # מפת חום ברמת פיקסל
+    heatmap_url = get_heatmap_url(processed)
+    if heatmap_url:
+        folium.TileLayer(
+            tiles=heatmap_url, name="מפת חום", attr="GEE/Copernicus",
+            overlay=True, opacity=0.75
+        ).add_to(heatmap_group)
+
+    # נקודות חופים
     for i, (_, row) in enumerate(df.iterrows(), 1):
         color = SCORE_COLORS.get(row["quality_score"], "#888")
         comp  = f"{row['composite']}/100" if row["composite"] is not None else "N/A"
@@ -210,10 +215,10 @@ def build_map(df, image_date, processed):
                 <h3 style='color:{color};margin:0 0 6px;'>{i}. {row['name']}</h3>
                 <b>{row['quality_label']}</b><br>
                 <b style='font-size:15px;'>⭐ {comp}</b><br><br>
-                <table style='font-size:13px;border-collapse:collapse;'>
-                <tr style='background:#f5f5f5'><td style='padding:4px'><b>NDWI</b></td><td style='padding:4px'>{row['ndwi']:.3f}</td></tr>
-                <tr><td style='padding:4px'><b>כלורופיל</b></td><td style='padding:4px'>{row['chl_proxy']:.3f}</td></tr>
-                <tr style='background:#f5f5f5'><td style='padding:4px'><b>עכירות</b></td><td style='padding:4px'>{row['turbidity']:.0f}</td></tr>
+                <table style='font-size:13px;border-collapse:collapse;width:100%;'>
+                <tr style='background:#f5f5f5'><td style='padding:4px'><b>NDWI</b></td><td style='padding:4px'>{row['ndwi']:.3f}</td><td style='padding:4px;color:#999;font-size:11px'>גבוה=נקי</td></tr>
+                <tr><td style='padding:4px'><b>כלורופיל</b></td><td style='padding:4px'>{row['chl_proxy']:.3f}</td><td style='padding:4px;color:#999;font-size:11px'>גבוה=אצות</td></tr>
+                <tr style='background:#f5f5f5'><td style='padding:4px'><b>עכירות</b></td><td style='padding:4px'>{row['turbidity']:.0f}</td><td style='padding:4px;color:#999;font-size:11px'>גבוה=עכור</td></tr>
                 </table>
                 <br><small style='color:#aaa'>📅 {image_date}</small></div>"""
 
@@ -239,19 +244,17 @@ def build_map(df, image_date, processed):
                     icon_size=(90,24), icon_anchor=(0,12))
             ).add_to(beaches_group)
 
-    heatmap_group.add_to(m)
-    beaches_group.add_to(m)
-    folium.LayerControl(collapsed=False).add_to(m)
-
+    # תאריך
     date_html = f"""<div style="position:fixed;top:15px;left:50%;transform:translateX(-50%);z-index:1000;
         background:rgba(0,0,0,0.7);color:white;padding:8px 18px;border-radius:20px;
         font-family:Arial;font-size:14px;font-weight:bold;direction:rtl;">
         🛰️ מבוסס על צילום לווין מתאריך: {image_date}</div>"""
     m.get_root().html.add_child(folium.Element(date_html))
 
+    # מקרא
     legend_html = """<div style="position:fixed;bottom:30px;right:10px;z-index:1000;
         background:white;padding:14px 16px;border-radius:12px;
-        box-shadow:0 2px 10px rgba(0,0,0,0.25);font-family:Arial;direction:rtl;font-size:13px;width:200px;">
+        box-shadow:0 2px 10px rgba(0,0,0,0.25);font-family:Arial;direction:rtl;font-size:13px;width:210px;">
         <b style='font-size:14px;'>🌊 איכות מי ים</b><br><br>
         <div style="width:160px;height:90px;margin:0 auto 8px;">
         <svg width="160" height="90" viewBox="0 0 160 90">
@@ -277,8 +280,22 @@ def build_map(df, image_date, processed):
         <span style='color:#E74C3C;font-size:16px;'>●</span> ירוד (20-39)<br>
         <span style='color:#8E44AD;font-size:16px;'>●</span> גרוע (0-19)<br>
         <span style='color:#AAAAAA;font-size:16px;'>●</span> אין מידע</div>
-        <small style='color:#999;font-size:11px;'>לחץ על עיגול לפרטים</small></div>"""
+        <hr style='margin:8px 0;border:none;border-top:1px solid #eee;'>
+        <b style='font-size:12px;'>🌡️ מפת חום:</b><br>
+        <div style="display:flex;align-items:center;margin-top:4px;">
+            <div style="width:120px;height:10px;background:linear-gradient(to right,#8B0000,#E74C3C,#F1C40F,#27AE60);border-radius:3px;"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:#666;margin-top:2px;">
+            <span>מזוהם</span><span>נקי</span>
+        </div>
+        <small style='color:#999;font-size:11px;'>לחץ על עיגול לפרטים</small>
+    </div>"""
     m.get_root().html.add_child(folium.Element(legend_html))
+
+    for group in [satellite_group, heatmap_group, beaches_group]:
+        group.add_to(m)
+
+    folium.LayerControl(collapsed=False).add_to(m)
     return m
 
 # ==============================
@@ -294,6 +311,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**מקרא:**")
     st.markdown("🟢 מצוין · 🟡 טוב · 🟠 בינוני · 🔴 ירוד · ⛔ גרוע · ⬜ אין מידע")
+    st.markdown("---")
+    st.markdown("**🌡️ מפת חום:**")
+    st.markdown("ציון משוכלל ברמת פיקסל (10×10 מ')")
+    st.markdown("אדום = מזוהם · ירוק = נקי")
 
 end_date   = datetime.now().strftime("%Y-%m-%d")
 start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
@@ -310,7 +331,9 @@ if len(valid) > 0:
     col2.metric("🏆 הנקי ביותר", valid.loc[valid['composite'].idxmax(), 'name'])
     col3.metric("⚠️ המזוהם ביותר", valid.loc[valid['composite'].idxmin(), 'name'])
 
-m = build_map(df, image_date, processed)
+with st.spinner("🌡️ מחשב מפת חום..."):
+    m = build_map(df, image_date, processed)
+
 st_folium(m, width="100%", height=650)
 
 with st.expander("📊 טבלת נתונים מלאה"):
