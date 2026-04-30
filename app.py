@@ -241,7 +241,7 @@ def build_map(df, image_date, processed):
             folium.Marker(
                 location=[row["lat"], row["lon"]-0.05],
                 icon=folium.DivIcon(
-                    html=f"<div style='font-size:12px;font-weight:bold;background:rgba(255,255,255,0.92);padding:3px 7px;border-radius:5px;border-right:3px solid {color};white-space:nowrap;text-align:right;'>⭐ {comp_rounded}</div>",
+                    html=f"<div style='font-size:12px;font-weight:bold;background:rgba(255,255,255,0.92);padding:3px 7px;border-radius:5px;border-right:3px solid {color};white-space:nowrap;text-align:right;'>{comp_rounded}</div>",
                     icon_size=(90,24), icon_anchor=(90,12))
             ).add_to(beaches_group)
 
