@@ -95,20 +95,44 @@ def load_data(start_date, end_date):
 
     def get_beach_values(beach):
         point = ee.Geometry.Point([beach["lon"], beach["lat"]])
+        buffer_1km = point.buffer(1000)
         try:
-            values = processed.select(["NDWI","Chl_proxy","Turbidity","FAI"]).reduceRegion(
-                reducer=ee.Reducer.mean(), geometry=point.buffer(200), scale=10).getInfo()
-            ndwi      = values.get("NDWI")
-            chl_proxy = values.get("Chl_proxy")
-            turbidity = values.get("Turbidity")
-            fai       = values.get("FAI")
-            if all(v is None for v in [ndwi, chl_proxy, turbidity, fai]):
+            ndwi = processed.normalizedDifference(["B3", "B8"])
+            water_mask = ndwi.gt(0)
+
+            distance_img = ee.Image(0).paint(
+                featureCollection=ee.FeatureCollection([ee.Feature(point)]),
+                color=1
+            ).fastDistanceTransform().sqrt().multiply(10)
+
+            weight = ee.Image(1000).subtract(distance_img).divide(1000).max(0)
+            weight_masked = weight.updateMask(water_mask)
+            selected = processed.select(["NDWI","Chl_proxy","Turbidity","FAI"]).updateMask(water_mask)
+
+            weighted_sum = selected.multiply(weight_masked).reduceRegion(
+                reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=10, bestEffort=True).getInfo()
+            weight_sum = weight_masked.reduceRegion(
+                reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=10, bestEffort=True).getInfo()
+
+            def weighted_mean(band):
+                ws = weighted_sum.get(band)
+                wt = weight_sum.get('constant')
+                if ws is None or wt is None or wt == 0: return None
+                return ws / wt
+
+            ndwi_v      = weighted_mean("NDWI")
+            chl_proxy_v = weighted_mean("Chl_proxy")
+            turbidity_v = weighted_mean("Turbidity")
+            fai_v       = weighted_mean("FAI")
+
+            if all(v is None for v in [ndwi_v, chl_proxy_v, turbidity_v, fai_v]):
                 return {**beach, "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None, "no_data": True}
+
             return {**beach,
-                    "ndwi":      round(ndwi, 3)      if ndwi      is not None else None,
-                    "chl_proxy": round(chl_proxy, 3) if chl_proxy is not None else None,
-                    "turbidity": round(turbidity, 1) if turbidity is not None else None,
-                    "fai":       round(fai, 4)       if fai       is not None else None,
+                    "ndwi":      round(ndwi_v, 3)      if ndwi_v      is not None else None,
+                    "chl_proxy": round(chl_proxy_v, 3) if chl_proxy_v is not None else None,
+                    "turbidity": round(turbidity_v, 1) if turbidity_v is not None else None,
+                    "fai":       round(fai_v, 4)       if fai_v       is not None else None,
                     "no_data": False}
         except:
             return {**beach, "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None, "no_data": True}
