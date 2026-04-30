@@ -1,5 +1,6 @@
 
 import ee
+import json
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
@@ -11,9 +12,18 @@ import pandas as pd
 # ==============================
 @st.cache_resource
 def init_gee():
-    service_account = "water-pollution-be19ed0455e445@ee-semionpolinov.iam.gserviceaccount.com"
-    credentials = ee.ServiceAccountCredentials(service_account, "key.json")
+    creds_dict = dict(st.secrets["gee_credentials"])
+    creds_json = json.dumps(creds_dict)
+    
+    import tempfile, os
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        f.write(creds_json)
+        tmp_path = f.name
+    
+    service_account = creds_dict["client_email"]
+    credentials = ee.ServiceAccountCredentials(service_account, tmp_path)
     ee.Initialize(credentials)
+    os.unlink(tmp_path)
 
 init_gee()
 
