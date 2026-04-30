@@ -143,6 +143,57 @@ def load_data(start_date, end_date):
 
     return df, image_date, processed
 
+
+def get_heatmap_url(s2_processed):
+    """מחשב ציון משוכלל לכל פיקסל ומחזיר Tile URL."""
+    
+    # מים טריטוריאליים של ישראל — פולימגון ~12 מייל ימי מהחוף
+    israel_territorial = ee.Geometry.Polygon([[
+        [34.95, 33.10], [34.60, 33.10],
+        [34.20, 32.60], [34.15, 32.00],
+        [34.20, 31.55], [34.55, 31.30],
+        [34.75, 31.25], [34.95, 31.30],
+        [35.00, 31.55], [35.00, 32.00],
+        [35.10, 32.60], [35.10, 33.10],
+        [34.95, 33.10]
+    ]])
+    
+    # חישוב אינדקסים לכל פיקסל
+    ndwi      = s2_processed.normalizedDifference(["B3","B8"])
+    chl_proxy = s2_processed.select("B5").divide(s2_processed.select("B4"))
+    turbidity = s2_processed.select("B4")
+    
+    # ציון NDWI: 0-100
+    ndwi_score = ndwi.add(0.3).divide(1.1).multiply(100).clamp(0, 100)
+    
+    # ציון כלורופיל: 0-100 (הפוך)
+    chl_score = ee.Image(2.5).subtract(chl_proxy).divide(1.5).multiply(100).clamp(0, 100)
+    
+    # ציון עכירות: 0-100 (הפוך)
+    turb_score = ee.Image(1000).subtract(turbidity).divide(1000).multiply(100).clamp(0, 100)
+    
+    # ציון משוכלל
+    composite = (ndwi_score.multiply(0.4)
+                 .add(chl_score.multiply(0.35))
+                 .add(turb_score.multiply(0.25)))
+    
+    # מסכה — רק מים (NDWI > 0)
+    water_mask = ndwi.gt(0)
+    composite = composite.updateMask(water_mask).clip(israel_territorial)
+    
+    # פלטה: אדום (0) → צהוב (50) → ירוק (100)
+    vis_params = {
+        "min": 0, "max": 100,
+        "palette": ["#8B0000","#E74C3C","#E67E22","#F1C40F","#27AE60","#1A5E20"]
+    }
+    
+    try:
+        tile_url = composite.getMapId(vis_params)["tile_fetcher"].url_format
+        return tile_url
+    except Exception as e:
+        print(f"שגיאה בטעינת מפת חום: {e}")
+        return None
+
 def build_map(df, image_date, processed):
     m = folium.Map(location=HAIFA_CENTER, zoom_start=8, tiles="CartoDB positron", control_scale=True)
 
@@ -188,6 +239,7 @@ def build_map(df, image_date, processed):
                     icon_size=(90,24), icon_anchor=(0,12))
             ).add_to(beaches_group)
 
+    heatmap_group.add_to(m)
     beaches_group.add_to(m)
     folium.LayerControl(collapsed=False).add_to(m)
 
