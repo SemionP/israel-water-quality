@@ -286,7 +286,7 @@ def build_map(df, image_date, processed):
             <div style="width:120px;height:10px;background:linear-gradient(to right,#8B0000,#E74C3C,#F1C40F,#27AE60);border-radius:3px;"></div>
         </div>
         <div style="display:flex;justify-content:space-between;font-size:10px;color:#666;margin-top:2px;">
-            <span>מזוהם</span><span>נקי</span>
+            <span>נקי</span><span>מזוהם</span>
         </div>
         <small style='color:#999;font-size:11px;'>לחץ על עיגול לפרטים</small>
     </div>"""
