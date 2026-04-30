@@ -206,7 +206,7 @@ def build_map(df, image_date, processed):
     # נקודות חופים
     for i, (_, row) in enumerate(df.iterrows(), 1):
         color = SCORE_COLORS.get(row["quality_score"], "#888")
-        comp  = f"{row['composite']}/100" if row["composite"] is not None else "N/A"
+        comp  = f"{int(round(row['composite']))}/100" if row["composite"] is not None else "N/A"
 
         if row["no_data"]:
             popup_html = f"<div style='font-family:Arial;direction:rtl;'><b>נקודה {i} — {row['name']}</b><br>⬜ אין מידע זמין<br><small>📅 {image_date}</small></div>"
@@ -237,11 +237,12 @@ def build_map(df, image_date, processed):
         ).add_to(beaches_group)
 
         if not row["no_data"]:
+            comp_rounded = f"{int(round(row['composite']))}/100" if row["composite"] is not None else "N/A"
             folium.Marker(
-                location=[row["lat"], row["lon"]+0.05],
+                location=[row["lat"], row["lon"]-0.05],
                 icon=folium.DivIcon(
-                    html=f"<div style='font-size:12px;font-weight:bold;background:rgba(255,255,255,0.92);padding:3px 7px;border-radius:5px;border-left:3px solid {color};white-space:nowrap;'>⭐ {comp}</div>",
-                    icon_size=(90,24), icon_anchor=(0,12))
+                    html=f"<div style='font-size:12px;font-weight:bold;background:rgba(255,255,255,0.92);padding:3px 7px;border-radius:5px;border-right:3px solid {color};white-space:nowrap;text-align:right;'>⭐ {comp_rounded}</div>",
+                    icon_size=(90,24), icon_anchor=(90,12))
             ).add_to(beaches_group)
 
     # תאריך
