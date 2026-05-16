@@ -5,6 +5,30 @@ import folium
 from streamlit_folium import st_folium
 from datetime import datetime, timedelta
 import pandas as pd
+import streamlit.components.v1 as components
+
+
+# ==============================
+# Google Analytics
+# ==============================
+if "ga_loaded" not in st.session_state:
+    st.session_state.ga_loaded = True
+
+    components.html(
+        """
+        <!-- Google tag (gtag.js) -->
+        <script async src="https://www.googletagmanager.com/gtag/js?id=G-K37THY2160"></script>
+
+        <script>
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+
+          gtag('config', 'G-K37THY2160');
+        </script>
+        """,
+        height=0,
+    )
 
 # ==============================
 # אימות GEE עם Streamlit Secrets
