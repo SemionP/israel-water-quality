@@ -359,16 +359,7 @@ st.set_page_config(page_title="ניטור איכות מי ים — ישראל", 
 st.title("🌊 ניטור איכות מי ים — חופי ישראל")
 st.caption("מבוסס על נתוני לווין Sentinel-2 · Google Earth Engine")
 
-with st.sidebar:
-    st.header("⚙️ הגדרות")
-    days_back = st.slider("טווח ימים לאחור", 30, 180, 90)
-    st.markdown("---")
-    st.markdown("**מקרא:**")
-    st.markdown("🟢 מצוין · 🟡 טוב · 🟠 בינוני · 🔴 ירוד · ⛔ גרוע · ⬜ אין מידע")
-    st.markdown("---")
-    st.markdown("**🌡️ מפת חום:**")
-    st.markdown("ציון משוכלל ברמת פיקסל (10×10 מ')")
-    st.markdown("אדום = מזוהם · ירוק = נקי")
+days_back = 90
 
 end_date   = datetime.now().strftime("%Y-%m-%d")
 start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
@@ -394,13 +385,3 @@ with st.expander("📊 טבלת נתונים מלאה"):
     display_df = df[["name","composite","quality_label","ndwi","chl_proxy","turbidity"]].copy()
     display_df.columns = ["עיר","ציון משוכלל","איכות","NDWI","כלורופיל","עכירות"]
     st.dataframe(display_df, use_container_width=True)
-
-st.markdown("---")
-st.markdown("""
-<div style="background:linear-gradient(135deg,#0077b6,#00b4d8);border-radius:16px;padding:36px 24px;text-align:center;margin:20px 0;direction:rtl;">
-    <div style="font-size:36px;margin-bottom:8px;">🌊</div>
-    <h2 style="color:white;margin:0 0 10px;font-size:24px;">קבל התראות על איכות המים בחוף שלך</h2>
-    <p style="color:rgba(255,255,255,0.88);font-size:16px;margin:0 0 24px;">עדכון יומי בבוקר &nbsp;·&nbsp; או התראה מיידית כשמתגלה זיהום</p>
-    <a href="https://docs.google.com/forms/d/e/1FAIpQLScWJHuiBvHog3oJoq8ZVWlRUGAK8_XdcQbREs_lxos7y65xuQ/viewform" target="_blank" style="background:white;color:#0077b6;font-weight:bold;font-size:17px;padding:14px 36px;border-radius:50px;text-decoration:none;display:inline-block;box-shadow:0 4px 14px rgba(0,0,0,0.15);">📩 הירשם עכשיו — חינם</a>
-</div>
-""", unsafe_allow_html=True)
