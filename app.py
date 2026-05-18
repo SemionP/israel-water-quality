@@ -7,6 +7,11 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit.components.v1 as components
 
+# Umami analytics — добавь сюда 👇
+components.html(
+    '<script async src="https://cloud.umami.is/script.js" data-website-id="07a48db1-5aa7-4d88-aaac-9cfb6fc2600d"></script>',
+    height=0
+)
 
 # ==============================
 # Google Analytics
