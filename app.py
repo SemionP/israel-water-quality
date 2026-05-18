@@ -360,7 +360,6 @@ st.title("🌊 ניטור איכות מי ים — חופי ישראל")
 st.caption("מבוסס על נתוני לווין Sentinel-2 · Google Earth Engine")
 
 days_back = 90
-
 end_date   = datetime.now().strftime("%Y-%m-%d")
 start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
@@ -379,9 +378,16 @@ if len(valid) > 0:
 with st.spinner("🌡️ מחשב מפת חום..."):
     m = build_map(df, image_date, processed)
 
-st_folium(m, width="100%", height=650)
+map_col, table_col = st.columns([2, 1])
 
-with st.expander("📊 טבלת נתונים מלאה"):
-    display_df = df[["name","composite","quality_label","ndwi","chl_proxy","turbidity"]].copy()
-    display_df.columns = ["עיר","ציון משוכלל","איכות","NDWI","כלורופיל","עכירות"]
-    st.dataframe(display_df, use_container_width=True)
+with map_col:
+    st_folium(m, width="100%", height=680)
+
+with table_col:
+    st.markdown("#### 📊 נתוני חופים")
+    display_df = df[["name", "composite", "quality_label"]].copy()
+    display_df.columns = ["חוף", "ציון", "איכות"]
+    display_df["ציון"] = display_df["ציון"].apply(
+        lambda x: f"{int(round(x))}/100" if x is not None else "—"
+    )
+    st.dataframe(display_df, use_container_width=True, height=640)
