@@ -396,6 +396,11 @@ with st.expander("📊 טבלת נתונים מלאה"):
     st.dataframe(display_df, use_container_width=True)
 
 st.markdown("---")
-st.markdown("### 📧 קבל התראות על איכות המים")
-st.markdown("הירשם וקבל עדכון יומי או התראה כשמתגלה זיהום בחוף שבחרת.")
-st.link_button("📩 הירשם להתראות", "https://docs.google.com/forms/d/e/1FAIpQLScWJHuiBvHog3oJoq8ZVWlRUGAK8_XdcQbREs_lxos7y65xuQ/viewform")
+st.markdown("""
+<div style="background:linear-gradient(135deg,#0077b6,#00b4d8);border-radius:16px;padding:36px 24px;text-align:center;margin:20px 0;direction:rtl;">
+    <div style="font-size:36px;margin-bottom:8px;">🌊</div>
+    <h2 style="color:white;margin:0 0 10px;font-size:24px;">קבל התראות על איכות המים בחוף שלך</h2>
+    <p style="color:rgba(255,255,255,0.88);font-size:16px;margin:0 0 24px;">עדכון יומי בבוקר &nbsp;·&nbsp; או התראה מיידית כשמתגלה זיהום</p>
+    <a href="https://docs.google.com/forms/d/e/1FAIpQLScWJHuiBvHog3oJoq8ZVWlRUGAK8_XdcQbREs_lxos7y65xuQ/viewform" target="_blank" style="background:white;color:#0077b6;font-weight:bold;font-size:17px;padding:14px 36px;border-radius:50px;text-decoration:none;display:inline-block;box-shadow:0 4px 14px rgba(0,0,0,0.15);">📩 הירשם עכשיו — חינם</a>
+</div>
+""", unsafe_allow_html=True)
