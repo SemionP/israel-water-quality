@@ -285,8 +285,11 @@ def build_map(df, image_date, processed):
         folium.Marker(
             location=[row["lat"], row["lon"]],
             icon=folium.DivIcon(
-                html=f"<div style='font-size:12px;font-weight:bold;color:white;text-align:center;line-height:28px;width:28px;margin-left:-14px;margin-top:-14px;'>{i}</div>",
-                icon_size=(28,28), icon_anchor=(14,14))
+                html=f"<div style='text-align:center;margin-left:-14px;margin-top:-14px;'>"
+                     f"<div style='font-size:12px;font-weight:bold;color:white;line-height:28px;width:28px;'>{i}</div>"
+                     f"<div style='font-size:11px;font-weight:bold;background:rgba(255,255,255,0.9);color:#333;padding:2px 5px;border-radius:4px;white-space:nowrap;direction:rtl;margin-top:2px;'>{row['name']}</div>"
+                     f"</div>",
+                icon_size=(100,50), icon_anchor=(14,14))
         ).add_to(beaches_group)
 
         if not row["no_data"]:
