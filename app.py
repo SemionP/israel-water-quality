@@ -348,8 +348,6 @@ def build_map(df, image_date, processed):
 
     for group in [satellite_group, heatmap_group, beaches_group]:
         group.add_to(m)
-
-    folium.LayerControl(collapsed=False).add_to(m)
     return m
 
 # ==============================
