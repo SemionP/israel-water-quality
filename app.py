@@ -532,3 +532,28 @@ with table_col:
         lambda x: f"{int(round(x))}/100" if x is not None else "—"
     )
     st.dataframe(display_df, use_container_width=True, height=640)
+
+# ==============================================================================
+# רקע מדעי ומתודולוגיה לשיפור ה-SEO (עברית ואנגלית)
+# ==============================================================================
+st.markdown("---")
+st.markdown("""
+## 🔬 רקע מדעי ומתודולוגיה / Scientific Methodology
+
+מערכת זו מבצעת אוטומציה מלאה לניטור איכות המים בישראל באמצעות פלטפורמת **Google Earth Engine (GEE)** ונתונים מולטי-ספקטרליים של הלוויין **Sentinel-2** ברזולוציה גבוהה של 10 מטרים.
+
+### המדדים הספקטרליים המחושבים במערכת:
+* **NDWI (Normalized Difference Water Index):** מדד המשתמש בערוצי הירוק והאינפרא-אדום הקרוב (Green & NIR) למיפוי מדויק של גופי מים והפרדתם מהיבשה.
+* **Chl_proxy (Chlorophyll-a):** אינדיקטור נוכחות אצות ופוטוסינתזה במים, המחושב על בסיס יחס הערוצים המותאם (Red Edge / Red - B5/B4).
+* **Turbidity Proxy (עכירות):** ניתוח רפלקטיביות בערוץ האדום (Red - B4) המשמש כאינדיקטור ישיר לחומר חלקיקי מרחף במים (TSS).
+* **FAI (Floating Algae Index):** מדד ייעודי לאיתור חומר אורגני ופריחות אצות צפות על פני המים, הקריטי לזיהוי חריגות וזיהומים סביבתיים.
+
+---
+
+This platform automates **water quality monitoring in Israel** utilizing the **Google Earth Engine (GEE)** API and multi-spectral imagery from the **Sentinel-2** satellite constellation at a 10-meter spatial resolution. 
+
+### Key Environmental Indices:
+* **Satellite Remote Sensing:** Processing Top-of-Atmosphere and Surface Reflectance data for coastal and inland water bodies.
+* **Turbidity & Chlorophyll-a Proxies:** Estimating suspended particulate matter and algal blooms using specific band ratios.
+* **Marine & Freshwater Analysis:** Real-time data tracking for the Mediterranean coast, Sea of Galilee (Kinneret), Dead Sea, and the Red Sea (Gulf of Aqaba).
+""", unsafe_allow_html=True)
