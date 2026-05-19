@@ -20,7 +20,7 @@ seo_html = """
 <meta property="og:url" content="https://israel-water-quality.streamlit.app/" />
 """
 st.markdown(
-    '<meta name="google-site-verification" content="להדביק_כאן_את_הקוד_מגוגל" />', 
+    '<meta name="google-site-verification" content="הקוד_הארוך_שלך_כאן" />', 
     unsafe_allow_html=True
 )
 
