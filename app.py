@@ -508,7 +508,6 @@ st.info(f"📅 מבוסס על צילום לווין מתאריך: **{image_date
 # ── מדדים כלליים ─────────────────────────────────────────────────────────────
 valid = df[df["composite"].notna()]
 col1, col2, col3, col4 = st.columns(4)
-col4.metric("📍 נקודות דיגום", len(df))
 if len(valid) > 0:
     col1.metric("⭐ ממוצע ציון",        f"{valid['composite'].mean():.1f}/100")
     col2.metric("🏆 הנקי ביותר",        valid.loc[valid["composite"].idxmax(), "name"])
