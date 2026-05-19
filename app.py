@@ -503,13 +503,6 @@ if df is None:
     )
     st.stop()
 
-st.info(f"📅 מבוסס על צילום לווין מתאריך: **{image_date}** ({scene_count} סצנות נטענו)")
-
-# ── מדדים כלליים ─────────────────────────────────────────────────────────────
-valid = df[df["composite"].notna()]
-col1, col2, col3, col4 = st.columns(4)
-if len(valid) > 0:
-
 # ── מפה + טבלה ───────────────────────────────────────────────────────────────
 with st.spinner("🌡️ מחשב מפת חום..."):
     m = build_map(df, image_date, processed, wb_key)
