@@ -509,9 +509,6 @@ st.info(f"📅 מבוסס על צילום לווין מתאריך: **{image_date
 valid = df[df["composite"].notna()]
 col1, col2, col3, col4 = st.columns(4)
 if len(valid) > 0:
-    col1.metric("⭐ ממוצע ציון",        f"{valid['composite'].mean():.1f}/100")
-    col2.metric("🏆 הנקי ביותר",        valid.loc[valid["composite"].idxmax(), "name"])
-    col3.metric("⚠️ הבעייתי ביותר",     valid.loc[valid["composite"].idxmin(), "name"])
 
 # ── מפה + טבלה ───────────────────────────────────────────────────────────────
 with st.spinner("🌡️ מחשב מפת חום..."):
