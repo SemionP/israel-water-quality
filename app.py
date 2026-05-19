@@ -478,7 +478,7 @@ def build_map(df, image_date, processed, wb_key):
 # ממשק Streamlit
 # ==============================
 st.set_page_config(page_title="ניטור איכות מים — ישראל", page_icon="🌊", layout="wide")
-st.title("🌊 ניטור איכות מים — ישראל")
+st.title("🛰️ ניטור איכות מי ים וחופים בישראל — בזמן אמת")
 st.caption("מבוסס על נתוני לווין Sentinel-2 · Google Earth Engine")
 
 # ── בחירת גוף מים ────────────────────────────────────────────────────────────
@@ -518,7 +518,7 @@ if len(valid) > 0:
 # ── מפה + טבלה ───────────────────────────────────────────────────────────────
 with st.spinner("🌡️ מחשב מפת חום..."):
     m = build_map(df, image_date, processed, wb_key)
-
+st.markdown("## 🗺️ מפת חום לווינית ומדדי איכות סביבה")
 map_col, table_col = st.columns([2, 1])
 
 with map_col:
