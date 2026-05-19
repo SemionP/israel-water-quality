@@ -10,6 +10,15 @@ import streamlit.components.v1 as components
 # ==============================================================================
 # אימות Google Search Console (להחליף את ה-content בקוד שקיבלת מגוגל)
 # ==============================================================================
+seo_html = """
+<meta name="description" content="מערכת מדעית לניטור איכות המים בישראל בזמן אמת (ים תיכון, כנרת, ים המלח וים סוף) באמצעות חישה מרחוק, נתוני הלוויין Sentinel-2 ו-Google Earth Engine." />
+<meta name="keywords" content="איכות מים, חישה מרחוק, לוויין, Sentinel-2, GEE, כנרת, ים המלח, עכירות, כלורופיל, אצות, Water Quality Israel, Remote Sensing, Google Earth Engine" />
+
+<meta property="og:title" content="ניטור איכות מים לוויני — ישראל (Sentinel-2 & GEE)" />
+<meta property="og:description" content="ניטור ומעקב מדעי מתקדם של עכירות, כלורופיל ופריחת אצות בגופי המים בישראל באמצעות חישה מרחוק." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://israel-water-quality.streamlit.app/" />
+"""
 st.markdown(
     '<meta name="google-site-verification" content="להדביק_כאן_את_הקוד_מגוגל" />', 
     unsafe_allow_html=True
