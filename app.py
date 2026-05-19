@@ -364,7 +364,7 @@ def build_map(df, image_date, processed, wb_key):
     # נקודות דיגום
     for i, (_, row) in enumerate(df.iterrows(), 1):
         color = SCORE_COLORS.get(row["quality_score"], "#888")
-        comp  = f"{int(round(row['composite']))}/100" if row["composite"] is not None else "N/A"
+        comp  = f"{int(round(row['composite']))}/100" if (row["composite"] is not None and row["composite"] == row["composite"]) else "N/A"
 
         if row["no_data"]:
             popup_html = (
