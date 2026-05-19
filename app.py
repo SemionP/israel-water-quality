@@ -517,7 +517,7 @@ with table_col:
     display_df = df[["name", "composite", "quality_label"]].copy()
     display_df.columns = ["נקודה", "ציון", "איכות"]
     display_df["ציון"] = display_df["ציון"].apply(
-        lambda x: f"{int(round(x))}/100" if x is not None else "—"
+        lambda x: f"{int(round(x))}/100" if (x is not None and x == x) else "—"
     )
     st.dataframe(display_df, use_container_width=True, height=640)
 
