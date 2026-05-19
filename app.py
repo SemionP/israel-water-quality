@@ -197,19 +197,11 @@ SCORE_COLORS = {0: "#AAAAAA", 1: "#27AE60", 2: "#F1C40F", 3: "#E67E22", 4: "#E74
 def snap_points_to_coastline(points_key: str, points_list: list, search_radius: int = 3000) -> list:
     """
     מצמיד כל נקודה לנקודת המים הקרובה ביותר.
-    משתמש ב-JRC Global Surface Water (Google/EU/JRC) — dataset רשמי ברמת פיקסל 30m.
-    occurrence >= 50 = מים קבועים (ים, אגם, נהר).
-    מחושב פעם אחת בשבוע — לא תלוי בתמונת לוויין.
+    JRC Global Surface Water (Google/EU) — רזולוציה 30m, מקור רשמי.
+    occurrence >= 50 = מים קבועים.
     """
-    # JRC Global Surface Water — occurrence = % מהזמן שהפיקסל היה מים
-    jsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
-    permanent_water = jsw.select("occurrence").gte(50)   # מים קבועים בלבד
-
-    # distance transform — מרחק כל פיקסל מהמים הקרובים (בפיקסלים × 30m)
-    dist_to_water = permanent_water.Not().cumulativeCost(
-        source=permanent_water,
-        maxDistance=search_radius
-    )
+    jsw             = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
+    permanent_water = jsw.select("occurrence").gte(50)
 
     snapped = []
     for point in points_list:
@@ -217,49 +209,40 @@ def snap_points_to_coastline(points_key: str, points_list: list, search_radius: 
             pt     = ee.Geometry.Point([point["lon"], point["lat"]])
             buffer = pt.buffer(search_radius)
 
-            # מצא את הפיקסל עם המרחק המינימלי (= הכי קרוב למים)
-            # בתוך ה-buffer — רק פיקסלים שהם מים
-            water_in_buffer = permanent_water.updateMask(permanent_water).clip(buffer)
-
-            # חשב מרחק מהנקודה המקורית לכל פיקסל מים
-            pt_img = ee.Image.constant(0).paint(
-                featureCollection=ee.FeatureCollection([ee.Feature(pt)]),
-                color=1
-            )
-            dist_from_pt = pt_img.fastDistanceTransform().sqrt().multiply(30)  # מטרים
-
-            # מצא את הפיקסל המים הכי קרוב לנקודה המקורית
-            min_dist = dist_from_pt.updateMask(water_in_buffer).reduceRegion(
-                reducer=ee.Reducer.min(),
-                geometry=buffer,
+            # דגום את כל פיקסלי המים בתוך ה-buffer
+            water_pts = permanent_water.updateMask(permanent_water).sample(
+                region=buffer,
                 scale=30,
-                bestEffort=True
-            ).getInfo()
+                geometries=True,
+                numPixels=500
+            )
 
-            if not min_dist or min_dist.get("constant") is None:
+            count = water_pts.size().getInfo()
+            if count == 0:
                 snapped.append(point)
                 continue
 
-            min_val = min_dist["constant"]
+            # מצא את הנקודה הכי קרובה לנקודה המקורית
+            def add_distance(feat):
+                d = feat.geometry().distance(pt, 1)
+                return feat.set("dist", d)
 
-            # מצא את הפיקסל עם המרחק המינימלי וקח את הקואורדינטות שלו
-            nearest_mask = dist_from_pt.updateMask(water_in_buffer).lte(min_val + 30)
+            nearest = (water_pts
+                       .map(add_distance)
+                       .sort("dist")
+                       .first()
+                       .geometry()
+                       .centroid(1)
+                       .coordinates()
+                       .getInfo())
 
-            coords = nearest_mask.reduceToVectors(
-                geometry=buffer,
-                scale=30,
-                geometryType="centroid",
-                bestEffort=True,
-                maxPixels=1e6
-            ).first().geometry().centroid(1).coordinates().getInfo()
-
-            if coords and len(coords) == 2:
-                snapped.append({**point, "lat": coords[1], "lon": coords[0]})
+            if nearest and len(nearest) == 2:
+                snapped.append({**point, "lat": nearest[1], "lon": nearest[0]})
             else:
                 snapped.append(point)
 
         except Exception:
-            snapped.append(point)   # fallback לנקודה המקורית
+            snapped.append(point)
 
     return snapped
 
