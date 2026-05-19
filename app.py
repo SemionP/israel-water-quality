@@ -191,6 +191,35 @@ WATER_BODIES = {
 SCORE_COLORS = {0: "#AAAAAA", 1: "#27AE60", 2: "#F1C40F", 3: "#E67E22", 4: "#E74C3C", 5: "#8E44AD"}
 
 # ==============================
+# Snap לקו חוף רשמי (GSHHG / LSIB) — cached בנפרד מהתמונה
+# ==============================
+@st.cache_data(ttl=604800)   # שבוע — קו החוף לא משתנה
+def snap_points_to_coastline(points_key: str, points_list: list, search_radius: int = 3000) -> list:
+    """
+    מצמיד כל נקודה לקו החוף הרשמי הקרוב ביותר.
+    משתמש ב-GSHHG דרך GEE — מקור NOAA רשמי, רזולוציה עולמית גבוהה.
+    מחושב פעם אחת בשבוע — קו החוף לא תלוי בתמונת הלוויין.
+    """
+    coastline = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
+    snapped = []
+    for point in points_list:
+        try:
+            pt     = ee.Geometry.Point([point["lon"], point["lat"]])
+            buffer = pt.buffer(search_radius)
+            local_coast  = coastline.filterBounds(buffer)
+            coast_geom   = local_coast.geometry()
+            intersection = coast_geom.intersection(buffer, 1)
+            nearest      = intersection.centroid(1).coordinates().getInfo()
+            if nearest and len(nearest) == 2:
+                snapped.append({**point, "lat": nearest[1], "lon": nearest[0]})
+            else:
+                snapped.append(point)
+        except:
+            snapped.append(point)
+    return snapped
+
+
+# ==============================
 # טעינת נתונים — גנרי לכל גוף מים
 # ==============================
 @st.cache_data(ttl=3600)
@@ -223,8 +252,13 @@ def load_data(wb_key: str, start_date: str, end_date: str):
 
     processed = s2.map(compute_indices).median()
 
+    # ── Snap לקו חוף רשמי (cached שבוע, לא תלוי בתמונה) ──────────────────
+    snapped_points = snap_points_to_coastline(wb_key, wb["points"])
+
     def get_point_values(point):
-        pt         = ee.Geometry.Point([point["lon"], point["lat"]])
+        snapped_point = point   # כבר מוצמד לקו החוף
+
+        pt         = ee.Geometry.Point([snapped_lon, snapped_lat])
         buffer_1km = pt.buffer(1000)
         try:
             ndwi_img  = processed.normalizedDifference(["B3", "B8"])
@@ -252,18 +286,18 @@ def load_data(wb_key: str, start_date: str, end_date: str):
 
             vals = {k: wm(k) for k in ["NDWI","Chl_proxy","Turbidity","FAI"]}
             if all(v is None for v in vals.values()):
-                return {**point, **{k: None for k in vals}, "no_data": True}
+                return {**snapped_point, **{k: None for k in vals}, "no_data": True}
 
-            return {**point,
+            return {**snapped_point,
                     "ndwi":      round(vals["NDWI"],      3) if vals["NDWI"]      is not None else None,
                     "chl_proxy": round(vals["Chl_proxy"], 3) if vals["Chl_proxy"] is not None else None,
                     "turbidity": round(vals["Turbidity"], 1) if vals["Turbidity"] is not None else None,
                     "fai":       round(vals["FAI"],       4) if vals["FAI"]       is not None else None,
                     "no_data": False}
         except:
-            return {**point, "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None, "no_data": True}
+            return {**snapped_point, "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None, "no_data": True}
 
-    data = [get_point_values(p) for p in wb["points"]]
+    data = [get_point_values(p) for p in snapped_points]
     df   = pd.DataFrame(data)
 
     def water_quality_score(row):
