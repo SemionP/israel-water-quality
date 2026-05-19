@@ -10,12 +10,12 @@ import streamlit.components.v1 as components
 # ==============================================================================
 # אימות Google Search Console (להחליף את ה-content בקוד שקיבלת מגוגל)
 # ==============================================================================
-components.html(
-    '<meta name="google-site-verification" content="להדביק_כאן_את_הקוד_מגוגל" />',
-    height=0
+st.markdown(
+    '<meta name="google-site-verification" content="להדביק_כאן_את_הקוד_מגוגל" />', 
+    unsafe_allow_html=True
 )
 
-# Umami analytics
+# Umami analytics (נשאר כקומפוננטה כרגיל)
 components.html(
     '<script async src="https://cloud.umami.is/script.js" data-website-id="07a48db1-5aa7-4d88-aaac-9cfb6fc2600d"></script>',
     height=0
