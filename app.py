@@ -7,6 +7,14 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit.components.v1 as components
 
+# ==============================================================================
+# אימות Google Search Console (להחליף את ה-content בקוד שקיבלת מגוגל)
+# ==============================================================================
+components.html(
+    '<meta name="google-site-verification" content="להדביק_כאן_את_הקוד_מגוגל" />',
+    height=0
+)
+
 # Umami analytics
 components.html(
     '<script async src="https://cloud.umami.is/script.js" data-website-id="07a48db1-5aa7-4d88-aaac-9cfb6fc2600d"></script>',
@@ -207,7 +215,7 @@ def load_data(wb_key: str, start_date: str, end_date: str):
     processed = s2.map(compute_indices).median()
 
     def get_point_values(point):
-        pt        = ee.Geometry.Point([point["lon"], point["lat"]])
+        pt         = ee.Geometry.Point([point["lon"], point["lat"]])
         buffer_1km = pt.buffer(1000)
         try:
             ndwi_img  = processed.normalizedDifference(["B3", "B8"])
@@ -325,7 +333,7 @@ def build_map(df, image_date, processed, wb_key):
         control_scale=True
     )
 
-    satellite_group = folium.FeatureGroup(name="🛰️ לווין RGB",             show=False)
+    satellite_group = folium.FeatureGroup(name="🛰️ לווין RGB",           show=False)
     heatmap_group   = folium.FeatureGroup(name="🌡️ מפת חום (ציון משוכלל)", show=True)
     points_group    = folium.FeatureGroup(name="📍 נקודות דיגום",           show=True)
 
