@@ -518,7 +518,7 @@ if len(valid) > 0:
 # ── מפה + טבלה ───────────────────────────────────────────────────────────────
 with st.spinner("🌡️ מחשב מפת חום..."):
     m = build_map(df, image_date, processed, wb_key)
-st.markdown("## 🗺️ מפת חום לווינית ומדדי איכות סביבה")
+
 map_col, table_col = st.columns([2, 1])
 
 with map_col:
