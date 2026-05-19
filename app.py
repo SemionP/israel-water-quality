@@ -403,9 +403,10 @@ def build_map(df, image_date, processed, wb_key):
         control_scale=True
     )
 
-    satellite_group = folium.FeatureGroup(name="🛰️ לווין RGB",           show=False)
-    heatmap_group   = folium.FeatureGroup(name="🌡️ מפת חום (ציון משוכלל)", show=True)
-    points_group    = folium.FeatureGroup(name="📍 נקודות דיגום",           show=True)
+    satellite_group  = folium.FeatureGroup(name="🛰️ לווין RGB",                show=False)
+    heatmap_group    = folium.FeatureGroup(name="🌡️ מפת חום (ציון משוכלל)",  show=True)
+    sampling_group   = folium.FeatureGroup(name="🔵 אזורי דיגום (1km buffer)", show=False)
+    points_group     = folium.FeatureGroup(name="📍 נקודות דיגום",              show=True)
 
     # שכבת לווין RGB
     try:
@@ -421,6 +422,20 @@ def build_map(df, image_date, processed, wb_key):
             tiles=heatmap_url, name="מפת חום", attr="GEE/Copernicus",
             overlay=True, opacity=0.75
         ).add_to(heatmap_group)
+
+    # אזורי דיגום — פוליגון עגול 1km, כחול חצי שקוף
+    for i, (_, row) in enumerate(df.iterrows(), 1):
+        color = SCORE_COLORS.get(row["quality_score"], "#888")
+        folium.Circle(
+            location=[row["lat"], row["lon"]],
+            radius=1000,                      # 1km — בדיוק כמו buffer_1km בחישוב
+            color="#1A6FBF",
+            weight=1.5,
+            fill=True,
+            fill_color="#3498DB",
+            fill_opacity=0.18,
+            tooltip=f"אזור דיגום {i} — {row['name']} (רדיוס 1km, מים בלבד)"
+        ).add_to(sampling_group)
 
     # נקודות דיגום
     for i, (_, row) in enumerate(df.iterrows(), 1):
@@ -530,7 +545,7 @@ def build_map(df, image_date, processed, wb_key):
     </div>"""
     m.get_root().html.add_child(folium.Element(legend_html))
 
-    for group in [satellite_group, heatmap_group, points_group]:
+    for group in [satellite_group, heatmap_group, sampling_group, points_group]:
         group.add_to(m)
     folium.LayerControl().add_to(m)
     return m
