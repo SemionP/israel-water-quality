@@ -257,8 +257,7 @@ def load_data(wb_key: str, start_date: str, end_date: str):
 
     def get_point_values(point):
         snapped_point = point   # כבר מוצמד לקו החוף
-
-        pt         = ee.Geometry.Point([snapped_lon, snapped_lat])
+        pt         = ee.Geometry.Point([point["lon"], point["lat"]])
         buffer_1km = pt.buffer(1000)
         try:
             ndwi_img  = processed.normalizedDifference(["B3", "B8"])
