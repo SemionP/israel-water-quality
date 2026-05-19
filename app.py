@@ -533,11 +533,3 @@ with table_col:
     )
     st.dataframe(display_df, use_container_width=True, height=640)
 
-# ==============================================================================
-# רקע מדעי ומתודולוגיה לשיפור ה-SEO (עברית ואנגלית)
-# ==============================================================================
-st.markdown("---")
-mosphere and Surface Reflectance data for coastal and inland water bodies.
-* **Turbidity & Chlorophyll-a Proxies:** Estimating suspended particulate matter and algal blooms using specific band ratios.
-* **Marine & Freshwater Analysis:** Real-time data tracking for the Mediterranean coast, Sea of Galilee (Kinneret), Dead Sea, and the Red Sea (Gulf of Aqaba).
-""", unsafe_allow_html=True)
