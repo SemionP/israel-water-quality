@@ -368,7 +368,7 @@ def build_map(df, image_date, processed, wb_key):
                 <table style='font-size:13px;border-collapse:collapse;width:100%;'>
                 <tr style='background:#f5f5f5'><td style='padding:4px'><b>NDWI</b></td><td style='padding:4px'>{row['ndwi']:.3f}</td><td style='padding:4px;color:#999;font-size:11px'>גבוה=נקי</td></tr>
                 {'<tr><td style="padding:4px"><b>כלורופיל</b></td><td style="padding:4px">' + f"{row['chl_proxy']:.3f}" + '</td><td style="padding:4px;color:#999;font-size:11px">גבוה=אצות</td></tr>' if row.get('chl_proxy') is not None else ''}
-                <tr style='background:#f5f5f5'><td style='padding:4px'><b>עכירות</b></td><td style='padding:4px'>{row['turbidity']:.0f if row.get('turbidity') is not None else "N/A"}</td><td style='padding:4px;color:#999;font-size:11px'>גבוה=עכור</td></tr>
+                <tr style='background:#f5f5f5'><td style='padding:4px'><b>עכירות</b></td><td style='padding:4px'>{f"{row['turbidity']:.0f}" if row.get('turbidity') is not None else "N/A"}</td><td style='padding:4px;color:#999;font-size:11px'>גבוה=עכור</td></tr>
                 {fai_row}
                 </table>
                 <br><small style='color:#aaa'>📅 {image_date}</small></div>"""
