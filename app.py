@@ -478,8 +478,7 @@ def build_map(df, image_date, processed, wb_key):
 # ממשק Streamlit
 # ==============================
 st.set_page_config(page_title="ניטור איכות מים — ישראל", page_icon="🌊", layout="wide")
-st.title("🛰️ ניטור איכות מי ים וחופים בישראל — בזמן אמת")
-st.caption("מבוסס על נתוני לווין Sentinel-2 · Google Earth Engine")
+st.title("ניטור איכות מי ים בחופים בישראל")
 
 # ── בחירת גוף מים ────────────────────────────────────────────────────────────
 wb_key = st.radio(
