@@ -327,27 +327,34 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
     # ── Snap לקו חוף רשמי (cached שבוע, לא תלוי בתמונה) ──────────────────
     snapped_points = snap_points_to_coastline(wb_key, wb["points"])
 
+    # רזולוציה לפי סנסור
+    scale = 300 if sensor == "S3" else 10
+
     def get_point_values(point):
-        snapped_point = point   # כבר מוצמד לקו החוף
+        snapped_point = point
         pt         = ee.Geometry.Point([point["lon"], point["lat"]])
-        buffer_1km = pt.buffer(1000)
+        buffer_1km = pt.buffer(1000 if sensor == "S2" else 5000)  # S3=300m → buffer גדול יותר
         try:
-            ndwi_img  = processed.normalizedDifference(["B3", "B8"])
-            water_mask = ndwi_img.gt(0)
+            # השתמש ב-NDWI שכבר חושב בתוך processed
+            ndwi_img   = processed.select("NDWI")
+            # S3 radiance — NDWI יכול להיות שלילי גם על מים, רף נמוך יותר
+            ndwi_thresh = -0.1 if sensor == "S3" else 0.0
+            water_mask  = ndwi_img.gt(ndwi_thresh)
 
             distance_img = ee.Image(0).paint(
                 featureCollection=ee.FeatureCollection([ee.Feature(pt)]),
                 color=1
-            ).fastDistanceTransform().sqrt().multiply(10)
+            ).fastDistanceTransform().sqrt().multiply(scale)
 
-            weight        = ee.Image(1000).subtract(distance_img).divide(1000).max(0)
+            max_dist      = 1000 if sensor == "S2" else 5000
+            weight        = ee.Image(max_dist).subtract(distance_img).divide(max_dist).max(0)
             weight_masked = weight.updateMask(water_mask)
             selected      = processed.select(["NDWI","Chl_proxy","Turbidity","FAI"]).updateMask(water_mask)
 
             weighted_sum = selected.multiply(weight_masked).reduceRegion(
-                reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=10, bestEffort=True).getInfo()
+                reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=scale, bestEffort=True).getInfo()
             weight_sum = weight_masked.reduceRegion(
-                reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=10, bestEffort=True).getInfo()
+                reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=scale, bestEffort=True).getInfo()
 
             def wm(band):
                 ws = weighted_sum.get(band)
@@ -406,22 +413,21 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
 
     # ── פוליגוני פיקסלי מים לכל נקודה (לתצוגה ויזואלית) ──────────────────
     def get_water_polygon(point):
-        """מחזיר GeoJSON של convex hull של פיקסלי המים ב-1km סביב הנקודה"""
+        """מחזיר GeoJSON של convex hull של פיקסלי המים ב-buffer סביב הנקודה"""
         try:
             pt         = ee.Geometry.Point([point["lon"], point["lat"]])
-            buffer_1km = pt.buffer(1000)
-            ndwi_img   = processed.normalizedDifference(["B3", "B8"])
-            water_mask = ndwi_img.gt(0)
+            buf        = pt.buffer(1000 if sensor == "S2" else 5000)
+            ndwi_img   = processed.select("NDWI")
+            ndwi_thresh = -0.1 if sensor == "S3" else 0.0
+            water_mask = ndwi_img.gt(ndwi_thresh)
 
             vectors = water_mask.updateMask(water_mask).reduceToVectors(
-                geometry=buffer_1km,
-                scale=20,
+                geometry=buf,
+                scale=300 if sensor == "S3" else 20,
                 geometryType="polygon",
                 bestEffort=True,
                 maxPixels=1e6
             )
-
-            # convex hull של כל הפוליגונים יחד
             hull = vectors.geometry().convexHull(10)
             return hull.getInfo()
         except:
@@ -432,22 +438,30 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
     return df, image_date, processed, count, water_polygons
 
 # ==============================
-# מפת חום ברמת פיקסל
+# מפת חום ברמת פיקסל — תואם S2 ו-S3
 # ==============================
-def get_heatmap_url(processed, clip_geom):
-    ndwi      = processed.normalizedDifference(["B3","B8"])
-    chl_proxy = processed.select("B5").divide(processed.select("B4"))
-    turbidity = processed.select("B4")
+def get_heatmap_url(processed, clip_geom, sensor="S2"):
+    ndwi      = processed.select("NDWI")
+    chl_proxy = processed.select("Chl_proxy")
+    turbidity = processed.select("Turbidity")
 
-    ndwi_score = ndwi.add(0.3).divide(1.1).multiply(100).clamp(0, 100)
-    chl_score  = ee.Image(2.5).subtract(chl_proxy).divide(1.5).multiply(100).clamp(0, 100)
-    turb_score = ee.Image(1000).subtract(turbidity).divide(1000).multiply(100).clamp(0, 100)
+    # נרמול לפי טווחים מתאימים לכל סנסור
+    if sensor == "S3":
+        ndwi_thresh = -0.1
+        ndwi_score  = ndwi.add(0.5).divide(1.5).multiply(100).clamp(0, 100)
+        chl_score   = ee.Image(0.3).subtract(chl_proxy).divide(0.6).multiply(100).clamp(0, 100)
+        turb_score  = ee.Image(500).subtract(turbidity).divide(500).multiply(100).clamp(0, 100)
+    else:
+        ndwi_thresh = 0.0
+        ndwi_score  = ndwi.add(0.3).divide(1.1).multiply(100).clamp(0, 100)
+        chl_score   = ee.Image(2.5).subtract(chl_proxy).divide(1.5).multiply(100).clamp(0, 100)
+        turb_score  = ee.Image(1000).subtract(turbidity).divide(1000).multiply(100).clamp(0, 100)
 
-    composite = (ndwi_score.multiply(0.4)
-                 .add(chl_score.multiply(0.35))
-                 .add(turb_score.multiply(0.25)))
+    composite  = (ndwi_score.multiply(0.4)
+                  .add(chl_score.multiply(0.35))
+                  .add(turb_score.multiply(0.25)))
 
-    water_mask = ndwi.gt(0)
+    water_mask = ndwi.gt(ndwi_thresh)
     composite  = composite.updateMask(water_mask).clip(clip_geom)
 
     vis_params = {
@@ -462,7 +476,7 @@ def get_heatmap_url(processed, clip_geom):
 # ==============================
 # בניית מפה
 # ==============================
-def build_map(df, image_date, processed, wb_key, water_polygons=None):
+def build_map(df, image_date, processed, wb_key, water_polygons=None, sensor="S2"):
     wb = WATER_BODIES[wb_key]
 
     m = folium.Map(
@@ -474,18 +488,24 @@ def build_map(df, image_date, processed, wb_key, water_polygons=None):
 
     satellite_group  = folium.FeatureGroup(name="🛰️ לווין RGB",                show=False)
     heatmap_group    = folium.FeatureGroup(name="🌡️ מפת חום (ציון משוכלל)",  show=True)
-    sampling_group   = folium.FeatureGroup(name="🔵 אזורי דיגום (1km buffer)", show=False)
-    points_group     = folium.FeatureGroup(name="📍 נקודות דיגום",              show=True)
+    sampling_group   = folium.FeatureGroup(name="🔵 אזורי דיגום",              show=False)
+    points_group     = folium.FeatureGroup(name="📍 נקודות דיגום",              show=(sensor == "S2"))
 
     # שכבת לווין RGB
     try:
-        rgb_url = processed.getMapId({"bands":["B4","B3","B2"],"min":0,"max":3000})["tile_fetcher"].url_format
+        if sensor == "S3":
+            # S3 OLCI RGB: Oa08=red, Oa06=green, Oa04=blue
+            rgb_url = processed.select(["Oa08_radiance","Oa06_radiance","Oa04_radiance"]).getMapId(
+                {"min": 0, "max": 200, "gamma": 1.5}
+            )["tile_fetcher"].url_format
+        else:
+            rgb_url = processed.getMapId({"bands":["B4","B3","B2"],"min":0,"max":3000})["tile_fetcher"].url_format
         folium.TileLayer(tiles=rgb_url, name="RGB", attr="GEE", overlay=True, opacity=0.8).add_to(satellite_group)
     except:
         pass
 
     # מפת חום
-    heatmap_url = get_heatmap_url(processed, wb["clip_geom"])
+    heatmap_url = get_heatmap_url(processed, wb["clip_geom"], sensor)
     if heatmap_url:
         folium.TileLayer(
             tiles=heatmap_url, name="מפת חום", attr="GEE/Copernicus",
@@ -664,7 +684,7 @@ if df is None:
 
 # ── מפה + טבלה ───────────────────────────────────────────────────────────────
 with st.spinner("🌡️ מחשב מפת חום..."):
-    m = build_map(df, image_date, processed, wb_key, water_polygons)
+    m = build_map(df, image_date, processed, wb_key, water_polygons, sensor_key)
 
 map_col, table_col = st.columns([2, 1])
 
