@@ -248,37 +248,70 @@ def snap_points_to_coastline(points_key: str, points_list: list, search_radius: 
 
 
 # ==============================
-# טעינת נתונים — גנרי לכל גוף מים
+# טעינת נתונים — גנרי לכל גוף מים + סנסור
 # ==============================
 @st.cache_data(ttl=3600)
-def load_data(wb_key: str, start_date: str, end_date: str):
+def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
     wb = WATER_BODIES[wb_key]
 
-    s2 = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-          .filterBounds(wb["bbox"])
-          .filterDate(start_date, end_date)
-          .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", wb["cloud_pct"])))
+    if sensor == "S3":
+        # Sentinel-3 OLCI — 300m, מדדים ימיים ייעודיים
+        collection = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                      .filterBounds(wb["bbox"])
+                      .filterDate(start_date, end_date))
 
-    count = s2.size().getInfo()
-    if count == 0:
-        return None, None, None, 0
+        count = collection.size().getInfo()
+        if count == 0:
+            return None, None, None, 0, []
 
-    image_date = (ee.Date(
-        s2.sort("system:time_start", False).first().get("system:time_start")
-    ).format("YYYY-MM-dd").getInfo())
+        image_date = (ee.Date(
+            collection.sort("system:time_start", False).first().get("system:time_start")
+        ).format("YYYY-MM-dd").getInfo())
 
-    def compute_indices(image):
-        ndwi      = image.normalizedDifference(["B3", "B8"]).rename("NDWI")
-        chl_proxy = image.select("B5").divide(image.select("B4")).rename("Chl_proxy")
-        turbidity = image.select("B4").rename("Turbidity")
-        fai = (image.select("B8")
-               .subtract(image.select("B4"))
-               .subtract(image.select("B11").subtract(image.select("B4"))
-                         .multiply((832-665)/(1610-665)))
-               .rename("FAI"))
-        return image.addBands([ndwi, chl_proxy, turbidity, fai])
+        def compute_indices_s3(image):
+            # S3 OLCI bands (nm): Oa04=490, Oa06=560, Oa08=665, Oa11=709, Oa17=865
+            green  = image.select("Oa06_radiance")   # 560nm
+            red    = image.select("Oa08_radiance")   # 665nm
+            rededge= image.select("Oa11_radiance")   # 709nm
+            nir    = image.select("Oa17_radiance")   # 865nm
 
-    processed = s2.map(compute_indices).median()
+            ndwi      = green.subtract(nir).divide(green.add(nir)).rename("NDWI")
+            chl_proxy = rededge.divide(red).rename("Chl_proxy")   # NDCI-like
+            turbidity = red.rename("Turbidity")
+            fai = (nir.subtract(red)
+                      .subtract(rededge.subtract(red).multiply((865-665)/(709-665)))
+                      .rename("FAI"))
+            return image.addBands([ndwi, chl_proxy, turbidity, fai])
+
+        processed = collection.map(compute_indices_s3).median()
+
+    else:
+        # Sentinel-2 MSI — 10m
+        collection = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                      .filterBounds(wb["bbox"])
+                      .filterDate(start_date, end_date)
+                      .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", wb["cloud_pct"])))
+
+        count = collection.size().getInfo()
+        if count == 0:
+            return None, None, None, 0, []
+
+        image_date = (ee.Date(
+            collection.sort("system:time_start", False).first().get("system:time_start")
+        ).format("YYYY-MM-dd").getInfo())
+
+        def compute_indices_s2(image):
+            ndwi      = image.normalizedDifference(["B3", "B8"]).rename("NDWI")
+            chl_proxy = image.select("B5").divide(image.select("B4")).rename("Chl_proxy")
+            turbidity = image.select("B4").rename("Turbidity")
+            fai = (image.select("B8")
+                   .subtract(image.select("B4"))
+                   .subtract(image.select("B11").subtract(image.select("B4"))
+                             .multiply((832-665)/(1610-665)))
+                   .rename("FAI"))
+            return image.addBands([ndwi, chl_proxy, turbidity, fai])
+
+        processed = collection.map(compute_indices_s2).median()
 
     # ── Snap לקו חוף רשמי (cached שבוע, לא תלוי בתמונה) ──────────────────
     snapped_points = snap_points_to_coastline(wb_key, wb["points"])
@@ -594,16 +627,26 @@ wb_key = st.radio(
 )
 wb = WATER_BODIES[wb_key]
 
+# ── בחירת סנסור ──────────────────────────────────────────────────────────────
+sensor = st.radio(
+    "סנסור לוויין",
+    options=["S2 — Sentinel-2 (10m, מדויק)", "S3 — Sentinel-3 (300m, ימי)"],
+    horizontal=True,
+    key="sensor_selector"
+)
+sensor_key = "S3" if sensor.startswith("S3") else "S2"
+
 # ── טעינת נתונים ─────────────────────────────────────────────────────────────
 end_date   = datetime.now().strftime("%Y-%m-%d")
 start_date = (datetime.now() - timedelta(days=wb["days_back"])).strftime("%Y-%m-%d")
 
-with st.spinner(f"🛰️ טוען נתוני לווין עבור {wb_key}..."):
-    df, image_date, processed, scene_count, water_polygons = load_data(wb_key, start_date, end_date)
+sensor_label = "Sentinel-3 OLCI" if sensor_key == "S3" else "Sentinel-2"
+with st.spinner(f"🛰️ טוען נתוני {sensor_label} עבור {wb_key}..."):
+    df, image_date, processed, scene_count, water_polygons = load_data(wb_key, start_date, end_date, sensor_key)
 
 if df is None:
     st.error(
-        f"לא נמצאו תמונות Sentinel-2 ב-{wb['days_back']} הימים האחרונים עבור {wb_key}. "
+        f"לא נמצאו תמונות {sensor_label} ב-{wb['days_back']} הימים האחרונים עבור {wb_key}. "
         f"נסה להגדיל את מספר הימים."
     )
     st.stop()
@@ -618,7 +661,7 @@ with map_col:
     st_folium(m, width="100%", height=680)
 
 with table_col:
-    st.markdown(f"#### 📊 נתוני {wb_key}")
+    st.markdown(f"#### 📊 נתוני {wb_key} ({sensor_label})")
     display_df = df[["name", "composite", "quality_label"]].copy()
     display_df.columns = ["נקודה", "ציון", "איכות"]
     display_df["ציון"] = display_df["ציון"].apply(
