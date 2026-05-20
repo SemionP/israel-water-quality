@@ -445,24 +445,28 @@ def get_heatmap_url(processed, clip_geom, sensor="S2"):
     chl_proxy = processed.select("Chl_proxy")
     turbidity = processed.select("Turbidity")
 
-    # נרמול לפי טווחים מתאימים לכל סנסור
+    # JRC water mask — מסנן יבשה בצורה אמינה לשני הסנסורים
+    jsw        = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
+    water_mask = jsw.select("occurrence").gte(30)
+
     if sensor == "S3":
-        ndwi_thresh = -0.1
-        ndwi_score  = ndwi.add(0.5).divide(1.5).multiply(100).clamp(0, 100)
-        chl_score   = ee.Image(0.3).subtract(chl_proxy).divide(0.6).multiply(100).clamp(0, 100)
-        turb_score  = ee.Image(500).subtract(turbidity).divide(500).multiply(100).clamp(0, 100)
+        # S3 OLCI radiance — טווחים שונים לגמרי מ-S2
+        # NDWI על S3 radiance: טווח בערך -0.3 עד 0.3
+        ndwi_score  = ndwi.add(0.3).divide(0.6).multiply(100).clamp(0, 100)
+        # Chl NDCI: טווח -0.2 עד 0.2 (גבוה = רע)
+        chl_score   = ee.Image(0.2).subtract(chl_proxy).divide(0.4).multiply(100).clamp(0, 100)
+        # Turbidity radiance ב-S3: טווח 0-150
+        turb_score  = ee.Image(150).subtract(turbidity).divide(150).multiply(100).clamp(0, 100)
     else:
-        ndwi_thresh = 0.0
         ndwi_score  = ndwi.add(0.3).divide(1.1).multiply(100).clamp(0, 100)
         chl_score   = ee.Image(2.5).subtract(chl_proxy).divide(1.5).multiply(100).clamp(0, 100)
         turb_score  = ee.Image(1000).subtract(turbidity).divide(1000).multiply(100).clamp(0, 100)
 
-    composite  = (ndwi_score.multiply(0.4)
-                  .add(chl_score.multiply(0.35))
-                  .add(turb_score.multiply(0.25)))
+    composite = (ndwi_score.multiply(0.4)
+                 .add(chl_score.multiply(0.35))
+                 .add(turb_score.multiply(0.25)))
 
-    water_mask = ndwi.gt(ndwi_thresh)
-    composite  = composite.updateMask(water_mask).clip(clip_geom)
+    composite = composite.updateMask(water_mask).clip(clip_geom)
 
     vis_params = {
         "min": 0, "max": 100,
