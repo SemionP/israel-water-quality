@@ -441,22 +441,39 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
 # מפת חום ברמת פיקסל — תואם S2 ו-S3
 # ==============================
 def get_heatmap_url(processed, clip_geom, sensor="S2"):
-    ndwi      = processed.select("NDWI")
-    chl_proxy = processed.select("Chl_proxy")
-    turbidity = processed.select("Turbidity")
-
     # JRC water mask — מסנן יבשה בצורה אמינה לשני הסנסורים
     jsw        = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
     water_mask = jsw.select("occurrence").gte(30)
 
+    ndwi      = processed.select("NDWI").updateMask(water_mask)
+    chl_proxy = processed.select("Chl_proxy").updateMask(water_mask)
+    turbidity = processed.select("Turbidity").updateMask(water_mask)
+
     if sensor == "S3":
-        # S3 OLCI radiance — טווחים שונים לגמרי מ-S2
-        # NDWI על S3 radiance: טווח בערך -0.3 עד 0.3
-        ndwi_score  = ndwi.add(0.3).divide(0.6).multiply(100).clamp(0, 100)
-        # Chl NDCI: טווח -0.2 עד 0.2 (גבוה = רע)
-        chl_score   = ee.Image(0.2).subtract(chl_proxy).divide(0.4).multiply(100).clamp(0, 100)
-        # Turbidity radiance ב-S3: טווח 0-150
-        turb_score  = ee.Image(150).subtract(turbidity).divide(150).multiply(100).clamp(0, 100)
+        # נרמול דינמי לפי percentile — מציג את ההבדלים האמיתיים בתמונה
+        stats = processed.select(["NDWI","Chl_proxy","Turbidity"]).updateMask(water_mask).reduceRegion(
+            reducer=ee.Reducer.percentile([5, 95]),
+            geometry=clip_geom,
+            scale=300,
+            bestEffort=True
+        ).getInfo()
+
+        ndwi_min  = stats.get("NDWI_p5",  -0.3)
+        ndwi_max  = stats.get("NDWI_p95",  0.3)
+        chl_min   = stats.get("Chl_proxy_p5",  -0.2)
+        chl_max   = stats.get("Chl_proxy_p95",  0.2)
+        turb_min  = stats.get("Turbidity_p5",   0)
+        turb_max  = stats.get("Turbidity_p95",  150)
+
+        ndwi_range  = max(ndwi_max  - ndwi_min,  0.01)
+        chl_range   = max(chl_max   - chl_min,   0.01)
+        turb_range  = max(turb_max  - turb_min,  1.0)
+
+        ndwi_score  = ndwi.subtract(ndwi_min).divide(ndwi_range).multiply(100).clamp(0, 100)
+        # כלורופיל — גבוה = רע (הופך)
+        chl_score   = ee.Image(chl_max).subtract(chl_proxy).divide(chl_range).multiply(100).clamp(0, 100)
+        # עכירות — גבוה = רע (הופך)
+        turb_score  = ee.Image(turb_max).subtract(turbidity).divide(turb_range).multiply(100).clamp(0, 100)
     else:
         ndwi_score  = ndwi.add(0.3).divide(1.1).multiply(100).clamp(0, 100)
         chl_score   = ee.Image(2.5).subtract(chl_proxy).divide(1.5).multiply(100).clamp(0, 100)
