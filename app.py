@@ -360,7 +360,32 @@ def load_data(wb_key: str, start_date: str, end_date: str):
     df["quality_label"] = df["quality_score"].map(quality_label)
     df["composite"]     = df.apply(composite_score, axis=1)
 
-    return df, image_date, processed, count
+    # ── פוליגוני פיקסלי מים לכל נקודה (לתצוגה ויזואלית) ──────────────────
+    def get_water_polygon(point):
+        """מחזיר GeoJSON של convex hull של פיקסלי המים ב-1km סביב הנקודה"""
+        try:
+            pt         = ee.Geometry.Point([point["lon"], point["lat"]])
+            buffer_1km = pt.buffer(1000)
+            ndwi_img   = processed.normalizedDifference(["B3", "B8"])
+            water_mask = ndwi_img.gt(0)
+
+            vectors = water_mask.updateMask(water_mask).reduceToVectors(
+                geometry=buffer_1km,
+                scale=20,
+                geometryType="polygon",
+                bestEffort=True,
+                maxPixels=1e6
+            )
+
+            # convex hull של כל הפוליגונים יחד
+            hull = vectors.geometry().convexHull(10)
+            return hull.getInfo()
+        except:
+            return None
+
+    water_polygons = [get_water_polygon(p) for p in snapped_points]
+
+    return df, image_date, processed, count, water_polygons
 
 # ==============================
 # מפת חום ברמת פיקסל
@@ -393,7 +418,7 @@ def get_heatmap_url(processed, clip_geom):
 # ==============================
 # בניית מפה
 # ==============================
-def build_map(df, image_date, processed, wb_key):
+def build_map(df, image_date, processed, wb_key, water_polygons=None):
     wb = WATER_BODIES[wb_key]
 
     m = folium.Map(
@@ -423,19 +448,23 @@ def build_map(df, image_date, processed, wb_key):
             overlay=True, opacity=0.75
         ).add_to(heatmap_group)
 
-    # אזורי דיגום — פוליגון עגול 1km, כחול חצי שקוף
-    for i, (_, row) in enumerate(df.iterrows(), 1):
-        color = SCORE_COLORS.get(row["quality_score"], "#888")
-        folium.Circle(
-            location=[row["lat"], row["lon"]],
-            radius=1000,                      # 1km — בדיוק כמו buffer_1km בחישוב
-            color="#1A6FBF",
-            weight=1.5,
-            fill=True,
-            fill_color="#3498DB",
-            fill_opacity=0.18,
-            tooltip=f"אזור דיגום {i} — {row['name']} (רדיוס 1km, מים בלבד)"
-        ).add_to(sampling_group)
+    # אזורי דיגום — פוליגון מדויק של פיקסלי המים שנלקחו בחישוב
+    if water_polygons:
+        for i, (_, row) in enumerate(df.iterrows(), 1):
+            geojson = water_polygons[i-1] if i-1 < len(water_polygons) else None
+            if geojson is None:
+                continue
+            folium.GeoJson(
+                geojson,
+                name=f"zone_{i}",
+                style_function=lambda x: {
+                    "fillColor":   "#3498DB",
+                    "color":       "#1A6FBF",
+                    "weight":      1.5,
+                    "fillOpacity": 0.25,
+                },
+                tooltip=f"אזור דיגום {i} — {row['name']} (פיקסלי מים בלבד, scale 20m)"
+            ).add_to(sampling_group)
 
     # נקודות דיגום
     for i, (_, row) in enumerate(df.iterrows(), 1):
@@ -570,7 +599,7 @@ end_date   = datetime.now().strftime("%Y-%m-%d")
 start_date = (datetime.now() - timedelta(days=wb["days_back"])).strftime("%Y-%m-%d")
 
 with st.spinner(f"🛰️ טוען נתוני לווין עבור {wb_key}..."):
-    df, image_date, processed, scene_count = load_data(wb_key, start_date, end_date)
+    df, image_date, processed, scene_count, water_polygons = load_data(wb_key, start_date, end_date)
 
 if df is None:
     st.error(
@@ -581,7 +610,7 @@ if df is None:
 
 # ── מפה + טבלה ───────────────────────────────────────────────────────────────
 with st.spinner("🌡️ מחשב מפת חום..."):
-    m = build_map(df, image_date, processed, wb_key)
+    m = build_map(df, image_date, processed, wb_key, water_polygons)
 
 map_col, table_col = st.columns([2, 1])
 
