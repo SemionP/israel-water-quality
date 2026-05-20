@@ -256,9 +256,13 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
 
     if sensor == "S3":
         # Sentinel-3 OLCI — 300m, מדדים ימיים ייעודיים
+        # S3 ב-GEE זמין עד סוף 2025 — נקבע end_date מקסימלי בהתאם
+        s3_end   = min(end_date, "2025-12-31")
+        s3_start = (datetime.strptime(s3_end, "%Y-%m-%d") - timedelta(days=180)).strftime("%Y-%m-%d")
+
         collection = (ee.ImageCollection("COPERNICUS/S3/OLCI")
                       .filterBounds(wb["bbox"])
-                      .filterDate(start_date, end_date))
+                      .filterDate(s3_start, s3_end))
 
         count = collection.size().getInfo()
         if count == 0:
@@ -269,17 +273,24 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
         ).format("YYYY-MM-dd").getInfo())
 
         def compute_indices_s3(image):
-            # S3 OLCI bands (nm): Oa04=490, Oa06=560, Oa08=665, Oa11=709, Oa17=865
-            green  = image.select("Oa06_radiance")   # 560nm
-            red    = image.select("Oa08_radiance")   # 665nm
-            rededge= image.select("Oa11_radiance")   # 709nm
-            nir    = image.select("Oa17_radiance")   # 865nm
+            # S3 OLCI — radiance גולמי (לא reflectance), צריך ratio ולא NDWI קלאסי
+            green   = image.select("Oa06_radiance")   # 560nm — ירוק
+            red     = image.select("Oa08_radiance")   # 665nm — אדום
+            rededge = image.select("Oa11_radiance")   # 709nm — red edge
+            nir     = image.select("Oa17_radiance")   # 865nm — NIR
 
+            # NDWI — עובד גם על radiance יחסי
             ndwi      = green.subtract(nir).divide(green.add(nir)).rename("NDWI")
-            chl_proxy = rededge.divide(red).rename("Chl_proxy")   # NDCI-like
+            # Chl_proxy — NDCI ימי (red edge vs red)
+            chl_proxy = rededge.subtract(red).divide(rededge.add(red)).rename("Chl_proxy")
+            # Turbidity — ערוץ אדום גולמי
             turbidity = red.rename("Turbidity")
+            # FAI — Floating Algae Index
             fai = (nir.subtract(red)
-                      .subtract(rededge.subtract(red).multiply((865-665)/(709-665)))
+                      .subtract(
+                          rededge.subtract(red)
+                          .multiply((865.0 - 665.0) / (709.0 - 665.0))
+                      )
                       .rename("FAI"))
             return image.addBands([ndwi, chl_proxy, turbidity, fai])
 
