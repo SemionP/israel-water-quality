@@ -708,18 +708,75 @@ sensor = st.radio(
 )
 sensor_key = "S3" if sensor.startswith("S3") else "S2"
 
-# ── טעינת נתונים ─────────────────────────────────────────────────────────────
-end_date   = datetime.now().strftime("%Y-%m-%d")
-start_date = (datetime.now() - timedelta(days=wb["days_back"])).strftime("%Y-%m-%d")
+# ── בחירת טווח תאריכים ───────────────────────────────────────────────────────
+with st.expander("📅 בחר טווח תאריכים", expanded=False):
+    today        = datetime.now().date()
+    min_date     = today - timedelta(days=365 * 3)
+    max_date     = today
+    default_days = wb["days_back"]
+    default_end  = today
+    default_start = today - timedelta(days=default_days)
 
+    col_cal1, col_cal2 = st.columns(2)
+    with col_cal1:
+        sel_start = st.date_input(
+            "תאריך התחלה",
+            value=default_start,
+            min_value=min_date,
+            max_value=max_date,
+            key=f"date_start_{wb_key}",
+        )
+    with col_cal2:
+        sel_end = st.date_input(
+            "תאריך סיום",
+            value=default_end,
+            min_value=min_date,
+            max_value=max_date,
+            key=f"date_end_{wb_key}",
+        )
+
+    # סליידר — מזיז את חלון הזמן תוך שמירה על הרוחב
+    st.markdown("**🎚️ הזזת חלון הזמן**")
+    total_days  = (max_date - min_date).days
+    window_days = max(1, (sel_end - sel_start).days)
+    slider_default = (sel_end - min_date).days
+
+    slider_val = st.slider(
+        "הזז את חלון הזמן לאחור / קדימה",
+        min_value=window_days,
+        max_value=total_days,
+        value=slider_default,
+        step=1,
+        key=f"date_slider_{wb_key}",
+        help="הסליידר שומר על רוחב הטווח שנבחר ומזיז אותו לאורך הציר הזמני",
+    )
+
+    slider_end   = min_date + timedelta(days=slider_val)
+    slider_start = slider_end - timedelta(days=window_days)
+
+    # סליידר גובר אם שונה מהקלנדר
+    if slider_end != sel_end:
+        sel_start = slider_start
+        sel_end   = slider_end
+
+    if sel_start >= sel_end:
+        st.error("⚠️ תאריך ההתחלה חייב להיות לפני תאריך הסיום")
+        st.stop()
+
+    st.info(f"📆 טווח נבחר: **{sel_start.strftime('%d/%m/%Y')}** עד **{sel_end.strftime('%d/%m/%Y')}** ({window_days} ימים)")
+
+start_date = sel_start.strftime("%Y-%m-%d")
+end_date   = sel_end.strftime("%Y-%m-%d")
+
+# ── טעינת נתונים ─────────────────────────────────────────────────────────────
 sensor_label = "Sentinel-3 OLCI" if sensor_key == "S3" else "Sentinel-2"
 with st.spinner(f"🛰️ טוען נתוני {sensor_label} עבור {wb_key}..."):
     df, image_date, processed, scene_count, water_polygons = load_data(wb_key, start_date, end_date, sensor_key)
 
 if df is None:
     st.error(
-        f"לא נמצאו תמונות {sensor_label} ב-{wb['days_back']} הימים האחרונים עבור {wb_key}. "
-        f"נסה להגדיל את מספר הימים."
+        f"לא נמצאו תמונות {sensor_label} בטווח {sel_start.strftime('%d/%m/%Y')} – {sel_end.strftime('%d/%m/%Y')} עבור {wb_key}. "
+        f"נסה להרחיב את טווח התאריכים."
     )
     st.stop()
 
