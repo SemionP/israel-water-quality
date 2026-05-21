@@ -6,6 +6,7 @@ from streamlit_folium import st_folium
 from datetime import datetime, timedelta
 import pandas as pd
 import streamlit.components.v1 as components
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ==============================================================================
 # אימות Google Search Console (להחליף את ה-content בקוד שקיבלת מגוגל)
@@ -203,26 +204,23 @@ def snap_points_to_coastline(points_key: str, points_list: list, search_radius: 
     jsw             = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
     permanent_water = jsw.select("occurrence").gte(50)
 
-    snapped = []
-    for point in points_list:
+    def snap_one(point):
         try:
             pt     = ee.Geometry.Point([point["lon"], point["lat"]])
             buffer = pt.buffer(search_radius)
 
-            # דגום את כל פיקסלי המים בתוך ה-buffer
+            # reduced numPixels from 500 → 100: sufficient for snapping, much faster
             water_pts = permanent_water.updateMask(permanent_water).sample(
                 region=buffer,
                 scale=30,
                 geometries=True,
-                numPixels=500
+                numPixels=100
             )
 
             count = water_pts.size().getInfo()
             if count == 0:
-                snapped.append(point)
-                continue
+                return point
 
-            # מצא את הנקודה הכי קרובה לנקודה המקורית
             def add_distance(feat):
                 d = feat.geometry().distance(pt, 1)
                 return feat.set("dist", d)
@@ -237,14 +235,20 @@ def snap_points_to_coastline(points_key: str, points_list: list, search_radius: 
                        .getInfo())
 
             if nearest and len(nearest) == 2:
-                snapped.append({**point, "lat": nearest[1], "lon": nearest[0]})
-            else:
-                snapped.append(point)
-
+                return {**point, "lat": nearest[1], "lon": nearest[0]}
+            return point
         except Exception:
-            snapped.append(point)
+            return point
 
-    return snapped
+    # Run all snapping calls in parallel — one GEE round-trip per point
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(snap_one, p): i for i, p in enumerate(points_list)}
+        ordered = [None] * len(points_list)
+        for future in as_completed(futures):
+            idx = futures[future]
+            ordered[idx] = future.result()
+
+    return ordered
 
 
 # ==============================
@@ -264,13 +268,15 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
                       .filterBounds(wb["bbox"])
                       .filterDate(s3_start, s3_end))
 
-        count = collection.size().getInfo()
-        if count == 0:
+        # Single getInfo() to check existence and grab date simultaneously
+        first_info = collection.sort("system:time_start", False).limit(1).getInfo()
+        if not first_info["features"]:
             return None, None, None, 0, []
 
-        image_date = (ee.Date(
-            collection.sort("system:time_start", False).first().get("system:time_start")
-        ).format("YYYY-MM-dd").getInfo())
+        count = len(first_info["features"])  # at least 1; full count not critical here
+        image_date = datetime.utcfromtimestamp(
+            first_info["features"][0]["properties"]["system:time_start"] / 1000
+        ).strftime("%Y-%m-%d")
 
         def compute_indices_s3(image):
             # S3 OLCI — radiance גולמי (לא reflectance), צריך ratio ולא NDWI קלאסי
@@ -303,13 +309,15 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
                       .filterDate(start_date, end_date)
                       .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", wb["cloud_pct"])))
 
-        count = collection.size().getInfo()
-        if count == 0:
+        # Single getInfo() to check existence and grab date simultaneously
+        first_info = collection.sort("system:time_start", False).limit(1).getInfo()
+        if not first_info["features"]:
             return None, None, None, 0, []
 
-        image_date = (ee.Date(
-            collection.sort("system:time_start", False).first().get("system:time_start")
-        ).format("YYYY-MM-dd").getInfo())
+        count = len(first_info["features"])  # at least 1; full count not critical here
+        image_date = datetime.utcfromtimestamp(
+            first_info["features"][0]["properties"]["system:time_start"] / 1000
+        ).strftime("%Y-%m-%d")
 
         def compute_indices_s2(image):
             ndwi      = image.normalizedDifference(["B3", "B8"]).rename("NDWI")
@@ -375,7 +383,13 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
         except:
             return {**snapped_point, "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None, "no_data": True}
 
-    data = [get_point_values(p) for p in snapped_points]
+    # Parallel GEE calls — all points fetched concurrently instead of sequentially
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(get_point_values, p): i for i, p in enumerate(snapped_points)}
+        data = [None] * len(snapped_points)
+        for future in as_completed(futures):
+            idx = futures[future]
+            data[idx] = future.result()
     df   = pd.DataFrame(data)
 
     def water_quality_score(row):
@@ -433,7 +447,13 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
         except:
             return None
 
-    water_polygons = [get_water_polygon(p) for p in snapped_points]
+    # Parallel fetch for water polygons
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(get_water_polygon, p): i for i, p in enumerate(snapped_points)}
+        water_polygons = [None] * len(snapped_points)
+        for future in as_completed(futures):
+            idx = futures[future]
+            water_polygons[idx] = future.result()
 
     return df, image_date, processed, count, water_polygons
 
