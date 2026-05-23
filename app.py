@@ -738,11 +738,11 @@ def build_map(df, image_date, processed, wb_key, water_polygons=None, sensor="S2
             f"</div>"
         )
         folium.Marker(
-            location=[row["lat"], row["lon"]+0.025],
+            location=[row["lat"], row["lon"]],
             icon=folium.DivIcon(
                 html=label_html,
                 icon_size=(120, 38),
-                icon_anchor=(0, 19)
+                icon_anchor=(-18, 19)
             )
         ).add_to(points_group)
 
