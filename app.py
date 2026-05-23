@@ -261,8 +261,8 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
     if sensor == "S3":
         # Sentinel-3 OLCI — 300m, מדדים ימיים ייעודיים
         # S3 ב-GEE זמין עד סוף 2025 — נקבע end_date מקסימלי בהתאם
-        s3_end   = min(end_date, "2025-12-31")
-        s3_start = (datetime.strptime(s3_end, "%Y-%m-%d") - timedelta(days=180)).strftime("%Y-%m-%d")
+        s3_end   = end_date
+        s3_start = start_date
 
         collection = (ee.ImageCollection("COPERNICUS/S3/OLCI")
                       .filterBounds(wb["bbox"])
