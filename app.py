@@ -261,8 +261,8 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
     if sensor == "S3":
         # Sentinel-3 OLCI — 300m, מדדים ימיים ייעודיים
         # S3 ב-GEE זמין עד סוף 2025 — נקבע end_date מקסימלי בהתאם
-        s3_end   = end_date
-        s3_start = start_date
+        s3_end   = min(end_date, "2025-12-31")
+        s3_start = (datetime.strptime(s3_end, "%Y-%m-%d") - timedelta(days=180)).strftime("%Y-%m-%d")
 
         collection = (ee.ImageCollection("COPERNICUS/S3/OLCI")
                       .filterBounds(wb["bbox"])
@@ -456,6 +456,118 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
             water_polygons[idx] = future.result()
 
     return df, image_date, processed, count, water_polygons
+
+
+# ==============================
+# שאילתה לנקודה произвольная במפה (click-to-query)
+# ==============================
+def query_clicked_point(lat: float, lon: float, wb_key: str,
+                        start_date: str, end_date: str, sensor: str) -> dict:
+    """
+    מקבל קואורדינטות שנלחצו על המפה ומחזיר ערכי מדדים מ-GEE.
+    בונה את ה-processed image מחדש (לא ניתן לסריאליזציה ב-cache).
+    """
+    wb = WATER_BODIES[wb_key]
+
+    if sensor == "S3":
+        s3_end   = min(end_date, "2025-12-31")
+        s3_start = (datetime.strptime(s3_end, "%Y-%m-%d") - timedelta(days=180)).strftime("%Y-%m-%d")
+
+        def compute_indices_s3(image):
+            green   = image.select("Oa06_radiance")
+            red     = image.select("Oa08_radiance")
+            rededge = image.select("Oa11_radiance")
+            nir     = image.select("Oa17_radiance")
+            ndwi      = green.subtract(nir).divide(green.add(nir)).rename("NDWI")
+            chl_proxy = rededge.subtract(red).divide(rededge.add(red)).rename("Chl_proxy")
+            turbidity = red.rename("Turbidity")
+            fai = (nir.subtract(red)
+                      .subtract(rededge.subtract(red).multiply((865.0-665.0)/(709.0-665.0)))
+                      .rename("FAI"))
+            return image.addBands([ndwi, chl_proxy, turbidity, fai])
+
+        collection = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                      .filterBounds(wb["bbox"])
+                      .filterDate(s3_start, s3_end))
+        processed = collection.map(compute_indices_s3).median()
+        scale = 300
+    else:
+        def compute_indices_s2(image):
+            ndwi      = image.normalizedDifference(["B3", "B8"]).rename("NDWI")
+            chl_proxy = image.select("B5").divide(image.select("B4")).rename("Chl_proxy")
+            turbidity = image.select("B4").rename("Turbidity")
+            fai = (image.select("B8")
+                   .subtract(image.select("B4"))
+                   .subtract(image.select("B11").subtract(image.select("B4"))
+                             .multiply((832-665)/(1610-665)))
+                   .rename("FAI"))
+            return image.addBands([ndwi, chl_proxy, turbidity, fai])
+
+        collection = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                      .filterBounds(wb["bbox"])
+                      .filterDate(start_date, end_date)
+                      .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", wb["cloud_pct"])))
+        processed = collection.map(compute_indices_s2).median()
+        scale = 10
+
+    pt     = ee.Geometry.Point([lon, lat])
+    buffer = pt.buffer(500 if sensor == "S2" else 2000)
+
+    try:
+        vals = processed.select(["NDWI", "Chl_proxy", "Turbidity", "FAI"]) \
+            .reduceRegion(
+                reducer=ee.Reducer.mean(),
+                geometry=buffer,
+                scale=scale,
+                bestEffort=True
+            ).getInfo()
+
+        if not vals or all(v is None for v in vals.values()):
+            return {"error": "אין נתוני לוויין בנקודה זו (אזור יבשה או ענן)"}
+
+        ndwi      = vals.get("NDWI")
+        chl_proxy = vals.get("Chl_proxy")
+        turbidity = vals.get("Turbidity")
+        fai       = vals.get("FAI")
+
+        # חישוב ציון מורכב
+        score, weights = 0, 0
+        if ndwi is not None:
+            score += min(100, max(0, (ndwi + 0.3) / 1.1 * 100)) * 0.4;  weights += 0.4
+        if chl_proxy is not None:
+            score += min(100, max(0, (2.5 - chl_proxy) / 1.5 * 100)) * 0.35; weights += 0.35
+        if turbidity is not None:
+            score += min(100, max(0, (1000 - turbidity) / 1000 * 100)) * 0.25; weights += 0.25
+        composite = round(score / weights, 1) if weights > 0 else None
+
+        quality_map = {
+            lambda s: s is None:      ("⬜ אין מידע",    "#AAAAAA"),
+            lambda s: s >= 80:        ("🟢 מצוין",       "#27AE60"),
+            lambda s: s >= 60:        ("🟡 טוב",         "#F1C40F"),
+            lambda s: s >= 40:        ("🟠 בינוני",      "#E67E22"),
+            lambda s: s >= 20:        ("🔴 ירוד",        "#E74C3C"),
+            lambda s: True:           ("⛔ גרוע",        "#8E44AD"),
+        }
+        quality_label, quality_color = "❓", "#888"
+        for condition, (label, color) in quality_map.items():
+            if condition(composite):
+                quality_label, quality_color = label, color
+                break
+
+        return {
+            "ndwi":          round(ndwi,      3) if ndwi      is not None else None,
+            "chl_proxy":     round(chl_proxy, 3) if chl_proxy is not None else None,
+            "turbidity":     round(turbidity, 1) if turbidity is not None else None,
+            "fai":           round(fai,       4) if fai       is not None else None,
+            "composite":     composite,
+            "quality_label": quality_label,
+            "quality_color": quality_color,
+            "lat":           round(lat, 5),
+            "lon":           round(lon, 5),
+        }
+    except Exception as e:
+        return {"error": f"שגיאה בקריאת GEE: {str(e)}"}
+
 
 # ==============================
 # מפת חום ברמת פיקסל — תואם S2 ו-S3
@@ -787,7 +899,7 @@ with st.spinner("🌡️ מחשב מפת חום..."):
 map_col, table_col = st.columns([2, 1])
 
 with map_col:
-    st_folium(m, width="100%", height=680)
+    map_data = st_folium(m, width="100%", height=680)
 
 with table_col:
     st.markdown(f"#### 📊 נתוני {wb_key} ({sensor_label})")
@@ -797,4 +909,63 @@ with table_col:
         lambda x: f"{int(round(x))}/100" if (x is not None and x == x) else "—"
     )
     st.dataframe(display_df, use_container_width=True, height=640)
+
+# ── לחיצה חופשית על המפה → שאילתת GEE ──────────────────────────────────────
+clicked = map_data.get("last_clicked") if map_data else None
+
+if clicked:
+    clat = clicked["lat"]
+    clon = clicked["lng"]
+
+    # בדוק אם זו לחיצה חדשה (אחרת לא מחשב שוב)
+    prev = st.session_state.get("last_click_coords")
+    if prev != (clat, clon):
+        st.session_state["last_click_coords"] = (clat, clon)
+        st.session_state["click_result"] = None   # מנקה תוצאה ישנה
+
+    st.divider()
+    st.markdown(f"### 📍 שאילתה חופשית — `{clat:.5f}, {clon:.5f}`")
+
+    # כפתור חישוב — משתמש לוחץ כדי לא לחשב בכל רענון
+    if st.button("🛰️ חשב ערכי לוויין בנקודה זו", type="primary"):
+        with st.spinner("שולח שאילתה ל-Google Earth Engine..."):
+            result = query_clicked_point(
+                clat, clon,
+                wb_key, start_date, end_date, sensor_key
+            )
+        st.session_state["click_result"] = result
+
+    # תצוגת תוצאה
+    result = st.session_state.get("click_result")
+    if result:
+        if "error" in result:
+            st.warning(result["error"])
+        else:
+            color = result["quality_color"]
+            comp  = f"{int(round(result['composite']))}/100" if result["composite"] is not None else "N/A"
+
+            # כרטיס תוצאה
+            st.markdown(
+                f"""<div style="background:#f8f9fa;border-radius:12px;padding:16px 20px;
+                    border-right:5px solid {color};direction:rtl;font-family:Arial;">
+                <b style="font-size:17px;">{result['quality_label']}</b>
+                <span style="font-size:22px;font-weight:bold;margin-right:12px;">⭐ {comp}</span>
+                <hr style="margin:10px 0;border:none;border-top:1px solid #ddd;">
+                <table style="width:100%;font-size:14px;border-collapse:collapse;">
+                <tr><td style="padding:5px 0;"><b>NDWI</b></td>
+                    <td style="padding:5px 0;">{result['ndwi'] if result['ndwi'] is not None else 'N/A'}</td>
+                    <td style="color:#888;font-size:12px;">גבוה = נקי יותר</td></tr>
+                <tr style="background:#f0f0f0;"><td style="padding:5px 4px;"><b>כלורופיל</b></td>
+                    <td style="padding:5px 4px;">{result['chl_proxy'] if result['chl_proxy'] is not None else 'N/A'}</td>
+                    <td style="color:#888;font-size:12px;">גבוה = אצות</td></tr>
+                <tr><td style="padding:5px 0;"><b>עכירות</b></td>
+                    <td style="padding:5px 0;">{result['turbidity'] if result['turbidity'] is not None else 'N/A'}</td>
+                    <td style="color:#888;font-size:12px;">גבוה = עכור</td></tr>
+                <tr style="background:#f0f0f0;"><td style="padding:5px 4px;"><b>FAI</b></td>
+                    <td style="padding:5px 4px;">{result['fai'] if result['fai'] is not None else 'N/A'}</td>
+                    <td style="color:#888;font-size:12px;">גבוה = אצות צפות</td></tr>
+                </table>
+                </div>""",
+                unsafe_allow_html=True
+            )
 
