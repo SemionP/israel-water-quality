@@ -727,11 +727,13 @@ def build_map(df, image_date, processed, wb_key, water_polygons=None, sensor="S2
         ).add_to(points_group)
 
         if not row["no_data"]:
+            verbal_labels = {1: "מצוין", 2: "טוב", 3: "בינוני", 4: "ירוד", 5: "גרוע"}
+            verbal = verbal_labels.get(row["quality_score"], "")
             folium.Marker(
                 location=[row["lat"], row["lon"]-0.02],
                 icon=folium.DivIcon(
-                    html=f"<div style='font-size:12px;font-weight:bold;background:rgba(255,255,255,0.92);padding:3px 7px;border-radius:5px;border-right:3px solid {color};white-space:nowrap;text-align:right;'>{comp}</div>",
-                    icon_size=(90,24), icon_anchor=(90,12))
+                    html=f"<div style='font-size:12px;font-weight:bold;background:rgba(255,255,255,0.92);padding:3px 7px;border-radius:5px;border-right:3px solid {color};white-space:nowrap;text-align:right;color:{color};'>{verbal}</div>",
+                    icon_size=(80,24), icon_anchor=(80,12))
             ).add_to(points_group)
 
     # כותרת תאריך
