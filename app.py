@@ -726,15 +726,25 @@ def build_map(df, image_date, processed, wb_key, water_polygons=None, sensor="S2
                 icon_size=(28,28), icon_anchor=(14,14))
         ).add_to(points_group)
 
-        if not row["no_data"]:
-            verbal_labels = {1: "מצוין", 2: "טוב", 3: "בינוני", 4: "ירוד", 5: "גרוע"}
-            verbal = verbal_labels.get(row["quality_score"], "")
-            folium.Marker(
-                location=[row["lat"], row["lon"]-0.02],
-                icon=folium.DivIcon(
-                    html=f"<div style='font-size:12px;font-weight:bold;background:transparent;padding:3px 7px;white-space:nowrap;text-align:right;color:{color};text-shadow:0 0 3px white,0 0 3px white;'>{verbal}</div>",
-                    icon_size=(80,24), icon_anchor=(80,12))
-            ).add_to(points_group)
+        verbal_labels = {1: "מצוין", 2: "טוב", 3: "בינוני", 4: "ירוד", 5: "גרוע"}
+        verbal = verbal_labels.get(row["quality_score"], "אין מידע") if not row["no_data"] else "אין מידע"
+        verbal_color = color if not row["no_data"] else "#AAAAAA"
+        label_html = (
+            f"<div style='white-space:nowrap;text-align:right;direction:rtl;line-height:1.3;'>"
+            f"<div style='font-size:10px;color:#333;font-weight:normal;"
+            f"text-shadow:0 0 3px white,0 0 3px white,0 0 3px white;'>{row['name']}</div>"
+            f"<div style='font-size:15px;font-weight:bold;color:{verbal_color};"
+            f"text-shadow:0 0 4px white,0 0 4px white,0 0 4px white;'>{verbal}</div>"
+            f"</div>"
+        )
+        folium.Marker(
+            location=[row["lat"], row["lon"]+0.025],
+            icon=folium.DivIcon(
+                html=label_html,
+                icon_size=(120, 38),
+                icon_anchor=(0, 19)
+            )
+        ).add_to(points_group)
 
     # כותרת תאריך
     date_html = f"""<div style="position:fixed;top:15px;left:50%;transform:translateX(-50%);z-index:1000;
