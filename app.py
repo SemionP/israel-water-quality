@@ -908,19 +908,330 @@ if df is None:
 with st.spinner("🌡️ מחשב מפת חום..."):
     m = build_map(df, image_date, processed, wb_key, water_polygons, sensor_key)
 
-map_col, table_col = st.columns([2, 1])
 
-with map_col:
-    map_data = st_folium(m, width="100%", height=680)
+# ── מפה (full width) ─────────────────────────────────────────────────────────
+map_data = st_folium(m, width="100%", height=680)
 
-with table_col:
-    st.markdown(f"#### 📊 נתוני {wb_key} ({sensor_label})")
-    display_df = df[["name", "composite", "quality_label"]].copy()
-    display_df.columns = ["נקודה", "ציון", "איכות"]
-    display_df["ציון"] = display_df["ציון"].apply(
-        lambda x: f"{int(round(x))}/100" if (x is not None and x == x) else "—"
+# ── sidebar: פאנל ניתוח חכם ─────────────────────────────────────────────────
+def _score_color(s):
+    if s is None:    return "#AAAAAA", "אין מידע"
+    if s >= 80:      return "#27AE60", "מצוין 🟢"
+    if s >= 60:      return "#F1C40F", "טוב 🟡"
+    if s >= 40:      return "#E67E22", "בינוני 🟠"
+    if s >= 20:      return "#E74C3C", "ירוד 🔴"
+    return           "#8E44AD",        "גרוע ⛔"
+
+def _anomaly_reasons(r):
+    reasons = []
+    if r.get("fai")       is not None and r["fai"]       > 0.02:  reasons.append("אצות צפות")
+    if r.get("chl_proxy") is not None and r["chl_proxy"] > 1.5:   reasons.append("כלורופיל גבוה")
+    if r.get("turbidity") is not None and r["turbidity"] > 500:   reasons.append("עכירות גבוהה")
+    if r.get("ndwi")      is not None and r["ndwi"]      < 0.05:  reasons.append("מגע יבשה/סחף")
+    return reasons if reasons else ["ערכים נמוכים"]
+
+def _card(bg, border_color, content_html):
+    return (
+        f"<div style='background:{bg};border-radius:10px;padding:12px 14px;"
+        f"margin-bottom:10px;direction:rtl;font-family:Arial;"
+        f"border-right:4px solid {border_color};'>{content_html}</div>"
     )
-    st.dataframe(display_df, use_container_width=True, height=640)
+
+valid_df   = df[df["no_data"] == False].copy()
+has_data   = len(valid_df) > 0
+anomalies  = valid_df[valid_df["composite"] < 50] if has_data else pd.DataFrame()
+avg_score  = valid_df["composite"].mean() if has_data else None
+avg_color, avg_label = _score_color(avg_score)
+
+# ── נשלוף זום מ-map_data (אחרי st_folium) ────────────────────────────────────
+# ברירת מחדל = זום ההתחלתי של גוף המים הנוכחי
+default_zoom = WATER_BODIES[wb_key]["zoom"]
+current_zoom = default_zoom
+if map_data and map_data.get("zoom"):
+    current_zoom = map_data["zoom"]
+
+if current_zoom <= 8:
+    zoom_level = "national"    # כל ישראל
+elif current_zoom <= 11:
+    zoom_level = "regional"    # אזור
+else:
+    zoom_level = "local"       # נקודה בודדת
+
+with st.sidebar:
+    st.markdown(
+        f"<div style='direction:rtl;font-family:Arial;'>"
+        f"<b style='font-size:16px;'>🌊 ניתוח מצב המים</b><br>"
+        f"<span style='font-size:12px;color:#888;'>{wb_key} · {image_date}</span>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+    st.markdown("---")
+
+    # ════════════════════════════════════════════════════════
+    # רמה 1 — כל ישראל (זום ≤ 8)
+    # ════════════════════════════════════════════════════════
+    if zoom_level == "national":
+        st.markdown("**🗺️ תצוגה ארצית**", help="זום ≤ 8")
+
+        if has_data:
+            st.markdown(
+                _card(
+                    "#f8f9fa", avg_color,
+                    f"<div style='font-size:12px;color:#666;'>ממוצע כלל החופים</div>"
+                    f"<div style='font-size:24px;font-weight:bold;color:{avg_color};'>{avg_label}</div>"
+                    f"<div style='font-size:15px;'>{int(round(avg_score))}/100</div>"
+                ),
+                unsafe_allow_html=True
+            )
+
+            # פס ציון ויזואלי
+            pct = int(round(avg_score))
+            st.markdown(
+                f"<div style='background:#eee;border-radius:6px;height:10px;margin-bottom:10px;'>"
+                f"<div style='background:{avg_color};width:{pct}%;height:10px;border-radius:6px;'></div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+            # סטטיסטיקות מהירות
+            n_excellent = len(valid_df[valid_df["composite"] >= 80])
+            n_good      = len(valid_df[(valid_df["composite"] >= 60) & (valid_df["composite"] < 80)])
+            n_bad       = len(valid_df[valid_df["composite"] < 40])
+
+            cols = st.columns(3)
+            cols[0].metric("🟢 מצוין", n_excellent)
+            cols[1].metric("🟡 טוב",   n_good)
+            cols[2].metric("🔴 ירוד+",  n_bad)
+
+            if len(anomalies) > 0:
+                st.markdown("**⚠️ אזורים חריגים**")
+                for _, r in anomalies.nsmallest(5, "composite").iterrows():
+                    reasons = _anomaly_reasons(r)
+                    sc = int(round(r["composite"])) if r["composite"] is not None else "—"
+                    rc, _ = _score_color(r["composite"])
+                    st.markdown(
+                        _card(
+                            "#fff8f8", rc,
+                            f"<b>{r['name']}</b> "
+                            f"<span style='color:{rc};font-weight:bold;'>({sc})</span><br>"
+                            f"<span style='font-size:12px;color:#666;'>{'  ·  '.join(reasons)}</span>"
+                        ),
+                        unsafe_allow_html=True
+                    )
+            else:
+                st.success("✅ אין חריגים — כל החופים מעל 50")
+
+            # ── AI ────────────────────────────────────────────────────────
+            st.markdown("---")
+            ai_key = f"ai_national_{wb_key}_{start_date}_{end_date}"
+            if st.button("🤖 ניתוח AI ארצי", key="ai_national"):
+                anomaly_str = ", ".join([
+                    f"{r['name']} ({int(round(r['composite']))}): {'|'.join(_anomaly_reasons(r))}"
+                    for _, r in anomalies.iterrows()
+                ]) if len(anomalies) > 0 else "אין"
+                summary = (
+                    f"נתוני איכות מים — {wb_key}, {image_date}\n"
+                    f"ממוצע: {avg_score:.1f}/100\n"
+                    f"חריגים (ציון<50): {anomaly_str}"
+                )
+                with st.spinner("מנתח..."):
+                    import requests as _req
+                    try:
+                        resp = _req.post(
+                            "https://api.anthropic.com/v1/messages",
+                            headers={"Content-Type": "application/json"},
+                            json={
+                                "model": "claude-sonnet-4-20250514",
+                                "max_tokens": 400,
+                                "system": "אתה מומחה לאיכות מים ימיים בישראל. ענה בעברית, 3-4 משפטים בלבד.",
+                                "messages": [{"role": "user", "content":
+                                    f"{summary}\n\nסכם: מה מצב חופי ישראל היום? האם יש דפוס גיאוגרפי? מה הסיבה הסבירה לחריגים?"}]
+                            }, timeout=30
+                        )
+                        st.session_state[ai_key] = resp.json()["content"][0]["text"]
+                    except Exception as e:
+                        st.session_state[ai_key] = f"שגיאה: {e}"
+            if st.session_state.get(ai_key):
+                st.markdown(
+                    _card("#f0f7ff", "#3498DB",
+                          f"<span style='font-size:13px;line-height:1.6;'>{st.session_state[ai_key]}</span>"),
+                    unsafe_allow_html=True
+                )
+
+    # ════════════════════════════════════════════════════════
+    # רמה 2 — אזורי (זום 9-11)
+    # ════════════════════════════════════════════════════════
+    elif zoom_level == "regional":
+        st.markdown("**🔍 תצוגה אזורית**", help="זום 9-11")
+
+        if has_data:
+            # מרכז המפה הנוכחי → נקודות בטווח
+            map_center = map_data.get("center") if map_data else None
+            if map_center:
+                clat_c, clon_c = map_center["lat"], map_center["lng"]
+                # מרחק פשוט בדרגות (~50km בזום אזורי)
+                radius_deg = 0.5
+                nearby = valid_df[
+                    (valid_df["lat"].between(clat_c - radius_deg, clat_c + radius_deg)) &
+                    (valid_df["lon"].between(clon_c - radius_deg, clon_c + radius_deg))
+                ]
+                if len(nearby) == 0:
+                    nearby = valid_df  # fallback
+            else:
+                nearby = valid_df
+
+            nearby_avg = nearby["composite"].mean()
+            nc, nl = _score_color(nearby_avg)
+            st.markdown(
+                _card("#f8f9fa", nc,
+                    f"<div style='font-size:12px;color:#666;'>ממוצע באזור הנוכחי</div>"
+                    f"<div style='font-size:22px;font-weight:bold;color:{nc};'>{nl}</div>"
+                    f"<div style='font-size:14px;'>{int(round(nearby_avg))}/100 · {len(nearby)} נקודות</div>"
+                ),
+                unsafe_allow_html=True
+            )
+
+            st.markdown("**📍 נקודות באזור**")
+            for _, r in nearby.sort_values("composite").iterrows():
+                sc = int(round(r["composite"])) if r["composite"] is not None else "—"
+                rc, rl = _score_color(r["composite"])
+                reasons = _anomaly_reasons(r) if r["composite"] < 50 else []
+                reason_str = f"<br><span style='font-size:11px;color:#888;'>{'  ·  '.join(reasons)}</span>" if reasons else ""
+                st.markdown(
+                    _card(
+                        "#f8f9fa", rc,
+                        f"<b>{r['name']}</b> — <span style='color:{rc};font-weight:bold;'>{rl.split()[0]} ({sc})</span>"
+                        f"{reason_str}"
+                    ),
+                    unsafe_allow_html=True
+                )
+
+            # ── AI ────────────────────────────────────────────────────────
+            st.markdown("---")
+            ai_key = f"ai_regional_{wb_key}_{start_date}_{end_date}_{int(clat_c*10) if map_center else 0}"
+            if st.button("🤖 ניתוח AI אזורי", key="ai_regional"):
+                summary = "\n".join([
+                    f"- {r['name']}: {int(round(r['composite']))}, FAI={r.get('fai','N/A')}, "
+                    f"כלורופיל={r.get('chl_proxy','N/A')}, עכירות={r.get('turbidity','N/A')}"
+                    for _, r in nearby.iterrows()
+                ])
+                with st.spinner("מנתח..."):
+                    import requests as _req
+                    try:
+                        resp = _req.post(
+                            "https://api.anthropic.com/v1/messages",
+                            headers={"Content-Type": "application/json"},
+                            json={
+                                "model": "claude-sonnet-4-20250514",
+                                "max_tokens": 400,
+                                "system": "אתה מומחה לאיכות מים ימיים בישראל. ענה בעברית, 3-4 משפטים.",
+                                "messages": [{"role": "user", "content":
+                                    f"נתוני האזור ({image_date}):\n{summary}\n\n"
+                                    f"מה מצב האזור? מה הסיבה לחריגים? האם יש מקורות זיהום סבירים?"}]
+                            }, timeout=30
+                        )
+                        st.session_state[ai_key] = resp.json()["content"][0]["text"]
+                    except Exception as e:
+                        st.session_state[ai_key] = f"שגיאה: {e}"
+            if st.session_state.get(ai_key):
+                st.markdown(
+                    _card("#f0f7ff", "#3498DB",
+                          f"<span style='font-size:13px;line-height:1.6;'>{st.session_state[ai_key]}</span>"),
+                    unsafe_allow_html=True
+                )
+
+    # ════════════════════════════════════════════════════════
+    # רמה 3 — נקודה בודדת (זום ≥ 12)
+    # ════════════════════════════════════════════════════════
+    else:
+        st.markdown("**📌 תצוגת נקודה**", help="זום ≥ 12")
+
+        # מצא נקודה הכי קרובה למרכז המפה
+        map_center = map_data.get("center") if map_data else None
+        if map_center and has_data:
+            clat_c, clon_c = map_center["lat"], map_center["lng"]
+            valid_df["_dist"] = ((valid_df["lat"] - clat_c)**2 + (valid_df["lon"] - clon_c)**2)**0.5
+            nearest = valid_df.loc[valid_df["_dist"].idxmin()]
+            rc, rl = _score_color(nearest["composite"])
+            sc = int(round(nearest["composite"])) if nearest["composite"] is not None else "—"
+
+            st.markdown(
+                _card("#f8f9fa", rc,
+                    f"<div style='font-size:13px;color:#666;'>נקודה קרובה למרכז המסך</div>"
+                    f"<div style='font-size:20px;font-weight:bold;'>{nearest['name']}</div>"
+                    f"<div style='font-size:22px;font-weight:bold;color:{rc};'>{rl} · {sc}/100</div>"
+                ),
+                unsafe_allow_html=True
+            )
+
+            # מדדים מפורטים
+            metrics = [
+                ("NDWI",       nearest.get("ndwi"),      "גבוה = נקי",      "{:.3f}"),
+                ("כלורופיל",   nearest.get("chl_proxy"), "גבוה = אצות",     "{:.3f}"),
+                ("עכירות",     nearest.get("turbidity"),  "גבוה = עכור",     "{:.0f}"),
+                ("FAI",        nearest.get("fai"),        "גבוה = אצות צפות","{:.4f}"),
+            ]
+            rows = ""
+            for name, val, hint, fmt in metrics:
+                val_str = fmt.format(val) if val is not None else "—"
+                rows += (
+                    f"<tr>"
+                    f"<td style='padding:5px 4px;font-weight:bold;'>{name}</td>"
+                    f"<td style='padding:5px 4px;'>{val_str}</td>"
+                    f"<td style='padding:5px 4px;color:#999;font-size:11px;'>{hint}</td>"
+                    f"</tr>"
+                )
+            st.markdown(
+                f"<table style='width:100%;font-size:13px;border-collapse:collapse;"
+                f"direction:rtl;font-family:Arial;'>{rows}</table>",
+                unsafe_allow_html=True
+            )
+
+            reasons = _anomaly_reasons(nearest) if nearest["composite"] < 50 else []
+            if reasons:
+                st.markdown(
+                    _card("#fff8f8", "#E74C3C",
+                          f"<b>⚠️ סיבות אפשריות:</b><br>"
+                          f"<span style='font-size:13px;'>{'<br>'.join(['• ' + r for r in reasons])}</span>"),
+                    unsafe_allow_html=True
+                )
+
+            # ── AI ────────────────────────────────────────────────────────
+            st.markdown("---")
+            ai_key = f"ai_local_{wb_key}_{nearest['name']}_{start_date}"
+            if st.button("🤖 ניתוח AI לנקודה", key="ai_local"):
+                with st.spinner("מנתח..."):
+                    import requests as _req
+                    try:
+                        resp = _req.post(
+                            "https://api.anthropic.com/v1/messages",
+                            headers={"Content-Type": "application/json"},
+                            json={
+                                "model": "claude-sonnet-4-20250514",
+                                "max_tokens": 400,
+                                "system": "אתה מומחה לאיכות מים ימיים בישראל. ענה בעברית, 3-4 משפטים.",
+                                "messages": [{"role": "user", "content":
+                                    f"נקודה: {nearest['name']} ({image_date})\n"
+                                    f"ציון: {sc}/100\n"
+                                    f"NDWI={nearest.get('ndwi','N/A')}, כלורופיל={nearest.get('chl_proxy','N/A')}, "
+                                    f"עכירות={nearest.get('turbidity','N/A')}, FAI={nearest.get('fai','N/A')}\n\n"
+                                    f"מה מצב הים בנקודה זו? מה הסיבה הסבירה לערכים? האם בטוח לרחצה?"}]
+                            }, timeout=30
+                        )
+                        st.session_state[ai_key] = resp.json()["content"][0]["text"]
+                    except Exception as e:
+                        st.session_state[ai_key] = f"שגיאה: {e}"
+            if st.session_state.get(ai_key):
+                st.markdown(
+                    _card("#f0f7ff", "#3498DB",
+                          f"<span style='font-size:13px;line-height:1.6;'>{st.session_state[ai_key]}</span>"),
+                    unsafe_allow_html=True
+                )
+        else:
+            st.info("הזז את המפה לאזור שברצונך לבדוק")
+
+    st.markdown("---")
+    st.caption(f"🔍 זום נוכחי: {current_zoom} · {zoom_level}")
+
 
 # ── לחיצה חופשית על המפה → שאילתת GEE ──────────────────────────────────────
 clicked = map_data.get("last_clicked") if map_data else None
