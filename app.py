@@ -936,6 +936,97 @@ def _card(bg, border_color, content_html):
         f"border-right:4px solid {border_color};'>{content_html}</div>"
     )
 
+def _legend_card(zoom_level, data_row=None):
+    """
+    מקרא תמציתי: שקיפות / אצות / סכנה בריאותית.
+    data_row — שורת pandas עם ndwi, chl_proxy, fai, turbidity (או None לתצוגה ארצית/אזורית כללית).
+    מחזיר HTML string.
+    """
+
+    # ── פרשנות שקיפות (NDWI / Turbidity) ─────────────────────────────────────
+    if data_row is not None:
+        ndwi      = data_row.get("ndwi")
+        turbidity = data_row.get("turbidity")
+        chl       = data_row.get("chl_proxy")
+        fai       = data_row.get("fai")
+    else:
+        ndwi = turbidity = chl = fai = None
+
+    # שקיפות
+    if ndwi is not None and turbidity is not None:
+        if ndwi > 0.25 and turbidity < 200:
+            transp_color, transp_icon, transp_text = "#27AE60", "💧", "מים שקופים — נראות טובה"
+        elif ndwi > 0.1 or turbidity < 500:
+            transp_color, transp_icon, transp_text = "#F1C40F", "🌊", "עכירות בינונית — ראות חלקית"
+        else:
+            transp_color, transp_icon, transp_text = "#E74C3C", "🟤", "מים עכורים — ראות ירודה"
+    else:
+        transp_color, transp_icon, transp_text = "#AAAAAA", "❓", "אין מידע על שקיפות"
+
+    # אצות
+    if chl is not None and fai is not None:
+        if fai > 0.02 or chl > 1.8:
+            algae_color, algae_icon, algae_text = "#E74C3C", "🦠", "ריכוז אצות גבוה — פריחה אפשרית"
+        elif fai > 0.005 or chl > 1.3:
+            algae_color, algae_icon, algae_text = "#E67E22", "🌿", "אצות מתונות — תנאים רגילים"
+        else:
+            algae_color, algae_icon, algae_text = "#27AE60", "✅", "כמות אצות נמוכה — תקין"
+    elif chl is not None:
+        if chl > 1.8:
+            algae_color, algae_icon, algae_text = "#E74C3C", "🦠", "כלורופיל גבוה — אצות סבירות"
+        elif chl > 1.3:
+            algae_color, algae_icon, algae_text = "#E67E22", "🌿", "כלורופיל מתון"
+        else:
+            algae_color, algae_icon, algae_text = "#27AE60", "✅", "כלורופיל תקין"
+    else:
+        algae_color, algae_icon, algae_text = "#AAAAAA", "❓", "אין מידע על אצות"
+
+    # סכנה בריאותית — מבוסס על שילוב FAI + Chl
+    if fai is not None and chl is not None:
+        if fai > 0.02 and chl > 1.8:
+            health_color, health_icon, health_text = "#8E44AD", "⛔", "סכנה — אל תיכנס למים"
+        elif fai > 0.02 or chl > 1.8:
+            health_color, health_icon, health_text = "#E74C3C", "⚠️", "זהירות — אצות מזיקות אפשריות"
+        elif chl > 1.3:
+            health_color, health_icon, health_text = "#E67E22", "🟠", "נוח לרחצה — מעקב מומלץ"
+        else:
+            health_color, health_icon, health_text = "#27AE60", "🏊", "בטוח לרחצה"
+    else:
+        health_color, health_icon, health_text = "#AAAAAA", "❓", "לא ניתן להעריך"
+
+    zoom_label = {
+        "national": "ממוצע ארצי",
+        "regional": "ממוצע אזורי",
+        "local":    "נקודה זו",
+    }.get(zoom_level, "")
+
+    rows = (
+        f"<tr>"
+        f"<td style='padding:5px 3px;font-size:17px;'>{transp_icon}</td>"
+        f"<td style='padding:5px 3px;font-weight:bold;font-size:12px;color:#444;'>שקיפות</td>"
+        f"<td style='padding:5px 3px;font-size:12px;color:{transp_color};font-weight:bold;'>{transp_text}</td>"
+        f"</tr>"
+        f"<tr style='background:#f7f7f7;'>"
+        f"<td style='padding:5px 3px;font-size:17px;'>{algae_icon}</td>"
+        f"<td style='padding:5px 3px;font-weight:bold;font-size:12px;color:#444;'>אצות</td>"
+        f"<td style='padding:5px 3px;font-size:12px;color:{algae_color};font-weight:bold;'>{algae_text}</td>"
+        f"</tr>"
+        f"<tr>"
+        f"<td style='padding:5px 3px;font-size:17px;'>{health_icon}</td>"
+        f"<td style='padding:5px 3px;font-weight:bold;font-size:12px;color:#444;'>רחצה</td>"
+        f"<td style='padding:5px 3px;font-size:12px;color:{health_color};font-weight:bold;'>{health_text}</td>"
+        f"</tr>"
+    )
+
+    return (
+        f"<div style='background:#fafafa;border-radius:10px;padding:10px 12px;"
+        f"margin-top:6px;margin-bottom:10px;direction:rtl;font-family:Arial;"
+        f"border:1px solid #e0e0e0;'>"
+        f"<div style='font-size:11px;color:#999;margin-bottom:6px;'>📋 מקרא מצב — {zoom_label}</div>"
+        f"<table style='width:100%;border-collapse:collapse;'>{rows}</table>"
+        f"</div>"
+    )
+
 valid_df   = df[df["no_data"] == False].copy()
 has_data   = len(valid_df) > 0
 anomalies  = valid_df[valid_df["composite"] < 50] if has_data else pd.DataFrame()
@@ -1057,6 +1148,17 @@ with st.sidebar:
                     unsafe_allow_html=True
                 )
 
+            # ── מקרא מצב — ממוצע ארצי ────────────────────────────────────────
+            st.markdown("---")
+            # בנה שורה ממוצעת לפרשנות המקרא
+            avg_row = {
+                "ndwi":      valid_df["ndwi"].mean()      if "ndwi"      in valid_df else None,
+                "chl_proxy": valid_df["chl_proxy"].mean() if "chl_proxy" in valid_df else None,
+                "turbidity": valid_df["turbidity"].mean() if "turbidity" in valid_df else None,
+                "fai":       valid_df["fai"].mean()       if "fai"       in valid_df else None,
+            }
+            st.markdown(_legend_card("national", avg_row), unsafe_allow_html=True)
+
     # ════════════════════════════════════════════════════════
     # רמה 2 — אזורי (זום 9-11)
     # ════════════════════════════════════════════════════════
@@ -1139,6 +1241,16 @@ with st.sidebar:
                     unsafe_allow_html=True
                 )
 
+            # ── מקרא מצב — ממוצע אזורי ───────────────────────────────────────
+            st.markdown("---")
+            nearby_row = {
+                "ndwi":      nearby["ndwi"].mean()      if "ndwi"      in nearby else None,
+                "chl_proxy": nearby["chl_proxy"].mean() if "chl_proxy" in nearby else None,
+                "turbidity": nearby["turbidity"].mean() if "turbidity" in nearby else None,
+                "fai":       nearby["fai"].mean()       if "fai"       in nearby else None,
+            }
+            st.markdown(_legend_card("regional", nearby_row), unsafe_allow_html=True)
+
     # ════════════════════════════════════════════════════════
     # רמה 3 — נקודה בודדת (זום ≥ 12)
     # ════════════════════════════════════════════════════════
@@ -1194,6 +1306,9 @@ with st.sidebar:
                           f"<span style='font-size:13px;'>{'<br>'.join(['• ' + r for r in reasons])}</span>"),
                     unsafe_allow_html=True
                 )
+
+            # ── מקרא מצב — נקודה ─────────────────────────────────────────────
+            st.markdown(_legend_card("local", nearest), unsafe_allow_html=True)
 
             # ── AI ────────────────────────────────────────────────────────
             st.markdown("---")
