@@ -148,8 +148,11 @@ WATER_BODIES = {
         "sensor":    "S2",      # Sentinel-2 (10m)
         "cloud_pct": 20,
         "days_back": 90,
+        "days_back_s1": 30,     # S1 חוזר כל 6 ימים — טווח קצר מספיק
         "note":      None,
+        "note_s1":   "🛢️ S1 SAR — זיהוי שמן/זיהום לפי dark spots ב-VV backscatter. עובד בכל מזג אוויר ובלילה.",
         "indices":   ["NDWI", "Chl_proxy", "Turbidity", "FAI"],
+        "indices_s1":["VV", "VH", "VV_VH_ratio", "Roughness"],
     },
     "🌊 כנרת": {
         "center":    KINNERET_CENTER,
@@ -160,8 +163,11 @@ WATER_BODIES = {
         "sensor":    "S2",
         "cloud_pct": 10,        # כנרת קטנה — בעיות ענן קריטיות יותר
         "days_back": 60,
+        "days_back_s1": 30,
         "note":      "⚠️ ב-10m רזולוציה הכנרת מכוסה היטב. שים לב לפריחות אצות בקיץ (NDCI גבוה).",
+        "note_s1":   "🛢️ S1 SAR — זיהוי שמן/זיהום ע\"ג מי הכנרת. VV backscatter נמוך = חשד לזיהום.",
         "indices":   ["NDWI", "Chl_proxy", "Turbidity", "FAI"],
+        "indices_s1":["VV", "VH", "VV_VH_ratio", "Roughness"],
     },
     "🧂 ים המלח": {
         "center":    DEAD_SEA_CENTER,
@@ -172,8 +178,11 @@ WATER_BODIES = {
         "sensor":    "S2",
         "cloud_pct": 20,
         "days_back": 90,
+        "days_back_s1": 30,
         "note":      "⚠️ מלוחות קיצונית — מדדי כלורופיל ועכירות אינם קלינריים. FAI מזהה Dunaliella salina (אצה ורודה). השתמש בציונים כ'אנומליה' בלבד.",
+        "note_s1":   "🛢️ S1 SAR — מלוחות גבוהה ומשטחי אדיפה משפיעים על backscatter. VV/VH ratio מזהה אנומליות פני שטח.",
         "indices":   ["NDWI", "FAI", "Turbidity"],   # Chl_proxy פחות רלוונטי
+        "indices_s1":["VV", "VH", "VV_VH_ratio", "Roughness"],
     },
     "🐠 ים סוף": {
         "center":    RED_SEA_CENTER,
@@ -184,8 +193,11 @@ WATER_BODIES = {
         "sensor":    "S2",
         "cloud_pct": 10,        # נדיר שיש עננים, אבל נשמר להגדרה עקבית
         "days_back": 120,       # אוליגוטרופי — צריך יותר תמונות
+        "days_back_s1": 30,
         "note":      "💡 מים אוליגוטרופיים (כלורופיל נמוך מאוד ~0.05 mg/m³). הרחב את טווח התאריכים אם אין תמונות ברורות. שים לב לסחף אבק מהסיני.",
+        "note_s1":   "🛢️ S1 SAR — מים אוליגוטרופיים שקטים מראים VV נמוך טבעי. dark spots ב-VV = חשד לשמן מספינות.",
         "indices":   ["NDWI", "Chl_proxy", "Turbidity"],
+        "indices_s1":["VV", "VH", "VV_VH_ratio", "Roughness"],
     },
 }
 
@@ -258,7 +270,48 @@ def snap_points_to_coastline(points_key: str, points_list: list, search_radius: 
 def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
     wb = WATER_BODIES[wb_key]
 
-    if sensor == "S3":
+    if sensor == "S1":
+        # Sentinel-1 GRD SAR — 10m, זיהוי שמן/זיהום לפי VV backscatter
+        collection = (ee.ImageCollection("COPERNICUS/S1_GRD")
+                      .filterBounds(wb["bbox"])
+                      .filterDate(start_date, end_date)
+                      .filter(ee.Filter.eq("instrumentMode", "IW"))
+                      .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VV"))
+                      .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VH"))
+                      .filter(ee.Filter.eq("orbitProperties_pass", "DESCENDING")))
+
+        first_info = collection.sort("system:time_start", False).limit(1).getInfo()
+        if not first_info["features"]:
+            # נסה גם ascending אם descending ריק
+            collection = (ee.ImageCollection("COPERNICUS/S1_GRD")
+                          .filterBounds(wb["bbox"])
+                          .filterDate(start_date, end_date)
+                          .filter(ee.Filter.eq("instrumentMode", "IW"))
+                          .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VV"))
+                          .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VH")))
+            first_info = collection.sort("system:time_start", False).limit(1).getInfo()
+            if not first_info["features"]:
+                return None, None, None, 0, []
+
+        count = len(first_info["features"])
+        image_date = datetime.utcfromtimestamp(
+            first_info["features"][0]["properties"]["system:time_start"] / 1000
+        ).strftime("%Y-%m-%d")
+
+        def compute_indices_s1(image):
+            vv = image.select("VV")  # dB
+            vh = image.select("VH")  # dB
+            # VV/VH ratio (linear) — oil spill מוריד VV יותר מ-VH
+            vv_lin    = ee.Image(10).pow(vv.divide(10))
+            vh_lin    = ee.Image(10).pow(vh.divide(10))
+            ratio     = vv_lin.divide(vh_lin.add(1e-10)).rename("VV_VH_ratio")
+            # Roughness proxy — VV normalized
+            roughness = vv.add(25).divide(25).clamp(-1, 1).rename("Roughness")
+            return image.addBands([vv.rename("VV"), vh.rename("VH"), ratio, roughness])
+
+        processed = collection.map(compute_indices_s1).median()
+
+    elif sensor == "S3":
         # Sentinel-3 OLCI — 300m, מדדים ימיים ייעודיים
         # S3 ב-GEE זמין עד סוף 2025 — נקבע end_date מקסימלי בהתאם
         s3_end   = end_date
@@ -336,52 +389,86 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
     snapped_points = snap_points_to_coastline(wb_key, wb["points"])
 
     # רזולוציה לפי סנסור
-    scale = 300 if sensor == "S3" else 10
+    scale = 300 if sensor == "S3" else 10  # S1 ו-S2 שניהם 10m
 
     def get_point_values(point):
         snapped_point = point
         pt         = ee.Geometry.Point([point["lon"], point["lat"]])
-        buffer_1km = pt.buffer(1000 if sensor == "S2" else 5000)  # S3=300m → buffer גדול יותר
+        buffer_1km = pt.buffer(1000 if sensor in ("S1", "S2") else 5000)
         try:
-            # השתמש ב-NDWI שכבר חושב בתוך processed
-            ndwi_img   = processed.select("NDWI")
-            # S3 radiance — NDWI יכול להיות שלילי גם על מים, רף נמוך יותר
-            ndwi_thresh = -0.1 if sensor == "S3" else 0.0
-            water_mask  = ndwi_img.gt(ndwi_thresh)
+            if sensor == "S1":
+                # S1 SAR — אין NDWI; משתמשים ב-VV כמסכת מים (מים → VV נמוך מאוד)
+                vv_img     = processed.select("VV")
+                water_mask = vv_img.lt(-10)   # threshold: VV < -10 dB = מים/גלישה שמן
+                s1_bands   = ["VV", "VH", "VV_VH_ratio", "Roughness"]
+                selected   = processed.select(s1_bands).updateMask(water_mask)
 
-            distance_img = ee.Image(0).paint(
-                featureCollection=ee.FeatureCollection([ee.Feature(pt)]),
-                color=1
-            ).fastDistanceTransform().sqrt().multiply(scale)
+                vals_raw = selected.reduceRegion(
+                    reducer=ee.Reducer.mean(), geometry=buffer_1km, scale=10, bestEffort=True
+                ).getInfo()
 
-            max_dist      = 1000 if sensor == "S2" else 5000
-            weight        = ee.Image(max_dist).subtract(distance_img).divide(max_dist).max(0)
-            weight_masked = weight.updateMask(water_mask)
-            selected      = processed.select(["NDWI","Chl_proxy","Turbidity","FAI"]).updateMask(water_mask)
+                vv_val    = vals_raw.get("VV")
+                vh_val    = vals_raw.get("VH")
+                ratio_val = vals_raw.get("VV_VH_ratio")
+                rough_val = vals_raw.get("Roughness")
 
-            weighted_sum = selected.multiply(weight_masked).reduceRegion(
-                reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=scale, bestEffort=True).getInfo()
-            weight_sum = weight_masked.reduceRegion(
-                reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=scale, bestEffort=True).getInfo()
+                if all(v is None for v in [vv_val, vh_val, ratio_val, rough_val]):
+                    return {**snapped_point,
+                            "vv": None, "vh": None, "vv_vh_ratio": None, "roughness": None,
+                            "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None,
+                            "no_data": True}
+                return {**snapped_point,
+                        "vv":         round(vv_val,    2) if vv_val    is not None else None,
+                        "vh":         round(vh_val,    2) if vh_val    is not None else None,
+                        "vv_vh_ratio":round(ratio_val, 3) if ratio_val is not None else None,
+                        "roughness":  round(rough_val, 3) if rough_val is not None else None,
+                        "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None,
+                        "no_data": False}
+            else:
+                # ── S2 / S3 — הלוגיקה המקורית ────────────────────────────────
+                ndwi_img   = processed.select("NDWI")
+                ndwi_thresh = -0.1 if sensor == "S3" else 0.0
+                water_mask  = ndwi_img.gt(ndwi_thresh)
 
-            def wm(band):
-                ws = weighted_sum.get(band)
-                wt = weight_sum.get("constant")
-                if ws is None or wt is None or wt == 0: return None
-                return ws / wt
+                distance_img = ee.Image(0).paint(
+                    featureCollection=ee.FeatureCollection([ee.Feature(pt)]),
+                    color=1
+                ).fastDistanceTransform().sqrt().multiply(scale)
 
-            vals = {k: wm(k) for k in ["NDWI","Chl_proxy","Turbidity","FAI"]}
-            if all(v is None for v in vals.values()):
-                return {**snapped_point, **{k: None for k in vals}, "no_data": True}
+                max_dist      = 1000 if sensor == "S2" else 5000
+                weight        = ee.Image(max_dist).subtract(distance_img).divide(max_dist).max(0)
+                weight_masked = weight.updateMask(water_mask)
+                selected      = processed.select(["NDWI","Chl_proxy","Turbidity","FAI"]).updateMask(water_mask)
 
-            return {**snapped_point,
-                    "ndwi":      round(vals["NDWI"],      3) if vals["NDWI"]      is not None else None,
-                    "chl_proxy": round(vals["Chl_proxy"], 3) if vals["Chl_proxy"] is not None else None,
-                    "turbidity": round(vals["Turbidity"], 1) if vals["Turbidity"] is not None else None,
-                    "fai":       round(vals["FAI"],       4) if vals["FAI"]       is not None else None,
-                    "no_data": False}
+                weighted_sum = selected.multiply(weight_masked).reduceRegion(
+                    reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=scale, bestEffort=True).getInfo()
+                weight_sum = weight_masked.reduceRegion(
+                    reducer=ee.Reducer.sum(), geometry=buffer_1km, scale=scale, bestEffort=True).getInfo()
+
+                def wm(band):
+                    ws = weighted_sum.get(band)
+                    wt = weight_sum.get("constant")
+                    if ws is None or wt is None or wt == 0: return None
+                    return ws / wt
+
+                vals = {k: wm(k) for k in ["NDWI","Chl_proxy","Turbidity","FAI"]}
+                if all(v is None for v in vals.values()):
+                    return {**snapped_point,
+                            "vv": None, "vh": None, "vv_vh_ratio": None, "roughness": None,
+                            **{k: None for k in vals}, "no_data": True}
+
+                return {**snapped_point,
+                        "vv": None, "vh": None, "vv_vh_ratio": None, "roughness": None,
+                        "ndwi":      round(vals["NDWI"],      3) if vals["NDWI"]      is not None else None,
+                        "chl_proxy": round(vals["Chl_proxy"], 3) if vals["Chl_proxy"] is not None else None,
+                        "turbidity": round(vals["Turbidity"], 1) if vals["Turbidity"] is not None else None,
+                        "fai":       round(vals["FAI"],       4) if vals["FAI"]       is not None else None,
+                        "no_data": False}
         except:
-            return {**snapped_point, "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None, "no_data": True}
+            return {**snapped_point,
+                    "vv": None, "vh": None, "vv_vh_ratio": None, "roughness": None,
+                    "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None,
+                    "no_data": True}
 
     # Parallel GEE calls — all points fetched concurrently instead of sequentially
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -394,6 +481,18 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
 
     def water_quality_score(row):
         if row["no_data"]: return 0
+        if sensor == "S1":
+            # S1: VV נמוך מאוד = מים חלקים = חשד לשמן
+            score = 1  # התחלה: "מצוין" — נקי עד שיש ראיה אחרת
+            vv = row.get("vv")
+            ratio = row.get("vv_vh_ratio")
+            if vv is not None:
+                if vv < -20:   score += 3  # dark spot חזק — שמן/זיהום
+                elif vv < -15: score += 1  # dark spot קל — חשד
+            if ratio is not None:
+                if ratio < 1.5: score += 1  # ratio נמוך = surface damping
+            return max(1, min(5, score))
+        # S2 / S3 — לוגיקה מקורית
         score = 3
         if row["ndwi"] is not None:
             if row["ndwi"] > 0.3:    score -= 1
@@ -407,11 +506,33 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
         return max(1, min(5, score))
 
     def quality_label(score):
+        if sensor == "S1":
+            return {0:"⬜ אין מידע", 1:"🟢 נקי", 2:"🟡 חשד קל",
+                    3:"🟠 חשד זיהום", 4:"🔴 זיהום סביר", 5:"⛔ זיהום חמור"}.get(score, "❓")
         return {0:"⬜ אין מידע", 1:"🟢 מצוין", 2:"🟡 טוב",
                 3:"🟠 בינוני",  4:"🔴 ירוד",  5:"⛔ גרוע"}.get(score, "❓")
 
     def composite_score(row):
         if row["no_data"]: return None
+        if sensor == "S1":
+            # ציון S1: 100 = נקי לחלוטין, 0 = זיהום חמור
+            score, weights = 0, 0
+            vv = row.get("vv")
+            ratio = row.get("vv_vh_ratio")
+            rough = row.get("roughness")
+            if vv is not None:
+                # VV טיפוסי למים נקיים: -12 עד -8 dB; שמן: מתחת ל-20
+                vv_score = min(100, max(0, (vv + 25) / 15 * 100))
+                score += vv_score * 0.5; weights += 0.5
+            if ratio is not None:
+                # ratio נורמלי: 2-5; נמוך מ-1.5 = damping
+                ratio_score = min(100, max(0, (ratio - 1) / 4 * 100))
+                score += ratio_score * 0.35; weights += 0.35
+            if rough is not None:
+                rough_score = min(100, max(0, (rough + 1) / 2 * 100))
+                score += rough_score * 0.15; weights += 0.15
+            return round(score / weights, 1) if weights > 0 else None
+        # S2 / S3
         score, weights = 0, 0
         if row["ndwi"] is not None:
             score += min(100, max(0, (row["ndwi"]+0.3)/1.1*100)) * 0.4;  weights += 0.4
@@ -429,15 +550,21 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
     def get_water_polygon(point):
         """מחזיר GeoJSON של convex hull של פיקסלי המים ב-buffer סביב הנקודה"""
         try:
-            pt         = ee.Geometry.Point([point["lon"], point["lat"]])
-            buf        = pt.buffer(1000 if sensor == "S2" else 5000)
-            ndwi_img   = processed.select("NDWI")
-            ndwi_thresh = -0.1 if sensor == "S3" else 0.0
-            water_mask = ndwi_img.gt(ndwi_thresh)
+            pt  = ee.Geometry.Point([point["lon"], point["lat"]])
+            buf = pt.buffer(1000 if sensor in ("S1", "S2") else 5000)
+            if sensor == "S1":
+                # S1: מים לפי VV < -10 dB
+                water_mask = processed.select("VV").lt(-10)
+                poly_scale = 20
+            else:
+                ndwi_img    = processed.select("NDWI")
+                ndwi_thresh = -0.1 if sensor == "S3" else 0.0
+                water_mask  = ndwi_img.gt(ndwi_thresh)
+                poly_scale  = 300 if sensor == "S3" else 20
 
             vectors = water_mask.updateMask(water_mask).reduceToVectors(
                 geometry=buf,
-                scale=300 if sensor == "S3" else 20,
+                scale=poly_scale,
                 geometryType="polygon",
                 bestEffort=True,
                 maxPixels=1e6
@@ -469,7 +596,26 @@ def query_clicked_point(lat: float, lon: float, wb_key: str,
     """
     wb = WATER_BODIES[wb_key]
 
-    if sensor == "S3":
+    if sensor == "S1":
+        def compute_indices_s1_click(image):
+            vv = image.select("VV")
+            vh = image.select("VH")
+            vv_lin = ee.Image(10).pow(vv.divide(10))
+            vh_lin = ee.Image(10).pow(vh.divide(10))
+            ratio  = vv_lin.divide(vh_lin.add(1e-10)).rename("VV_VH_ratio")
+            rough  = vv.add(25).divide(25).clamp(-1, 1).rename("Roughness")
+            return image.addBands([vv.rename("VV"), vh.rename("VH"), ratio, rough])
+
+        collection = (ee.ImageCollection("COPERNICUS/S1_GRD")
+                      .filterBounds(wb["bbox"])
+                      .filterDate(start_date, end_date)
+                      .filter(ee.Filter.eq("instrumentMode", "IW"))
+                      .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VV"))
+                      .filter(ee.Filter.listContains("transmitterReceiverPolarisation", "VH")))
+        processed = collection.map(compute_indices_s1_click).median()
+        scale = 10
+
+    elif sensor == "S3":
         s3_end   = end_date
         s3_start = start_date
 
@@ -511,11 +657,62 @@ def query_clicked_point(lat: float, lon: float, wb_key: str,
         scale = 10
 
     pt     = ee.Geometry.Point([lon, lat])
-    buffer = pt.buffer(500 if sensor == "S2" else 2000)
+    buffer = pt.buffer(500 if sensor in ("S1", "S2") else 2000)
 
     try:
-        vals = processed.select(["NDWI", "Chl_proxy", "Turbidity", "FAI"]) \
-            .reduceRegion(
+        if sensor == "S1":
+            vals = processed.select(["VV", "VH", "VV_VH_ratio", "Roughness"])                 .reduceRegion(reducer=ee.Reducer.mean(), geometry=buffer, scale=10, bestEffort=True).getInfo()
+
+            if not vals or all(v is None for v in vals.values()):
+                return {"error": "אין נתוני S1 בנקודה זו"}
+
+            vv_v    = vals.get("VV")
+            vh_v    = vals.get("VH")
+            ratio_v = vals.get("VV_VH_ratio")
+            rough_v = vals.get("Roughness")
+
+            # ציון זיהום S1
+            score, weights = 0, 0
+            if vv_v is not None:
+                vv_score = min(100, max(0, (vv_v + 25) / 15 * 100))
+                score += vv_score * 0.5; weights += 0.5
+            if ratio_v is not None:
+                ratio_score = min(100, max(0, (ratio_v - 1) / 4 * 100))
+                score += ratio_score * 0.35; weights += 0.35
+            if rough_v is not None:
+                rough_score = min(100, max(0, (rough_v + 1) / 2 * 100))
+                score += rough_score * 0.15; weights += 0.15
+            composite = round(score / weights, 1) if weights > 0 else None
+
+            quality_map_s1 = [
+                (lambda s: s is None,  "⬜ אין מידע",    "#AAAAAA"),
+                (lambda s: s >= 80,    "🟢 נקי",          "#27AE60"),
+                (lambda s: s >= 60,    "🟡 חשד קל",       "#F1C40F"),
+                (lambda s: s >= 40,    "🟠 חשד זיהום",   "#E67E22"),
+                (lambda s: s >= 20,    "🔴 זיהום סביר",  "#E74C3C"),
+                (lambda s: True,       "⛔ זיהום חמור",  "#8E44AD"),
+            ]
+            quality_label, quality_color = "❓", "#888"
+            for condition, label, color in quality_map_s1:
+                if condition(composite):
+                    quality_label, quality_color = label, color
+                    break
+
+            return {
+                "vv":            round(vv_v,    2) if vv_v    is not None else None,
+                "vh":            round(vh_v,    2) if vh_v    is not None else None,
+                "vv_vh_ratio":   round(ratio_v, 3) if ratio_v is not None else None,
+                "roughness":     round(rough_v, 3) if rough_v is not None else None,
+                "ndwi": None, "chl_proxy": None, "turbidity": None, "fai": None,
+                "composite":     composite,
+                "quality_label": quality_label,
+                "quality_color": quality_color,
+                "lat":           round(lat, 5),
+                "lon":           round(lon, 5),
+            }
+
+        # ── S2 / S3 ──────────────────────────────────────────────────────
+        vals = processed.select(["NDWI", "Chl_proxy", "Turbidity", "FAI"])             .reduceRegion(
                 reducer=ee.Reducer.mean(),
                 geometry=buffer,
                 scale=scale,
@@ -540,16 +737,16 @@ def query_clicked_point(lat: float, lon: float, wb_key: str,
             score += min(100, max(0, (1000 - turbidity) / 1000 * 100)) * 0.25; weights += 0.25
         composite = round(score / weights, 1) if weights > 0 else None
 
-        quality_map = {
-            lambda s: s is None:      ("⬜ אין מידע",    "#AAAAAA"),
-            lambda s: s >= 80:        ("🟢 מצוין",       "#27AE60"),
-            lambda s: s >= 60:        ("🟡 טוב",         "#F1C40F"),
-            lambda s: s >= 40:        ("🟠 בינוני",      "#E67E22"),
-            lambda s: s >= 20:        ("🔴 ירוד",        "#E74C3C"),
-            lambda s: True:           ("⛔ גרוע",        "#8E44AD"),
-        }
+        quality_map = [
+            (lambda s: s is None,  "⬜ אין מידע",  "#AAAAAA"),
+            (lambda s: s >= 80,    "🟢 מצוין",      "#27AE60"),
+            (lambda s: s >= 60,    "🟡 טוב",         "#F1C40F"),
+            (lambda s: s >= 40,    "🟠 בינוני",     "#E67E22"),
+            (lambda s: s >= 20,    "🔴 ירוד",        "#E74C3C"),
+            (lambda s: True,       "⛔ גרוע",        "#8E44AD"),
+        ]
         quality_label, quality_color = "❓", "#888"
-        for condition, (label, color) in quality_map.items():
+        for condition, label, color in quality_map:
             if condition(composite):
                 quality_label, quality_color = label, color
                 break
@@ -559,6 +756,7 @@ def query_clicked_point(lat: float, lon: float, wb_key: str,
             "chl_proxy":     round(chl_proxy, 3) if chl_proxy is not None else None,
             "turbidity":     round(turbidity, 1) if turbidity is not None else None,
             "fai":           round(fai,       4) if fai       is not None else None,
+            "vv": None, "vh": None, "vv_vh_ratio": None, "roughness": None,
             "composite":     composite,
             "quality_label": quality_label,
             "quality_color": quality_color,
@@ -570,12 +768,36 @@ def query_clicked_point(lat: float, lon: float, wb_key: str,
 
 
 # ==============================
-# מפת חום ברמת פיקסל — תואם S2 ו-S3
+# מפת חום ברמת פיקסל — תואם S1, S2 ו-S3
 # ==============================
 def get_heatmap_url(processed, clip_geom, sensor="S2"):
-    # JRC water mask — מסנן יבשה בצורה אמינה לשני הסנסורים
+    # JRC water mask — מסנן יבשה בצורה אמינה
     jsw        = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
     water_mask = jsw.select("occurrence").gte(30)
+
+    if sensor == "S1":
+        # S1 SAR — מפת זיהום: VV נמוך = dark spot = חשד לשמן
+        vv = processed.select("VV").updateMask(water_mask)
+        # VV טיפוסי למים: -15 עד -5 dB; שמן: מתחת ל-20
+        # ציון גבוה = נקי (VV גבוה), ציון נמוך = dark spot (שמן)
+        vv_score = vv.add(25).divide(15).multiply(100).clamp(0, 100)
+
+        # ratio נמוך = surface damping
+        ratio = processed.select("VV_VH_ratio").updateMask(water_mask)
+        ratio_score = ratio.subtract(1).divide(4).multiply(100).clamp(0, 100)
+
+        composite = (vv_score.multiply(0.65).add(ratio_score.multiply(0.35)))
+        composite  = composite.updateMask(water_mask).clip(clip_geom)
+
+        # צבעים: אדום = dark spot/זיהום, ירוק = נקי
+        vis_params = {
+            "min": 0, "max": 100,
+            "palette": ["#8B0000","#E74C3C","#E67E22","#F1C40F","#27AE60","#1A5E20"]
+        }
+        try:
+            return composite.getMapId(vis_params)["tile_fetcher"].url_format
+        except:
+            return None
 
     ndwi      = processed.select("NDWI").updateMask(water_mask)
     chl_proxy = processed.select("Chl_proxy").updateMask(water_mask)
@@ -602,9 +824,7 @@ def get_heatmap_url(processed, clip_geom, sensor="S2"):
         turb_range  = max(turb_max  - turb_min,  1.0)
 
         ndwi_score  = ndwi.subtract(ndwi_min).divide(ndwi_range).multiply(100).clamp(0, 100)
-        # כלורופיל — גבוה = רע (הופך)
         chl_score   = ee.Image(chl_max).subtract(chl_proxy).divide(chl_range).multiply(100).clamp(0, 100)
-        # עכירות — גבוה = רע (הופך)
         turb_score  = ee.Image(turb_max).subtract(turbidity).divide(turb_range).multiply(100).clamp(0, 100)
     else:
         ndwi_score  = ndwi.add(0.3).divide(1.1).multiply(100).clamp(0, 100)
@@ -639,21 +859,28 @@ def build_map(df, image_date, processed, wb_key, water_polygons=None, sensor="S2
         control_scale=True
     )
 
-    satellite_group  = folium.FeatureGroup(name="🛰️ לווין RGB",                show=False)
-    heatmap_group    = folium.FeatureGroup(name="🌡️ מפת חום (ציון משוכלל)",  show=True)
+    s1_mode = (sensor == "S1")
+    sat_layer_name = "🛰️ S1 VV backscatter" if s1_mode else "🛰️ לווין RGB"
+    satellite_group  = folium.FeatureGroup(name=sat_layer_name,               show=s1_mode)
+    heatmap_group    = folium.FeatureGroup(name="🌡️ מפת חום (ציון משוכלל)",  show=(not s1_mode))
+    oil_group        = folium.FeatureGroup(name="🛢️ מפת זיהום SAR",           show=s1_mode) if s1_mode else None
     sampling_group   = folium.FeatureGroup(name="🔵 אזורי דיגום",              show=False)
-    points_group     = folium.FeatureGroup(name="📍 נקודות דיגום",              show=(sensor == "S2"))
+    points_group     = folium.FeatureGroup(name="📍 נקודות דיגום",              show=True)
 
-    # שכבת לווין RGB
+    # שכבת לווין
     try:
-        if sensor == "S3":
-            # S3 OLCI RGB: Oa08=red, Oa06=green, Oa04=blue
+        if sensor == "S1":
+            # S1 SAR — VV grayscale (backscatter)
+            rgb_url = processed.select("VV").getMapId(
+                {"min": -25, "max": 0, "palette": ["black","white"]}
+            )["tile_fetcher"].url_format
+        elif sensor == "S3":
             rgb_url = processed.select(["Oa08_radiance","Oa06_radiance","Oa04_radiance"]).getMapId(
                 {"min": 0, "max": 200, "gamma": 1.5}
             )["tile_fetcher"].url_format
         else:
             rgb_url = processed.getMapId({"bands":["B4","B3","B2"],"min":0,"max":3000})["tile_fetcher"].url_format
-        folium.TileLayer(tiles=rgb_url, name="RGB", attr="GEE", overlay=True, opacity=0.8).add_to(satellite_group)
+        folium.TileLayer(tiles=rgb_url, name=sat_layer_name, attr="GEE/Copernicus", overlay=True, opacity=0.8).add_to(satellite_group)
     except:
         pass
 
@@ -694,8 +921,25 @@ def build_map(df, image_date, processed, wb_key, water_polygons=None, sensor="S2
                 f"<b>נקודה {i} — {row['name']}</b><br>⬜ אין מידע זמין<br>"
                 f"<small>📅 {image_date}</small></div>"
             )
+        elif sensor == "S1":
+            # S1 SAR — מדדי backscatter
+            vv_str    = f"{row['vv']:.2f} dB"    if row.get("vv")          is not None else "N/A"
+            vh_str    = f"{row['vh']:.2f} dB"    if row.get("vh")          is not None else "N/A"
+            ratio_str = f"{row['vv_vh_ratio']:.3f}" if row.get("vv_vh_ratio") is not None else "N/A"
+            rough_str = f"{row['roughness']:.3f}"   if row.get("roughness")   is not None else "N/A"
+            popup_html = f"""<div style='font-family:Arial;direction:rtl;min-width:200px;'>
+                <h3 style='color:{color};margin:0 0 6px;'>{i}. {row['name']}</h3>
+                <b>{row['quality_label']}</b><br>
+                <b style='font-size:15px;'>🛢️ {comp}</b><br><br>
+                <table style='font-size:13px;border-collapse:collapse;width:100%;'>
+                <tr style='background:#f5f5f5'><td style='padding:4px'><b>VV</b></td><td style='padding:4px'>{vv_str}</td><td style='padding:4px;color:#999;font-size:11px'>נמוך=dark spot</td></tr>
+                <tr><td style='padding:4px'><b>VH</b></td><td style='padding:4px'>{vh_str}</td><td style='padding:4px;color:#999;font-size:11px'>cross-pol</td></tr>
+                <tr style='background:#f5f5f5'><td style='padding:4px'><b>VV/VH</b></td><td style='padding:4px'>{ratio_str}</td><td style='padding:4px;color:#999;font-size:11px'>&lt;1.5=damping</td></tr>
+                <tr><td style='padding:4px'><b>Roughness</b></td><td style='padding:4px'>{rough_str}</td><td style='padding:4px;color:#999;font-size:11px'>חספוס</td></tr>
+                </table>
+                <br><small style='color:#aaa'>📅 {image_date} · SAR</small></div>"""
         else:
-            # שורת FAI רק אם יש נתון
+            # S2 / S3 — מדדים אופטיים
             fai_row = ""
             if row.get("fai") is not None:
                 fai_row = f"<tr style='background:#f5f5f5'><td style='padding:4px'><b>FAI</b></td><td style='padding:4px'>{row['fai']:.4f}</td><td style='padding:4px;color:#999;font-size:11px'>גבוה=אצות צפות</td></tr>"
@@ -726,7 +970,10 @@ def build_map(df, image_date, processed, wb_key, water_polygons=None, sensor="S2
                 icon_size=(28,28), icon_anchor=(14,14))
         ).add_to(points_group)
 
-        verbal_labels = {1: "מצוין", 2: "טוב", 3: "בינוני", 4: "ירוד", 5: "גרוע"}
+        if sensor == "S1":
+            verbal_labels = {1: "נקי", 2: "חשד קל", 3: "חשד זיהום", 4: "זיהום סביר", 5: "זיהום חמור"}
+        else:
+            verbal_labels = {1: "מצוין", 2: "טוב", 3: "בינוני", 4: "ירוד", 5: "גרוע"}
         verbal = verbal_labels.get(row["quality_score"], "אין מידע") if not row["no_data"] else "אין מידע"
         verbal_color = color if not row["no_data"] else "#AAAAAA"
         label_html = (
@@ -803,7 +1050,17 @@ def build_map(df, image_date, processed, wb_key, water_polygons=None, sensor="S2
     </div>"""
     m.get_root().html.add_child(folium.Element(legend_html))
 
-    for group in [satellite_group, heatmap_group, sampling_group, points_group]:
+    groups = [satellite_group, heatmap_group, sampling_group, points_group]
+    if oil_group is not None:
+        groups.insert(1, oil_group)
+        # הוסף מפת זיהום SAR
+        oil_url = get_heatmap_url(processed, wb["clip_geom"], sensor)
+        if oil_url:
+            folium.TileLayer(
+                tiles=oil_url, name="מפת זיהום SAR", attr="GEE/Copernicus",
+                overlay=True, opacity=0.75
+            ).add_to(oil_group)
+    for group in groups:
         group.add_to(m)
     folium.LayerControl().add_to(m)
     return m
@@ -826,18 +1083,36 @@ wb = WATER_BODIES[wb_key]
 # ── בחירת סנסור ──────────────────────────────────────────────────────────────
 sensor = st.radio(
     "סנסור לוויין",
-    options=["S2 — Sentinel-2 (10m, מדויק)", "S3 — Sentinel-3 (300m, ימי)"],
+    options=[
+        "S2 — Sentinel-2 (10m, אופטי)",
+        "S3 — Sentinel-3 (300m, ימי)",
+        "S1 — Sentinel-1 SAR (10m, זיהום שמן)",
+    ],
     horizontal=True,
     key="sensor_selector"
 )
-sensor_key = "S3" if sensor.startswith("S3") else "S2"
+if sensor.startswith("S3"):
+    sensor_key = "S3"
+elif sensor.startswith("S1"):
+    sensor_key = "S1"
+else:
+    sensor_key = "S2"
+
+# הצג הסבר קצר על S1 אם נבחר
+if sensor_key == "S1":
+    st.info(
+        "🛢️ **Sentinel-1 SAR** — רדאר (לא מושפע מענן/לילה). "
+        "מזהה שמן/זיהום לפי *dark spots* ב-VV backscatter. "
+        "ציון גבוה = מים נקיים, ציון נמוך = חשד לזיהום."
+    )
 
 # ── בחירת טווח תאריכים ───────────────────────────────────────────────────────
 with st.expander("📅 בחר טווח תאריכים", expanded=False):
     today        = datetime.now().date()
     min_date     = today - timedelta(days=365 * 3)
     max_date     = today
-    default_days = wb["days_back"]
+    # S1 חוזר כל 6 ימים — טווח קצר מספיק; S2/S3 כרגיל
+    default_days = wb.get("days_back_s1", 30) if sensor_key == "S1" else wb["days_back"]
     default_end  = today
     default_start = today - timedelta(days=default_days)
 
@@ -893,7 +1168,7 @@ start_date = sel_start.strftime("%Y-%m-%d")
 end_date   = sel_end.strftime("%Y-%m-%d")
 
 # ── טעינת נתונים ─────────────────────────────────────────────────────────────
-sensor_label = "Sentinel-3 OLCI" if sensor_key == "S3" else "Sentinel-2"
+sensor_label = "Sentinel-3 OLCI" if sensor_key == "S3" else "Sentinel-1 SAR" if sensor_key == "S1" else "Sentinel-2"
 with st.spinner(f"🛰️ טוען נתוני {sensor_label} עבור {wb_key}..."):
     df, image_date, processed, scene_count, water_polygons = load_data(wb_key, start_date, end_date, sensor_key)
 
@@ -1276,12 +1551,20 @@ with st.sidebar:
             )
 
             # מדדים מפורטים
-            metrics = [
-                ("NDWI",       nearest.get("ndwi"),      "גבוה = נקי",      "{:.3f}"),
-                ("כלורופיל",   nearest.get("chl_proxy"), "גבוה = אצות",     "{:.3f}"),
-                ("עכירות",     nearest.get("turbidity"),  "גבוה = עכור",     "{:.0f}"),
-                ("FAI",        nearest.get("fai"),        "גבוה = אצות צפות","{:.4f}"),
-            ]
+            if sensor_key == "S1":
+                metrics = [
+                    ("VV (dB)",      nearest.get("vv"),          "גבוה=נקי, נמוך=dark spot", "{:.2f}"),
+                    ("VH (dB)",      nearest.get("vh"),          "cross-pol reference",        "{:.2f}"),
+                    ("VV/VH ratio",  nearest.get("vv_vh_ratio"), "נמוך<1.5 = surface damping", "{:.3f}"),
+                    ("Roughness",    nearest.get("roughness"),    "חספוס פני הים",              "{:.3f}"),
+                ]
+            else:
+                metrics = [
+                    ("NDWI",       nearest.get("ndwi"),      "גבוה = נקי",      "{:.3f}"),
+                    ("כלורופיל",   nearest.get("chl_proxy"), "גבוה = אצות",     "{:.3f}"),
+                    ("עכירות",     nearest.get("turbidity"),  "גבוה = עכור",     "{:.0f}"),
+                    ("FAI",        nearest.get("fai"),        "גבוה = אצות צפות","{:.4f}"),
+                ]
             rows = ""
             for name, val, hint, fmt in metrics:
                 val_str = fmt.format(val) if val is not None else "—"
