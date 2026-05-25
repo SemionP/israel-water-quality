@@ -1,8 +1,8 @@
 """
 app.py
 =============================================================================
-Israel Water Quality Monitor Dashboard - Clean Map Edition
-מערכת מדעית לניטור איכות המים בישראל באמצעות חישה מרחוק ו-Earth Engine.
+Israel Water Quality Monitor Dashboard - Zero Popups Edition
+גרסה מעודכנת: חסימה מוחלטת של בועת הקואורדינטות המובנית של streamlit_folium.
 =============================================================================
 """
 
@@ -177,24 +177,19 @@ def render_earth2_sidebar(atm: dict, wb_key: str) -> None:
     tc  = atm.get("temp_c")
     pr  = atm.get("precip_mm")
     rh  = atm.get("humidity")
-    ts  = atm.get("analysis_time", "—")
 
     if ws is not None:
         arrows = ["↑","↗","→","↘","↓","↙","←","↖"]
         arrow = arrows[int((wd + 22.5) / 45) % 8] if wd is not None else ""
-        
-        # Beaufort calculation
         bf = 12
         for b, t in enumerate([0.3,1.6,3.4,5.5,8.0,10.8,13.9,17.2,20.8,24.5,28.5,32.7]):
             if ws < t: bf = b; break
-            
         st.sidebar.metric(label=f"💨 רוח {arrow}", value=f"{ws:.1f} m/s", delta=f"Beaufort {bf}", delta_color="inverse" if bf >= 5 else "normal")
 
     if tc is not None: st.sidebar.metric("🌡️ טמפרטורה", f"{tc:.1f} °C")
     if pr is not None: st.sidebar.metric("🌧️ גשם" if pr > 0.5 else "☀️ יבש", f"{pr:.1f} mm/h")
     if rh is not None: st.sidebar.metric("💧 לחות", f"{int(rh)}%")
 
-    # Risk assessment
     score = 0
     reasons = []
     if ws and ws > 7: score += 1; reasons.append("רוח ערנית")
@@ -376,7 +371,6 @@ with st.spinner("מחשב ערכים משוכללים ומפיק נתוני חו
 if error_msg:
     st.error(error_msg)
 elif wqi_layer:
-    # הטמעת שקלול עונתי/אטמוספרי לטבלה
     df_beaches = blend_atmospheric_penalty(df_beaches, atm_data, wb_selection)
     
     col_map, col_info = st.columns([2.2, 1.1])
@@ -396,13 +390,13 @@ elif wqi_layer:
             opacity=0.85
         ).add_to(m)
         
-        # הוספת עיגולים נקיים בלבד ללא שום ארגומנט של popup, tooltip, או hover
+        # החזרת נקודות הדיגום למרקורים קטנים ונקיים (ללא כותרות, ללא popups וללא tooltips)
         for _, r in df_beaches.iterrows():
             score_for_color = r['composite_with_atm'] if pd.notna(r['composite_with_atm']) else r['wqi']
             color_marker = "green" if (score_for_color and score_for_color > 65) else "orange" if score_for_color else "red"
-            folium.Circle(
+            folium.CircleMarker(
                 location=[r["lat"], r["lon"]],
-                radius=1400,
+                radius=6,
                 color="black",
                 weight=1,
                 fill_color=color_marker,
@@ -412,8 +406,8 @@ elif wqi_layer:
             
         m.add_child(OnMapWaterLegend())
         
-        # שימוש במפתח ייחודי קשיח (key) חדש המונע מהרכיב להשתמש ב-Cache הישן של הדפדפן
-        st_folium(m, width=800, height=550, key="s3_final_pure_map_v5")
+        # השינוי המכריע: הוספת returned_objects=[] שמבטלת לחלוטין את בועת הלחיצה הדינמית של המפה!
+        st_folium(m, width=800, height=550, key="s3_ultimate_clean_map_v6", returned_objects=[])
         
     with col_info:
         st.subheader("🏖️ סטטוס ורמת ניקיון החופים")
