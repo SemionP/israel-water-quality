@@ -1,8 +1,8 @@
 """
 app.py
 =============================================================================
-Israel Water Quality Monitor Dashboard - Sentinel-3 Pure Map Edition
-גרסה מעודכנת: הסרה מוחלטת של Tooltips ו-Popups מהנקודות במפה למניעת כיתובים תקועים.
+Israel Water Quality Monitor Dashboard - Sentinel-3 Forced Reset Edition
+גרסה מעודכנת: שינוי קשיח של ה-Key לריסוס סופי של שאריות בועות מהזיכרון.
 =============================================================================
 """
 
@@ -74,7 +74,7 @@ WATER_BODIES = {
 }
 
 # =============================================================================
-# רכיב חכם להזרקת מקרא צבעים רציף ישירות על גבי מפת הפוליום (On-Map Legend)
+# מקרא רציף
 # =============================================================================
 class OnMapWaterLegend(MacroElement):
     def __init__(self):
@@ -107,9 +107,6 @@ class OnMapWaterLegend(MacroElement):
             {% endmacro %}
         """)
 
-# =============================================================================
-# מנוע תאריכים זמינים מתוך ארכיון Sentinel-3
-# =============================================================================
 @st.cache_data(ttl=14400)
 def get_available_s3_dates(wb_key: str, days_back: int = 30):
     wb = WATER_BODIES[wb_key]
@@ -124,9 +121,6 @@ def get_available_s3_dates(wb_key: str, days_back: int = 30):
     unique_dates = sorted(list(set([datetime.utcfromtimestamp(d / 1000).strftime("%Y-%m-%d") for d in dates_list])), reverse=True)
     return unique_dates
 
-# =============================================================================
-# מנוע חישוב ערך משוכלל (WQI) עם מסנן החלקה להורדת פסים (Destriping Filter)
-# =============================================================================
 def process_s3_wqi_data(wb_key, target_date_str):
     wb = WATER_BODIES[wb_key]
     t_date = ee.Date(target_date_str)
@@ -206,7 +200,6 @@ else:
     st.sidebar.warning("לא נמצאו סריקות בארכיון, מציג תאריך ברירת מחדל.")
     selected_date_str = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
 
-# הרצת מנוע העיבוד
 with st.spinner("מחשב ערכים משוכללים ומפיק נתוני חופים..."):
     wqi_layer, df_beaches, error_msg = process_s3_wqi_data(wb_selection, selected_date_str)
 
@@ -231,20 +224,22 @@ elif wqi_layer:
             opacity=0.85
         ).add_to(m)
         
-        # הוספת נקודות החופים למפה - ללא popup וללא tooltip בכלל! מפה נקייה לחלוטין.
+        # הוספת נקודות החופים - מבוסס Circle בלבד, ללא פרמטר popup או tooltip מכל סוג שהוא
         for _, r in df_beaches.iterrows():
             color_marker = "green" if (r['wqi'] and r['wqi'] > 65) else "orange" if r['wqi'] else "red"
-            folium.CircleMarker(
+            folium.Circle(
                 location=[r["lat"], r["lon"]],
-                radius=6,
+                radius=1500, # גודל קבוע במטרים כדי שלא יתקעו עליו בועות טקסט של גיאומטריית נקודה
                 color="black",
                 fill_color=color_marker,
-                fill_opacity=0.9,
+                fill_opacity=0.85,
                 fill=True
             ).add_to(m)
             
         m.add_child(OnMapWaterLegend())
-        st_folium(m, width=800, height=550, key="s3_pure_map_no_labels")
+        
+        # שינוי ה-key לערך חדש לגמרי שמכריח את פוליום להתנקות מהזיכרון הקודם של הדפדפן
+        st_folium(m, width=800, height=550, key="s3_pure_and_clean_map_v3")
         
     with col_info:
         st.subheader("🏖️ סטטוס ורמת ניקיון החופים")
