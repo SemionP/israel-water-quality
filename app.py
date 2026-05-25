@@ -1,3 +1,4 @@
+st.sidebar.info("🔍 earth2_integration loaded")
 """
 earth2_integration.py
 =====================
