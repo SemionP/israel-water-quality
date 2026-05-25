@@ -1,4 +1,3 @@
-st.sidebar.info("🔍 earth2_integration loaded")
 """
 earth2_integration.py
 =====================
@@ -7,7 +6,6 @@ Uses Open-Meteo API (free, no API key, no extra dependencies).
 Same interface as the original earth2studio version.
 """
 
-from __future__ import annotations
 import math
 from typing import Optional
 import streamlit as st
