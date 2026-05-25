@@ -1,68 +1,23 @@
 """
 earth2_integration.py
 =====================
-NVIDIA Earth-2 atmospheric context layer for the Israel Water Quality Monitor.
-
-What this module adds
----------------------
-- Fetches real-time GFS atmospheric variables (wind, temperature, precipitation,
-  humidity) via earth2studio for every water-body bounding box.
-- Computes a per-point *atmospheric risk penalty* that is blended into the
-  existing satellite composite score.
-- Provides a ready-to-drop-in Streamlit sidebar widget with the atmospheric panel.
-- Optionally runs CorrDiff downscaling to 3 km resolution when an NVIDIA NGC
-  API key is available.
-
-Installation
-------------
-    pip install earth2studio[gfs]      # core + GFS data source
-    # For CorrDiff NIM (optional, needs NGC key):
-    pip install earth2studio[corrdiff]
-
-Usage in app.py
----------------
-Add these two lines right after `init_gee()`:
-
-    from earth2_integration import (
-        get_atmospheric_context,
-        render_earth2_sidebar,
-        blend_atmospheric_penalty,
-    )
-
-Then, inside the main Streamlit render block (after `df` is ready):
-
-    atm_data = get_atmospheric_context(wb_key)          # cached 1 h
-    df = blend_atmospheric_penalty(df, atm_data, wb_key)  # enriches df
-    render_earth2_sidebar(atm_data, wb_key)              # sidebar panel
+Atmospheric context layer for the Israel Water Quality Monitor.
+Uses Open-Meteo API (free, no API key, no extra dependencies).
+Same interface as the original earth2studio version.
 """
 
 from __future__ import annotations
-
 import math
-import warnings
-from datetime import datetime, timezone
 from typing import Optional
-
 import streamlit as st
 
-# ── optional earth2studio import ─────────────────────────────────────────────
 try:
-    import numpy as np
-    import xarray as xr
-    from earth2studio.data import GFS
-    _E2_AVAILABLE = True
+    import requests as _requests
+    _REQUESTS_OK = True
 except ImportError:
-    _E2_AVAILABLE = False
+    _REQUESTS_OK = False
 
-# ── water-body bounding boxes (lon_min, lat_min, lon_max, lat_max) ───────────
-_WB_BOXES = {
-    "🏖️ חוף הים התיכון": (34.50, 31.55, 35.15, 33.10),
-    "🌊 כנרת":            (35.50, 32.70, 35.68, 32.95),
-    "🧂 ים המלח":         (35.35, 31.20, 35.60, 31.80),
-    "🐠 ים סוף":          (34.80, 29.35, 35.10, 29.75),
-}
-
-# Representative centre lat/lon for each water body
+# ── water-body centre coordinates ────────────────────────────────────────────
 _WB_CENTRES = {
     "🏖️ חוף הים התיכון": (32.40, 34.85),
     "🌊 כנרת":            (32.82, 35.59),
@@ -70,103 +25,70 @@ _WB_CENTRES = {
     "🐠 ים סוף":          (29.55, 34.95),
 }
 
-# GFS variables to fetch
-_GFS_VARS = [
-    "u10m",   # 10-m zonal wind (m/s)
-    "v10m",   # 10-m meridional wind (m/s)
-    "t2m",    # 2-m temperature (K)
-    "tp",     # total precipitation (kg/m²  ≈ mm per 6 h)
-    "sp",     # surface pressure (Pa)
-    "r2m",    # 2-m relative humidity (%)
-]
-
 
 # =============================================================================
-# 1.  Fetch atmospheric data
+# 1.  Fetch atmospheric data via Open-Meteo
 # =============================================================================
 
 @st.cache_data(ttl=3600)
 def get_atmospheric_context(wb_key: str) -> dict:
     """
-    Fetch the latest GFS analysis for the centre of *wb_key*.
-
-    Returns a flat dict with scalar values ready for display and scoring.
-    Falls back to a dict of None values when earth2studio is not installed
-    or the network call fails.
+    Fetch current atmospheric conditions for *wb_key* from Open-Meteo.
+    Returns a flat dict with scalar values. Degrades gracefully on error.
     """
     empty = _empty_atm()
 
-    if not _E2_AVAILABLE:
-        empty["_error"] = (
-            "earth2studio לא מותקן. הרץ: pip install earth2studio[gfs]"
-        )
+    if not _REQUESTS_OK:
+        empty["_error"] = "requests לא זמין"
         return empty
 
-    centre_lat, centre_lon = _WB_CENTRES.get(wb_key, (32.0, 35.0))
+    lat, lon = _WB_CENTRES.get(wb_key, (32.0, 35.0))
 
     try:
-        # Use the most recent 00Z/06Z/12Z/18Z cycle
-        now_utc = datetime.now(timezone.utc)
-        # Round down to latest 6-h synoptic hour
-        synoptic_hour = (now_utc.hour // 6) * 6
-        analysis_time = now_utc.replace(
-            hour=synoptic_hour, minute=0, second=0, microsecond=0
+        resp = _requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude":       lat,
+                "longitude":      lon,
+                "current":        ",".join([
+                    "temperature_2m",
+                    "relative_humidity_2m",
+                    "wind_speed_10m",
+                    "wind_direction_10m",
+                    "precipitation",
+                    "weather_code",
+                ]),
+                "wind_speed_unit": "ms",
+                "forecast_days":   1,
+            },
+            timeout=10,
         )
+        resp.raise_for_status()
+        cur = resp.json().get("current", {})
 
-        gfs = GFS()
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            da, coords = gfs(analysis_time, _GFS_VARS)
-
-        # da shape: (time, variable, lat, lon)
-        # Select nearest grid point to the water-body centre
-        lat_idx = int(np.argmin(np.abs(coords["lat"].values - centre_lat)))
-        lon_idx = int(np.argmin(np.abs(coords["lon"].values - centre_lon)))
-
-        def _scalar(var: str) -> Optional[float]:
-            try:
-                idx = list(coords["variable"].values).index(var)
-                val = float(da[0, idx, lat_idx, lon_idx].values)
-                return round(val, 3) if not math.isnan(val) else None
-            except (ValueError, IndexError):
-                return None
-
-        u10  = _scalar("u10m")
-        v10  = _scalar("v10m")
-        t2m  = _scalar("t2m")
-        tp   = _scalar("tp")
-        sp   = _scalar("sp")
-        r2m  = _scalar("r2m")
-
-        wind_speed = (
-            round(math.sqrt(u10**2 + v10**2), 2)
-            if u10 is not None and v10 is not None
-            else None
-        )
-        wind_dir_deg = (
-            round((270 - math.degrees(math.atan2(v10, u10))) % 360, 1)
-            if u10 is not None and v10 is not None
-            else None
-        )
-        temp_c = round(t2m - 273.15, 1) if t2m is not None else None
-        precip_mm = round(tp, 2) if tp is not None else None  # mm / 6 h
-        humidity = round(r2m, 1) if r2m is not None else None
+        wind_speed = cur.get("wind_speed_10m")
+        wind_dir   = cur.get("wind_direction_10m")
+        temp_c     = cur.get("temperature_2m")
+        humidity   = cur.get("relative_humidity_2m")
+        precip_mm  = cur.get("precipitation")
+        wcode      = cur.get("weather_code", 0)
 
         return {
-            "wind_speed":    wind_speed,       # m/s
-            "wind_dir_deg":  wind_dir_deg,     # degrees from N
-            "temp_c":        temp_c,            # °C
-            "precip_mm":     precip_mm,         # mm/6 h
-            "humidity":      humidity,           # %
-            "analysis_time": analysis_time.strftime("%Y-%m-%d %H:%MZ"),
-            "centre_lat":    centre_lat,
-            "centre_lon":    centre_lon,
+            "wind_speed":    round(wind_speed, 1) if wind_speed is not None else None,
+            "wind_dir_deg":  round(wind_dir,   1) if wind_dir   is not None else None,
+            "temp_c":        round(temp_c,     1) if temp_c     is not None else None,
+            "humidity":      round(humidity,   0) if humidity   is not None else None,
+            "precip_mm":     round(precip_mm,  2) if precip_mm  is not None else None,
+            "weather_code":  wcode,
+            "analysis_time": cur.get("time", "—"),
+            "centre_lat":    lat,
+            "centre_lon":    lon,
             "_error":        None,
-            "_source":       "NVIDIA Earth-2 / GFS",
+            "_source":       "Open-Meteo (GFS/ERA5)",
         }
 
     except Exception as exc:
-        empty["_error"] = f"שגיאה ב-Earth-2: {exc}"
+        empty["_error"] = f"שגיאה: {exc}"
         return empty
 
 
@@ -175,13 +97,14 @@ def _empty_atm() -> dict:
         "wind_speed":    None,
         "wind_dir_deg":  None,
         "temp_c":        None,
-        "precip_mm":     None,
         "humidity":      None,
+        "precip_mm":     None,
+        "weather_code":  None,
         "analysis_time": None,
         "centre_lat":    None,
         "centre_lon":    None,
         "_error":        None,
-        "_source":       "NVIDIA Earth-2 / GFS",
+        "_source":       "Open-Meteo (GFS/ERA5)",
     }
 
 
@@ -191,57 +114,40 @@ def _empty_atm() -> dict:
 
 def blend_atmospheric_penalty(df, atm: dict, wb_key: str):
     """
-    Subtract an *atmospheric risk penalty* (0–25 points) from each row's
-    ``composite`` score.
-
-    Penalty drivers
-    ---------------
-    - High wind  → wave-driven turbidity (+up to 10 pts penalty)
-    - Rain       → runoff / nutrient flush → algal bloom risk (+up to 8 pts)
-    - High humidity → favours cyanobacteria in closed water bodies (+up to 7 pts)
-
-    The penalty is purely additive on top of the satellite signal; it never
-    raises a score above its satellite value.
+    Adds composite_with_atm column = composite − atmospheric penalty (0–25 pts).
     """
-    import pandas as pd
-
     def _penalty(row) -> float:
         if row.get("composite") is None:
             return 0.0
+        p   = 0.0
+        ws  = atm.get("wind_speed")
+        pr  = atm.get("precip_mm")
+        rh  = atm.get("humidity")
 
-        p = 0.0
-        ws = atm.get("wind_speed")
-        pr = atm.get("precip_mm")
-        rh = atm.get("humidity")
-
-        # Wind penalty — Beaufort-inspired thresholds
         if ws is not None:
-            if ws > 15:   p += 10.0
-            elif ws > 10: p += 7.0
-            elif ws > 7:  p += 4.0
-            elif ws > 4:  p += 1.5
+            if ws > 15:    p += 10.0
+            elif ws > 10:  p += 7.0
+            elif ws > 7:   p += 4.0
+            elif ws > 4:   p += 1.5
 
-        # Precipitation penalty
         if pr is not None:
-            if pr > 5:    p += 8.0
-            elif pr > 2:  p += 5.0
+            if pr > 5:     p += 8.0
+            elif pr > 2:   p += 5.0
             elif pr > 0.5: p += 2.0
 
-        # Humidity penalty (relevant mainly for Kinneret / Dead Sea / Red Sea)
-        closed_bodies = {"🌊 כנרת", "🧂 ים המלח", "🐠 ים סוף"}
-        if wb_key in closed_bodies and rh is not None:
-            if rh > 85: p += 7.0
-            elif rh > 70: p += 3.0
+        closed = {"🌊 כנרת", "🧂 ים המלח", "🐠 ים סוף"}
+        if wb_key in closed and rh is not None:
+            if rh > 85:    p += 7.0
+            elif rh > 70:  p += 3.0
 
-        return min(p, 25.0)  # cap at 25 points
+        return min(p, 25.0)
 
     df = df.copy()
     df["atm_penalty"] = df.apply(_penalty, axis=1)
     df["composite_with_atm"] = df.apply(
         lambda r: (
             round(max(0.0, r["composite"] - r["atm_penalty"]), 1)
-            if r["composite"] is not None
-            else None
+            if r["composite"] is not None else None
         ),
         axis=1,
     )
@@ -253,14 +159,11 @@ def blend_atmospheric_penalty(df, atm: dict, wb_key: str):
 # =============================================================================
 
 def render_earth2_sidebar(atm: dict, wb_key: str) -> None:
-    """
-    Render an Earth-2 atmospheric context card in the Streamlit sidebar.
-    Call this after ``get_atmospheric_context`` and ``blend_atmospheric_penalty``.
-    """
+    """Render atmospheric context card in the Streamlit sidebar."""
     st.sidebar.markdown("---")
     st.sidebar.markdown(
-        "### 🌍 Earth-2 — הקשר אטמוספרי\n"
-        "<small style='color:#888;'>NVIDIA GFS Analysis</small>",
+        "### 🌍 הקשר אטמוספרי\n"
+        "<small style='color:#888;'>Open-Meteo · GFS/ERA5 · עדכון שעתי</small>",
         unsafe_allow_html=True,
     )
 
@@ -268,40 +171,38 @@ def render_earth2_sidebar(atm: dict, wb_key: str) -> None:
         st.sidebar.warning(atm["_error"])
         return
 
-    ws   = atm.get("wind_speed")
-    wd   = atm.get("wind_dir_deg")
-    tc   = atm.get("temp_c")
-    pr   = atm.get("precip_mm")
-    rh   = atm.get("humidity")
-    ts   = atm.get("analysis_time", "—")
+    ws  = atm.get("wind_speed")
+    wd  = atm.get("wind_dir_deg")
+    tc  = atm.get("temp_c")
+    pr  = atm.get("precip_mm")
+    rh  = atm.get("humidity")
+    ts  = atm.get("analysis_time", "—")
 
-    # ── wind ─────────────────────────────────────────────────────────────────
+    # Wind
     if ws is not None:
-        beaufort = _beaufort(ws)
-        wind_arrow = _compass_arrow(wd) if wd is not None else ""
+        arrow = _compass_arrow(wd) if wd is not None else ""
+        bf    = _beaufort(ws)
         st.sidebar.metric(
-            label=f"💨 רוח {wind_arrow}",
+            label=f"💨 רוח {arrow}",
             value=f"{ws:.1f} m/s",
-            delta=f"Beaufort {beaufort}",
-            delta_color="inverse" if beaufort >= 5 else "normal",
+            delta=f"Beaufort {bf}",
+            delta_color="inverse" if bf >= 5 else "normal",
         )
-    else:
-        st.sidebar.metric("💨 רוח", "—")
 
-    # ── temperature ──────────────────────────────────────────────────────────
+    # Temperature
     if tc is not None:
         st.sidebar.metric("🌡️ טמפרטורה", f"{tc:.1f} °C")
 
-    # ── precipitation ────────────────────────────────────────────────────────
+    # Precipitation
     if pr is not None:
-        rain_label = "🌧️ גשם" if pr > 0.5 else "☀️ יבש"
-        st.sidebar.metric(rain_label, f"{pr:.1f} mm/6h")
+        label = "🌧️ גשם" if pr > 0.5 else "☀️ יבש"
+        st.sidebar.metric(label, f"{pr:.1f} mm/h")
 
-    # ── humidity ─────────────────────────────────────────────────────────────
+    # Humidity
     if rh is not None:
-        st.sidebar.metric("💧 לחות", f"{rh:.0f}%")
+        st.sidebar.metric("💧 לחות", f"{int(rh)}%")
 
-    # ── risk summary ─────────────────────────────────────────────────────────
+    # Risk badge
     risk_level, risk_color, risk_text = _atmospheric_risk(ws, pr, rh, wb_key)
     st.sidebar.markdown(
         f"""<div style="background:#f8f9fa;border-radius:10px;padding:10px 14px;
@@ -313,213 +214,54 @@ def render_earth2_sidebar(atm: dict, wb_key: str) -> None:
         unsafe_allow_html=True,
     )
 
-    st.sidebar.caption(f"🛰️ {ts} · {atm.get('_source','')}")
-
-    if not _E2_AVAILABLE:
-        st.sidebar.info(
-            "להפעלת Earth-2:\n```\npip install earth2studio[gfs]\n```"
-        )
+    st.sidebar.caption(f"🕐 {ts} · {atm.get('_source','')}")
 
 
 # =============================================================================
-# 4.  Optional: CorrDiff high-resolution downscaling
-# =============================================================================
-
-@st.cache_data(ttl=21600)   # 6 hours — CorrDiff is expensive
-def run_corrdiff_downscale(
-    wb_key: str,
-    ngc_api_key: str,
-    timestamp: Optional[str] = None,
-    n_samples: int = 2,
-) -> Optional[dict]:
-    """
-    Run CorrDiff via the NVIDIA NIM endpoint to downscale GFS data to ~3 km
-    over the selected water body.
-
-    Parameters
-    ----------
-    wb_key       : water body key (must be in _WB_BOXES)
-    ngc_api_key  : your NVIDIA NGC API key (store in st.secrets["ngc_api_key"])
-    timestamp    : ISO-8601 string, e.g. "2024-06-15T12:00:00"; defaults to now
-    n_samples    : number of diffusion samples (1–4)
-
-    Returns
-    -------
-    dict with keys: ``wind_speed_3km``, ``temp_3km``, ``precip_3km``,
-    ``lat_grid``, ``lon_grid``, ``timestamp`` — or None on failure.
-
-    Notes
-    -----
-    Requires:  pip install earth2studio[corrdiff]
-    CorrDiff NIM endpoint: https://integrate.api.nvidia.com/v1 (NGC key required)
-    """
-    try:
-        import numpy as np
-        from earth2studio.data import GFS
-        from earth2studio.io import ZarrBackend
-    except ImportError:
-        return None
-
-    try:
-        from earth2studio.models.dx import CorrDiffNIM  # NIM-backed model
-    except ImportError:
-        return None
-
-    if timestamp is None:
-        now = datetime.now(timezone.utc)
-        synoptic_hour = (now.hour // 6) * 6
-        timestamp = now.replace(
-            hour=synoptic_hour, minute=0, second=0, microsecond=0
-        ).isoformat()
-
-    lon_min, lat_min, lon_max, lat_max = _WB_BOXES.get(wb_key, (34.5, 29.3, 35.2, 33.2))
-
-    try:
-        corrdiff = CorrDiffNIM(
-            api_key=ngc_api_key,
-            lat_range=(lat_min, lat_max),
-            lon_range=(lon_min, lon_max),
-        )
-        gfs  = GFS()
-        io   = ZarrBackend()
-
-        io = corrdiff.run(
-            [timestamp],
-            gfs,
-            io,
-            number_of_samples=n_samples,
-        )
-
-        ds = io.root  # xarray Dataset
-        # Mean over ensemble samples
-        wind_u = ds["u10m"].mean("ensemble").values if "u10m" in ds else None
-        wind_v = ds["v10m"].mean("ensemble").values if "v10m" in ds else None
-        temp   = ds["t2m"].mean("ensemble").values  if "t2m"  in ds else None
-        precip = ds["tp"].mean("ensemble").values   if "tp"   in ds else None
-
-        wind_spd = (
-            np.sqrt(wind_u**2 + wind_v**2)
-            if wind_u is not None and wind_v is not None
-            else None
-        )
-
-        return {
-            "wind_speed_3km": wind_spd,
-            "temp_3km":       temp - 273.15 if temp is not None else None,
-            "precip_3km":     precip,
-            "lat_grid":       ds.coords.get("lat", None),
-            "lon_grid":       ds.coords.get("lon", None),
-            "timestamp":      timestamp,
-            "_source":        "NVIDIA CorrDiff NIM @ 3 km",
-        }
-    except Exception as exc:
-        return {"_error": str(exc)}
-
-
-# =============================================================================
-# 5.  Helper functions
+# 4.  Helpers
 # =============================================================================
 
 def _beaufort(ws: float) -> int:
-    """Convert wind speed (m/s) to Beaufort scale."""
-    thresholds = [0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7]
-    for b, t in enumerate(thresholds):
+    for b, t in enumerate([0.3,1.6,3.4,5.5,8.0,10.8,13.9,17.2,20.8,24.5,28.5,32.7]):
         if ws < t:
             return b
     return 12
 
 
 def _compass_arrow(deg: float) -> str:
-    """Return an arrow emoji pointing in the wind *origin* direction."""
     arrows = ["↑","↗","→","↘","↓","↙","←","↖"]
-    idx = int((deg + 22.5) / 45) % 8
-    return arrows[idx]
+    return arrows[int((deg + 22.5) / 45) % 8]
 
 
-def _atmospheric_risk(
-    ws: Optional[float],
-    pr: Optional[float],
-    rh: Optional[float],
-    wb_key: str,
-) -> tuple[str, str, str]:
-    """
-    Return (risk_label, hex_color, description_text).
-    """
-    score = 0
+def _atmospheric_risk(ws, pr, rh, wb_key) -> tuple[str, str, str]:
+    score   = 0
     reasons = []
 
     if ws is not None:
-        if ws > 15:
-            score += 3; reasons.append("רוח חזקה מאוד")
-        elif ws > 10:
-            score += 2; reasons.append("רוח חזקה")
-        elif ws > 7:
-            score += 1; reasons.append("רוח בינונית")
+        if ws > 15:   score += 3; reasons.append("רוח חזקה מאוד")
+        elif ws > 10: score += 2; reasons.append("רוח חזקה")
+        elif ws > 7:  score += 1; reasons.append("רוח בינונית")
 
     if pr is not None and pr > 0.5:
-        if pr > 5:
-            score += 3; reasons.append("גשם כבד — סחף")
-        elif pr > 2:
-            score += 2; reasons.append("גשם בינוני")
-        else:
-            score += 1; reasons.append("גשם קל")
+        if pr > 5:    score += 3; reasons.append("גשם כבד")
+        elif pr > 2:  score += 2; reasons.append("גשם בינוני")
+        else:         score += 1; reasons.append("גשם קל")
 
-    closed = {"🌊 כנרת", "🧂 ים המלח", "🐠 ים סוף"}
-    if wb_key in closed and rh is not None and rh > 80:
+    if wb_key in {"🌊 כנרת","🧂 ים המלח","🐠 ים סוף"} and rh and rh > 80:
         score += 1; reasons.append("לחות גבוהה")
 
     if score == 0:
         return ("✅ סיכון אטמוספרי נמוך", "#27AE60",
                 "תנאים אטמוספריים תומכים באיכות מים טובה.")
     elif score <= 2:
-        return ("🟡 סיכון אטמוספרי בינוני", "#F1C40F",
-                " · ".join(reasons))
+        return ("🟡 סיכון בינוני", "#F1C40F", " · ".join(reasons))
     elif score <= 4:
-        return ("🟠 סיכון אטמוספרי גבוה", "#E67E22",
+        return ("🟠 סיכון גבוה", "#E67E22",
                 " · ".join(reasons) + " — ציון הלוויין עלול להיות מוטה.")
     else:
-        return ("🔴 סיכון אטמוספרי קריטי", "#E74C3C",
-                " · ".join(reasons) + " — מומלץ לא לסמוך על ציון הלוויין בלבד.")
+        return ("🔴 סיכון קריטי", "#E74C3C",
+                " · ".join(reasons) + " — מומלץ לא לסמוך על הלוויין בלבד.")
 
-
-# =============================================================================
-# 6.  Integration snippet (printed to console for copy-paste)
-# =============================================================================
-
-INTEGRATION_SNIPPET = """
-# ── Paste these lines into app.py ─────────────────────────────────────────
-
-# After  init_gee()  add:
-from earth2_integration import (
-    get_atmospheric_context,
-    render_earth2_sidebar,
-    blend_atmospheric_penalty,
-)
-
-# Inside the main render block, after  df, image_date, processed, count, water_polygons = load_data(...)
-# add:
-
-atm_data = get_atmospheric_context(wb_key)
-df = blend_atmospheric_penalty(df, atm_data, wb_key)
-render_earth2_sidebar(atm_data, wb_key)
-
-# In the AI prompt string (lines ~1610-1615) enrich with atmospheric context:
-f\"\"\"נקודה: {nearest['name']} ({image_date})
-ציון לוויין בלבד: {int(round(nearest['composite']))}/100
-ציון משוכלל עם תחזית אטמוספרית: {int(round(nearest['composite_with_atm']))}/100
-NDWI={nearest.get('ndwi','N/A')}, כלורופיל={nearest.get('chl_proxy','N/A')},
-עכירות={nearest.get('turbidity','N/A')}, FAI={nearest.get('fai','N/A')}
-רוח: {atm_data['wind_speed']} m/s | גשם: {atm_data['precip_mm']} mm/6h |
-טמפ׳: {atm_data['temp_c']}°C | לחות: {atm_data['humidity']}%
-מה מצב הים בנקודה זו? האם הגורמים האטמוספריים משפיעים על הציון? האם בטוח לרחצה?\"\"\"
-
-# Optional CorrDiff (needs NVIDIA NGC key in st.secrets["ngc_api_key"]):
-# from earth2_integration import run_corrdiff_downscale
-# hires = run_corrdiff_downscale(wb_key, st.secrets["ngc_api_key"])
-"""
-
-if __name__ == "__main__":
-    print(INTEGRATION_SNIPPET)
 
 import ee
 import json
