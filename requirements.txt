@@ -4,6 +4,3 @@ folium
 streamlit-folium
 pandas
 numpy
-earth2studio
-torch
-xarray
