@@ -2,8 +2,7 @@
 app.py
 =============================================================================
 Israel Water Quality Monitor Dashboard - Sentinel-3 Exclusive Edition
-גרסה ממוקדת: חישוב ערך משוכלל (WQI) על בסיס לוויין Sentinel-3 OLCI בלבד.
-חיתוך קשיח למים טריטוריאליים והצגת תאריכי מעבר זמינים של S3.
+גרסה מעודכנת: מקרא רציף ממוקם *על המפה*, ערך משוכלל (WQI) בלבד, והחזרת רשימת החופים.
 =============================================================================
 """
 
@@ -14,7 +13,8 @@ import requests
 import pandas as pd
 import streamlit as st
 import folium
-import streamlit.components.v1 as components
+from branca.element import MacroElement
+from jinja2 import Template
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 from streamlit_folium import st_folium
@@ -46,7 +46,6 @@ init_gee()
 HAIFA_CENTER = [32.4, 34.85]
 HAIFA_BBOX   = ee.Geometry.Rectangle([34.20, 31.20, 35.20, 33.20])
 
-# פוליגון המים הטריטוריאליים הרשמי של מדינת ישראל בים התיכון
 ISRAEL_TERRITORIAL = ee.Geometry.Polygon([[
     [34.95, 33.10], [34.55, 33.10], [34.15, 32.50], [34.10, 32.00],
     [34.15, 31.50], [34.50, 31.25], [34.75, 31.25], [34.95, 31.30],
@@ -75,6 +74,40 @@ WATER_BODIES = {
 }
 
 # =============================================================================
+# רכיב חכם להזרקת מקרא צבעים רציף ישירות על גבי מפת הפוליום (On-Map Legend)
+# =============================================================================
+class OnMapWaterLegend(MacroElement):
+    def __init__(self):
+        super(OnMapWaterLegend, self).__init__()
+        self._template = Template("""
+            {% macro script(this, kwargs) %}
+            var legend = L.control({position: 'topright'});
+            legend.onAdd = function (map) {
+                var div = L.DomUtil.create('div', 'info legend');
+                div.style.background = 'rgba(255, 255, 255, 0.9)';
+                div.style.padding = '12px';
+                div.style.border = '2px solid #999';
+                div.style.borderRadius = '8px';
+                div.style.fontFamily = 'Arial, sans-serif';
+                div.style.fontSize = '13px';
+                div.style.direction = 'rtl';
+                div.style.boxShadow = '0 0 15px rgba(0,0,0,0.2)';
+                
+                div.innerHTML = `
+                    <div style="font-weight: bold; margin-bottom: 6px; text-align: center;">מדד איכות מים (Sentinel-3)</div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: bold; margin-bottom: 3px;">
+                        <span style="color: green;">מים נקיים</span>
+                        <span style="color: red;">מים מזוהמים/עכורים</span>
+                    </div>
+                    <div style="height: 15px; width: 180px; background: linear-gradient(to left, #00FF00, #FFFF00, #FF0000); border: 1px solid #666; border-radius: 3px;"></div>
+                `;
+                return div;
+            };
+            legend.addTo({{this._parent.get_name()}});
+            {% endmacro %}
+        """)
+
+# =============================================================================
 # מנוע תאריכים זמינים מתוך ארכיון Sentinel-3
 # =============================================================================
 @st.cache_data(ttl=14400)
@@ -83,7 +116,6 @@ def get_available_s3_dates(wb_key: str, days_back: int = 30):
     end = datetime.utcnow()
     start = end - timedelta(days=days_back)
     
-    # שאילתה ישירות לקטלוג Sentinel-3 OLCI
     coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
             .filterBounds(wb["bbox"])
             .filterDate(start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')))
@@ -93,15 +125,14 @@ def get_available_s3_dates(wb_key: str, days_back: int = 30):
     return unique_dates
 
 # =============================================================================
-# מנוע חישוב ערך משוכלל (WQI) המותאם ל-Sentinel-3 OLCI
+# מנוע חישוב ערך משוכלל (WQI) ודגימת תחנות עבור Sentinel-3
 # =============================================================================
-def process_s3_wqi_layer(wb_key, target_date_str):
+def process_s3_wqi_data(wb_key, target_date_str):
     wb = WATER_BODIES[wb_key]
     t_date = ee.Date(target_date_str)
     start_window = t_date.advance(-1, 'day')
     end_window = t_date.advance(1, 'day')
     
-    # מסכת מים קבועה (חיונית מאוד לרזולוציה של 300 מטר למניעת זליגת חוף יבשתי)
     gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
     water_mask = gsw.select("occurrence").gte(25)
     
@@ -110,56 +141,56 @@ def process_s3_wqi_layer(wb_key, target_date_str):
             .filterDate(start_window, end_window))
             
     if coll.size().getInfo() == 0: 
-        return None, "לא נמצאה סריקת Sentinel-3 עבור תאריך זה."
+        return None, None, "לא נמצאה סריקת Sentinel-3 עבור תאריך זה."
         
     img = coll.median().clip(wb["clip_geom"]).updateMask(water_mask)
     
-    # 1. מדד מים מבוסס S3 (Oa06 = Green 560nm, Oa17 = NIR 865nm)
+    # חישוב המדדים עבור הציון המשוכלל
     s3_ndwi = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).rename('S3_NDWI')
     
-    # 2. מדד כלורופיל ימי MCI (Maximum Chlorophyll Index) מבוסס ערוצי אדום/קצה-אדום של S3
-    b10 = img.select('Oa10_radiance') # 681.25 nm
-    b11 = img.select('Oa11_radiance') # 708.75 nm
-    b12 = img.select('Oa12_radiance') # 753.75 nm
+    b10 = img.select('Oa10_radiance')
+    b11 = img.select('Oa11_radiance')
+    b12 = img.select('Oa12_radiance')
     mci = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75 - 681.25) / (753.75 - 681.25)))).rename('MCI')
     
-    # 3. מדד עכירות מבוסס ערוץ אדום ראשי (Oa08 = Red 665nm)
     turbidity = img.select('Oa08_radiance').rename('S3_Turb')
     
-    # נרמול המדדים לסקאלה אחידה של 0-1 בהתאם לתכונות הספקטרליות של OLCI
     ndwi_norm = s3_ndwi.unitScale(-0.2, 0.5).clamp(0, 1)
     mci_norm  = ee.Image(1).subtract(mci.unitScale(-2, 12)).clamp(0, 1)
     turb_norm = ee.Image(1).subtract(turbidity.unitScale(10, 80)).clamp(0, 1)
     
-    # שקלול הציון המשוכלל הסופי (Water Quality Index)
     composite_wqi = ndwi_norm.add(mci_norm).add(turb_norm).divide(3).multiply(100)
     
-    vis_params = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
-    return composite_wqi, vis_params, None
+    # חילוץ נתונים עבור נקודות החופים/תחנות
+    def get_point_wqi(pt_info):
+        pt_geom = ee.Geometry.Point([pt_info["lon"], pt_info["lat"]])
+        try:
+            val = composite_wqi.reduceRegion(reducer=ee.Reducer.mean(), geometry=pt_geom.buffer(600), scale=300, bestEffort=True).getInfo()
+            wqi_val = val.get('S3_NDWI')  # מחזיר את שכבת הבסיס המשוכללת
+            return {**pt_info, "wqi": round(wqi_val, 1) if wqi_val is not None else None, "no_data": False if wqi_val is not None else True}
+        except:
+            return {**pt_info, "wqi": None, "no_data": True}
 
-# =============================================================================
-# מקרא צבעים קבוע למדד המשוכלל של Sentinel-3
-# =============================================================================
-def render_wqi_legend():
-    title = "מפתח צבעים: מדד איכות מים משולב מבוסס Sentinel-3 OLCI (WQI)"
-    colors = [
-        ("#FF0000", "איכות מים נמוכה / פריחת אצות חריפה או עכירות חוף גבוהה"), 
-        ("#FFFF00", "איכות מים בינונית / ערכים אוקיינוגרפיים מעורבים"), 
-        ("#00FF00", "איכות מים מעולה / מים נקיים וצלולים לחלוטין")
-    ]
-    legend_items = "".join([f'<div style="display: flex; align-items: center; margin-left: 20px;"><div style="width: 24px; height: 14px; background: {c[0]}; border: 1px solid #999; margin-left: 6px; border-radius: 2px;"></div><span style="font-size: 13px; color: #333;">{c[1]}</span></div>' for c in colors])
-    st.markdown(f'<div style="background: #F8F9FA; border: 1px solid #E0E0E0; border-radius: 8px; padding: 12px; margin-top: 10px; direction: rtl;"><div style="font-weight: bold; font-size: 14px; margin-bottom: 8px; color: #222;">{title}</div><div style="display: flex; flex-wrap: wrap;">{legend_items}</div></div>', unsafe_allow_html=True)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        sampled_points = list(executor.map(get_point_wqi, wb["points"]))
+        
+    df_res = pd.DataFrame(sampled_points)
+    # תיקון ערכים ריקים לטובת נראות בטבלה
+    if not df_res.empty and "wqi" in df_res.columns:
+        df_res["wqi"] = df_res["wqi"].apply(lambda x: round(x, 1) if (x is not None and not pd.isna(x)) else None)
+    
+    vis_params = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
+    return composite_wqi, df_res, None
 
 # =============================================================================
 # ממשק המשתמש (UI Layout)
 # =============================================================================
-st.title("🛰️ מערכת לווינית ייעודית: Sentinel-3 Water Quality Monitor")
-st.markdown("ניטור וחישוב הציון המשוכלל (WQI) על בסיס הסנסור האוקיינוגרפי OLCI של לוויין Sentinel-3, חתוך קשיח למים טריטוריאליים בלבד.")
+st.title("🛰️ מערכת Sentinel-3: ניטור ערך משוכלל של איכות המים")
+st.markdown("תצוגה בלעדית של הציון המשוכלל (WQI), חתוך קשיח למים טריטוריאליים, כולל סקלה רציפה מובנית על המפה ורשימת החופים.")
 
-st.sidebar.header("🔧 הגדרות ותאריכים (Sentinel-3)")
+st.sidebar.header("🔧 הגדרות ותאריכים")
 wb_selection = st.sidebar.selectbox("בחר גוף מים לניטור:", list(WATER_BODIES.keys()))
 
-# שליפת תאריכי מעבר אמיתיים של Sentinel-3 מהארכיון
 with st.spinner("מאתר תאריכי מעבר זמינים של Sentinel-3..."):
     available_dates = get_available_s3_dates(wb_selection)
 
@@ -168,55 +199,67 @@ if available_dates:
     date_selection_raw = st.sidebar.selectbox("בחר תאריך מעבר של הלוויין:", formatted_options)
     selected_date_str = date_selection_raw.replace("🟢 ", "")
 else:
-    st.sidebar.warning("לא נמצאו סריקות בארכיון ל-30 הימים האחרונים, מציג תאריך ברירת מחדל.")
+    st.sidebar.warning("לא נמצאו סריקות בארכיון, מציג תאריך ברירת מחדל.")
     selected_date_str = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
 
-# הרצת העיבוד של Sentinel-3
-with st.spinner("מחלץ ומעבד ערוצים אוקיינוגרפיים ב-Earth Engine..."):
-    wqi_layer, vis_params, error_msg = process_s3_wqi_layer(wb_selection, selected_date_str)
+# הרצת מנוע העיבוד המשולב
+with st.spinner("מחשב ערכים משוכללים ומפיק נתוני חופים..."):
+    wqi_layer, df_beaches, error_msg = process_s3_wqi_data(wb_selection, selected_date_str)
 
 if error_msg:
     st.error(error_msg)
 elif wqi_layer:
-    col_map, col_info = st.columns([2.5, 1])
+    col_map, col_info = st.columns([2.2, 1.1])
     
     with col_map:
-        st.subheader(f"מפת הציון המשוכלל (WQI): {wb_selection}")
-        st.caption(f"סנסור: Sentinel-3 OLCI | תאריך ניתוח: {selected_date_str} | **גבולות מים טריטוריאליים**")
+        st.subheader(f"📍 מפת מדד משוכלל (WQI): {wb_selection}")
         
-        # בניית מפת Folium
+        # יצירת מפה
         m = folium.Map(location=WATER_BODIES[wb_selection]["center"], zoom_start=WATER_BODIES[wb_selection]["zoom"])
         
-        # הזרקת שכבת ה-WQI החתוכה מ-GEE למפה
+        # טעינת שכבת הראסטר מ-GEE
+        vis_params = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
         map_id_dict = ee.Image(wqi_layer).getMapId(vis_params)
         folium.TileLayer(
             tiles=map_id_dict['tile_fetcher'].url_format,
-            attr='Google Earth Engine Sentinel-3 OLCI',
-            name="Sentinel-3 WQI",
+            attr='Google Earth Engine Sentinel-3',
+            name="WQI Index",
             overlay=True,
             control=False,
             opacity=0.85
         ).add_to(m)
         
-        # הוספת נקודות תחנות הדיגום הקבועות
-        for pt in WATER_BODIES[wb_selection]["points"]:
-            folium.Marker(
-                location=[pt["lat"], pt["lon"]],
-                popup=pt["name"],
-                icon=folium.Icon(color="blue", icon="info-sign")
+        # הוספת נקודות החופים למפה
+        for _, r in df_beaches.iterrows():
+            popup_text = f"{r['name']} | ציון: {r['wqi'] if r['wqi'] is not None else 'N/A'}"
+            color_marker = "green" if (r['wqi'] and r['wqi'] > 65) else "orange" if r['wqi'] else "red"
+            folium.CircleMarker(
+                location=[r["lat"], r["lon"]],
+                radius=6,
+                popup=popup_text,
+                color="black",
+                fill_color=color_marker,
+                fill_opacity=0.9,
+                fill=True
             ).add_to(m)
             
-        st_folium(m, width=850, height=550, key="s3_wqi_map")
+        # הזרקת המקרא הרציף ישירות על גבי המפה (בצד ימין למעלה)
+        m.add_child(OnMapWaterLegend())
         
-        # הצגת המקרא
-        render_wqi_legend()
+        st_folium(m, width=800, height=550, key="s3_onmap_map")
         
     with col_info:
-        st.subheader("📊 מאפייני הסנסור הימי")
-        st.info("לוויין Sentinel-3 מצויד במצלמת OLCI הכוללת 21 ערוצים ספקטרליים צרים המותאמים במיוחד לזיהוי שינויי צבע מים, עכירות אוקיינוגרפית ופריחות אצות.")
-        st.markdown(f"""
-        - **סנסור בסיס:** Sentinel-3 OLCI (Radiances)
-        - **רזולוציה מרחבית:** 300 מטר (רחב)
-        - **מדד כלורופיל מובנה:** MCI (Maximum Chlorophyll Index)
-        - **סינון יבשתי קשיח:** פעיל (מוגבל למים טריטוריאליים רשמיים ומסכת JRC לניקוי קצוות חוף)
-        """)
+        st.subheader("🏖️ סטטוס ורמת ניקיון החופים")
+        st.markdown("רשימת נקודות הניטור שנבחרו ורמת הציון המשוכלל שנמדדה עבורן:")
+        
+        # הצגת הטבלה מחדש בצורה נקיה וברורה עם שמות עבריים
+        if df_beaches is not None and not df_beaches.empty:
+            df_display = df_beaches[["name", "wqi"]].copy()
+            df_display.columns = ["שם החוף / תחנה", "מדד איכות מים משוכלל"]
+            # מילוי ערכים חסרים בצורה יפה
+            df_display["מדד איכות מים משוכלל"] = df_display["מדד איכות מים משוכלל"].fillna("אין נתונים קרובים")
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+        else:
+            st.write("לא נמצאו תחנות מוגדרות לאזור זה.")
+            
+        st.info("💡 **כיצד לקרוא את המדד:** ככל שהציון המשוכלל בטבלה ועל המפה קרוב יותר לירוק (ערכים גבוהים), המים מוגדרים נקיים וצלולים יותר. ערכים נמוכים (צבע אדום) מעידים על עכירות חלקיקים או הצטברות חומר אורגני.")
