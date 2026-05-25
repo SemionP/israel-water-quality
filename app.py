@@ -1,8 +1,8 @@
 """
 app.py
 =============================================================================
-Israel Water Quality Monitor Dashboard - Sentinel-3 Clean Edition
-גרסה מעודכנת: הסרת הבועות הקופצות אוטומטית (Popups) מהמרקורים, מעבר ל-Tooltips בריחופ עכבר בלבד.
+Israel Water Quality Monitor Dashboard - Sentinel-3 Pure Map Edition
+גרסה מעודכנת: הסרה מוחלטת של Tooltips ו-Popups מהנקודות במפה למניעת כיתובים תקועים.
 =============================================================================
 """
 
@@ -160,14 +160,12 @@ def process_s3_wqi_data(wb_key, target_date_str):
     
     raw_composite_wqi = ndwi_norm.add(mci_norm).add(turb_norm).divide(3).multiply(100).rename('WQI')
     
-    # מסנן החלקה מרחבי להעלמת פסים
     boxcar = ee.Kernel.square(radius=1, units='pixels')
     composite_wqi = raw_composite_wqi.reduceNeighborhood(
         reducer=ee.Reducer.mean(),
         kernel=boxcar
     ).rename('WQI').updateMask(water_mask)
     
-    # חילוץ נתונים עבור נקודות החופים/תחנות
     def get_point_wqi(pt_info):
         pt_geom = ee.Geometry.Point([pt_info["lon"], pt_info["lat"]])
         try:
@@ -233,14 +231,12 @@ elif wqi_layer:
             opacity=0.85
         ).add_to(m)
         
-        # הוספת נקודות החופים למפה ללא Popup אוטומטי - שימוש ב-Tooltip בלבד!
+        # הוספת נקודות החופים למפה - ללא popup וללא tooltip בכלל! מפה נקייה לחלוטין.
         for _, r in df_beaches.iterrows():
-            tooltip_text = f"<b>{r['name']}</b><br>ציון WQI: {r['wqi'] if r['wqi'] is not None else 'N/A'}"
             color_marker = "green" if (r['wqi'] and r['wqi'] > 65) else "orange" if r['wqi'] else "red"
             folium.CircleMarker(
                 location=[r["lat"], r["lon"]],
                 radius=6,
-                tooltip=tooltip_text, # החלפת ה-popup ב-tooltip לריחוף נקי
                 color="black",
                 fill_color=color_marker,
                 fill_opacity=0.9,
@@ -248,7 +244,7 @@ elif wqi_layer:
             ).add_to(m)
             
         m.add_child(OnMapWaterLegend())
-        st_folium(m, width=800, height=550, key="s3_clean_map_no_popups")
+        st_folium(m, width=800, height=550, key="s3_pure_map_no_labels")
         
     with col_info:
         st.subheader("🏖️ סטטוס ורמת ניקיון החופים")
