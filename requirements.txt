@@ -4,4 +4,6 @@ folium
 streamlit-folium
 pandas
 numpy
-earth2studio[gfs]
+earth2studio
+torch
+xarray
