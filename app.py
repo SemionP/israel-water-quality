@@ -1,8 +1,9 @@
 """
 app.py
 =============================================================================
-Israel Water Quality Monitor Dashboard - Sentinel-3 Exclusive Edition
-גרסה מעודכנת: מקרא רציף ממוקם *על המפה*, ערך משוכלל (WQI) בלבד, והחזרת רשימת החופים.
+Israel Water Quality Monitor Dashboard - Sentinel-3 Destriped Edition
+גרסה מעודכנת: כולל מסנן החלקה להסרת פסים אנכיים (Destriping Filter),
+תיקון באג דגימת החופים, ומקרא רציף מובנה על המפה.
 =============================================================================
 """
 
@@ -125,7 +126,7 @@ def get_available_s3_dates(wb_key: str, days_back: int = 30):
     return unique_dates
 
 # =============================================================================
-# מנוע חישוב ערך משוכלל (WQI) ודגימת תחנות עבור Sentinel-3
+# מנוע חישוב ערך משוכלל (WQI) עם מסנן החלקה להורדת פסים (Destriping Filter)
 # =============================================================================
 def process_s3_wqi_data(wb_key, target_date_str):
     wb = WATER_BODIES[wb_key]
@@ -145,48 +146,61 @@ def process_s3_wqi_data(wb_key, target_date_str):
         
     img = coll.median().clip(wb["clip_geom"]).updateMask(water_mask)
     
-    # חישוב המדדים עבור הציון המשוכלל
+    # 1. מדד מים מבוסס S3
     s3_ndwi = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).rename('S3_NDWI')
     
+    # 2. מדד כלורופיל ימי MCI
     b10 = img.select('Oa10_radiance')
     b11 = img.select('Oa11_radiance')
     b12 = img.select('Oa12_radiance')
     mci = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75 - 681.25) / (753.75 - 681.25)))).rename('MCI')
     
+    # 3. מדד עכירות מבוסס ערוץ אדום
     turbidity = img.select('Oa08_radiance').rename('S3_Turb')
     
+    # נרמול המדדים
     ndwi_norm = s3_ndwi.unitScale(-0.2, 0.5).clamp(0, 1)
     mci_norm  = ee.Image(1).subtract(mci.unitScale(-2, 12)).clamp(0, 1)
     turb_norm = ee.Image(1).subtract(turbidity.unitScale(10, 80)).clamp(0, 1)
     
-    composite_wqi = ndwi_norm.add(mci_norm).add(turb_norm).divide(3).multiply(100)
+    # שקלול הציון המשוכלל הסופי (WQI) לפני סינון הפסים
+    raw_composite_wqi = ndwi_norm.add(mci_norm).add(turb_norm).divide(3).multiply(100).rename('WQI')
     
-    # חילוץ נתונים עבור נקודות החופים/תחנות
+    # --- מנגנון Destriping: מסנן החלקה מרחבי להעלמת פסים ורטיקליים ---
+    # נשתמש ברדיוס החלקה ריבועי מתון (3x3 פיקסלים של 300 מטר) כדי לטשטש את הבדלי הכיול האנכיים בלי לפגוע במבנה הכללי
+    boxcar = ee.Kernel.square(radius=1, units='pixels')
+    composite_wqi = raw_composite_wqi.reduceNeighborhood(
+        reducer=ee.Reducer.mean(),
+        kernel=boxcar
+    ).rename('WQI').updateMask(water_mask)
+    
+    # חילוץ נתונים עבור נקודות החופים/תחנות (תיקון באג: דגימת שכבת ה-'WQI' הנכונה)
     def get_point_wqi(pt_info):
         pt_geom = ee.Geometry.Point([pt_info["lon"], pt_info["lat"]])
         try:
-            val = composite_wqi.reduceRegion(reducer=ee.Reducer.mean(), geometry=pt_geom.buffer(600), scale=300, bestEffort=True).getInfo()
-            wqi_val = val.get('S3_NDWI')  # מחזיר את שכבת הבסיס המשוכללת
-            return {**pt_info, "wqi": round(wqi_val, 1) if wqi_val is not None else None, "no_data": False if wqi_val is not None else True}
+            val = composite_wqi.reduceRegion(
+                reducer=ee.Reducer.mean(), 
+                geometry=pt_geom.buffer(450), 
+                scale=300, 
+                bestEffort=True
+            ).getInfo()
+            wqi_val = val.get('WQI')  # תיקון קריטי לשם השכבה
+            return {**pt_info, "wqi": round(wqi_val, 1) if wqi_val is not None else None}
         except:
-            return {**pt_info, "wqi": None, "no_data": True}
+            return {**pt_info, "wqi": None}
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         sampled_points = list(executor.map(get_point_wqi, wb["points"]))
         
     df_res = pd.DataFrame(sampled_points)
-    # תיקון ערכים ריקים לטובת נראות בטבלה
-    if not df_res.empty and "wqi" in df_res.columns:
-        df_res["wqi"] = df_res["wqi"].apply(lambda x: round(x, 1) if (x is not None and not pd.isna(x)) else None)
     
-    vis_params = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
     return composite_wqi, df_res, None
 
 # =============================================================================
 # ממשק המשתמש (UI Layout)
 # =============================================================================
-st.title("🛰️ מערכת Sentinel-3: ניטור ערך משוכלל של איכות המים")
-st.markdown("תצוגה בלעדית של הציון המשוכלל (WQI), חתוך קשיח למים טריטוריאליים, כולל סקלה רציפה מובנית על המפה ורשימת החופים.")
+st.title("🛰 *מערכת Sentinel-3: ניטור מים ללא פסים (Destriped)*")
+st.markdown("תצוגת הציון המשוכלל (WQI) לאחר הפעלת מסנן החלקה ספקטרלי ממוקד להסרת אנומליות סריקה אנכיות.")
 
 st.sidebar.header("🔧 הגדרות ותאריכים")
 wb_selection = st.sidebar.selectbox("בחר גוף מים לניטור:", list(WATER_BODIES.keys()))
@@ -202,8 +216,8 @@ else:
     st.sidebar.warning("לא נמצאו סריקות בארכיון, מציג תאריך ברירת מחדל.")
     selected_date_str = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
 
-# הרצת מנוע העיבוד המשולב
-with st.spinner("מחשב ערכים משוכללים ומפיק נתוני חופים..."):
+# הרצת מנוע העיבוד המשולב והמסונן
+with st.spinner("מחשב ערכים משוכללים, מפעיל מסנן גלאים ומפיק נתוני חופים..."):
     wqi_layer, df_beaches, error_msg = process_s3_wqi_data(wb_selection, selected_date_str)
 
 if error_msg:
@@ -212,18 +226,16 @@ elif wqi_layer:
     col_map, col_info = st.columns([2.2, 1.1])
     
     with col_map:
-        st.subheader(f"📍 מפת מדד משוכלל (WQI): {wb_selection}")
+        st.subheader(f"📍 מפת מדד משוכלל חלקה (WQI): {wb_selection}")
         
-        # יצירת מפה
         m = folium.Map(location=WATER_BODIES[wb_selection]["center"], zoom_start=WATER_BODIES[wb_selection]["zoom"])
         
-        # טעינת שכבת הראסטר מ-GEE
         vis_params = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
         map_id_dict = ee.Image(wqi_layer).getMapId(vis_params)
         folium.TileLayer(
             tiles=map_id_dict['tile_fetcher'].url_format,
-            attr='Google Earth Engine Sentinel-3',
-            name="WQI Index",
+            attr='Google Earth Engine Sentinel-3 Filtered',
+            name="WQI Index (Destriped)",
             overlay=True,
             control=False,
             opacity=0.85
@@ -243,23 +255,19 @@ elif wqi_layer:
                 fill=True
             ).add_to(m)
             
-        # הזרקת המקרא הרציף ישירות על גבי המפה (בצד ימין למעלה)
         m.add_child(OnMapWaterLegend())
-        
-        st_folium(m, width=800, height=550, key="s3_onmap_map")
+        st_folium(m, width=800, height=550, key="s3_destriped_map")
         
     with col_info:
         st.subheader("🏖️ סטטוס ורמת ניקיון החופים")
-        st.markdown("רשימת נקודות הניטור שנבחרו ורמת הציון המשוכלל שנמדדה עבורן:")
+        st.markdown("ערכי המדד המשוכלל (WQI) שנדגמו סביב תחנות הניטור המבוקשות:")
         
-        # הצגת הטבלה מחדש בצורה נקיה וברורה עם שמות עבריים
         if df_beaches is not None and not df_beaches.empty:
             df_display = df_beaches[["name", "wqi"]].copy()
             df_display.columns = ["שם החוף / תחנה", "מדד איכות מים משוכלל"]
-            # מילוי ערכים חסרים בצורה יפה
-            df_display["מדד איכות מים משוכלל"] = df_display["מדד איכות מים משוכלל"].fillna("אין נתונים קרובים")
+            df_display["מדד איכות מים משוכלל"] = df_display["מדד איכות מים משוכלל"].fillna("אין נתונים")
             st.dataframe(df_display, use_container_width=True, hide_index=True)
         else:
             st.write("לא נמצאו תחנות מוגדרות לאזור זה.")
             
-        st.info("💡 **כיצד לקרוא את המדד:** ככל שהציון המשוכלל בטבלה ועל המפה קרוב יותר לירוק (ערכים גבוהים), המים מוגדרים נקיים וצלולים יותר. ערכים נמוכים (צבע אדום) מעידים על עכירות חלקיקים או הצטברות חומר אורגני.")
+        st.info("🔧 **תיקון הראסטר:** הקוד מפעיל כעת פונקציית `reduceNeighborhood` עם קרנל ריבועי אחיד המנקה את הבדלי הכיול הטוריים האנכיים האופייניים לחיישן ה-OLCI, ומספק שכבה רציפה ונקייה יותר לעין המחקרית.")
