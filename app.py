@@ -1,30 +1,212 @@
 """
 app.py
 =============================================================================
-Israel Water Quality Monitor Dashboard - Sentinel-3 Forced Reset Edition
-גרסה מעודכנת: שינוי קשיח של ה-Key לריסוס סופי של שאריות בועות מהזיכרון.
+Israel Water Quality Monitor Dashboard - Clean Map Edition
+מערכת מדעית לניטור איכות המים בישראל באמצעות חישה מרחוק ו-Earth Engine.
 =============================================================================
 """
 
+import math
 import json
-import os
 import tempfile
-import requests
+import os
+from typing import Optional
+from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import pandas as pd
 import streamlit as st
 import folium
+from streamlit_folium import st_folium
+import streamlit.components.v1 as components
+import ee
 from branca.element import MacroElement
 from jinja2 import Template
-from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
-from streamlit_folium import st_folium
-import ee
 
-# קונפיגורציה
-st.set_page_config(page_title="Israel Water Quality Monitor - Sentinel-3 WQI", layout="wide")
+# קונפיגורציה בסיסית
+st.set_page_config(page_title="Israel Water Quality Monitor - Sentinel WQI", layout="wide")
+
+# ==============================================================================
+# SEO & Analytics
+# ==============================================================================
+seo_html = """
+<meta name="description" content="מערכת מדעית לניטור איכות המים בישראל בזמן אמת (ים תיכון, כנרת, ים המלח וים סוף) באמצעות חישה מרחוק, נתוני הלוויין Sentinel ו-Google Earth Engine." />
+<meta name="keywords" content="איכות מים, חישה מרחוק, לוויין, Sentinel-2, GEE, כנרת, ים המלח, עכירות, כלורופיל, אצות, Water Quality Israel, Remote Sensing, Google Earth Engine" />
+<meta property="og:title" content="ניטור איכות מים לוויני — ישראל" />
+<meta property="og:description" content="ניטור ומעקב מדעי מתקדם של עכירות, כלורופיל ופריחת אצות בגופי המים בישראל באמצעות חישה מרחוק." />
+<meta property="og:type" content="website" />
+<meta property="og:url" content="https://israel-water-quality.streamlit.app/" />
+"""
+st.markdown('<meta name="google-site-verification" content="להדביק_כאן_את_הקוד_מגוגל" />', unsafe_allow_html=True)
+
+# Analytics components
+components.html('<script async src="https://cloud.umami.is/script.js" data-website-id="07a48db1-5aa7-4d88-aaac-9cfb6fc2600d"></script>', height=0)
+
+if "ga_loaded" not in st.session_state:
+    st.session_state.ga_loaded = True
+    components.html(
+        """
+        <script async src="https://www.googletagmanager.com/gtag/js?id=G-K37THY2160"></script>
+        <script>
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+          gtag('config', 'G-K37THY2160');
+        </script>
+        """,
+        height=0,
+    )
 
 # =============================================================================
-# Google Earth Engine (GEE) Authentication
+# 1. מודול הקשר אטמוספרי (Open-Meteo)
+# =============================================================================
+_WB_CENTRES = {
+    "🏖️ חוף הים התיכון": (32.40, 34.85),
+    "🌊 כנרת":            (32.82, 35.59),
+    "🧂 ים המלח":         (31.50, 35.47),
+    "🐠 ים סוף":          (29.55, 34.95),
+}
+
+@st.cache_data(ttl=3600)
+def get_atmospheric_context(wb_key: str) -> dict:
+    empty = _empty_atm()
+    lat, lon = _WB_CENTRES.get(wb_key, (32.0, 35.0))
+    try:
+        import requests as _requests
+        resp = _requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude":       lat,
+                "longitude":      lon,
+                "current":        ",".join([
+                    "temperature_2m",
+                    "relative_humidity_2m",
+                    "wind_speed_10m",
+                    "wind_direction_10m",
+                    "precipitation",
+                    "weather_code",
+                ]),
+                "wind_speed_unit": "ms",
+                "forecast_days":   1,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        cur = resp.json().get("current", {})
+
+        wind_speed = cur.get("wind_speed_10m")
+        wind_dir   = cur.get("wind_direction_10m")
+        temp_c     = cur.get("temperature_2m")
+        humidity   = cur.get("relative_humidity_2m")
+        precip_mm  = cur.get("precipitation")
+        wcode      = cur.get("weather_code", 0)
+
+        return {
+            "wind_speed":    round(wind_speed, 1) if wind_speed is not None else None,
+            "wind_dir_deg":  round(wind_dir,   1) if wind_dir   is not None else None,
+            "temp_c":        round(temp_c,     1) if temp_c     is not None else None,
+            "humidity":      round(humidity,   0) if humidity   is not None else None,
+            "precip_mm":     round(precip_mm,  2) if precip_mm  is not None else None,
+            "weather_code":  wcode,
+            "analysis_time": cur.get("time", "—"),
+            "centre_lat":    lat,
+            "centre_lon":    lon,
+            "_error":        None,
+            "_source":       "Open-Meteo (GFS/ERA5)",
+        }
+    except Exception as exc:
+        empty["_error"] = f"שגיאה בטעינת מזג אוויר: {exc}"
+        return empty
+
+def _empty_atm() -> dict:
+    return {
+        "wind_speed": None, "wind_dir_deg": None, "temp_c": None,
+        "humidity": None, "precip_mm": None, "weather_code": None,
+        "analysis_time": None, "centre_lat": None, "centre_lon": None,
+        "_error": None, "_source": "Open-Meteo (GFS/ERA5)",
+    }
+
+def blend_atmospheric_penalty(df, atm: dict, wb_key: str):
+    def _penalty(row) -> float:
+        if row.get("composite") is None:
+            return 0.0
+        p   = 0.0
+        ws  = atm.get("wind_speed")
+        pr  = atm.get("precip_mm")
+        rh  = atm.get("humidity")
+
+        if ws is not None:
+            if ws > 15:    p += 10.0
+            elif ws > 10:  p += 7.0
+            elif ws > 7:   p += 4.0
+            elif ws > 4:   p += 1.5
+
+        if pr is not None:
+            if pr > 5:     p += 8.0
+            elif pr > 2:   p += 5.0
+            elif pr > 0.5: p += 2.0
+
+        closed = {"🌊 כנרת", "🧂 ים המלח", "🐠 ים סוף"}
+        if wb_key in closed and rh is not None:
+            if rh > 85:    p += 7.0
+            elif rh > 70:  p += 3.0
+
+        return min(p, 25.0)
+
+    df = df.copy()
+    df["atm_penalty"] = df.apply(_penalty, axis=1)
+    df["composite_with_atm"] = df.apply(
+        lambda r: (
+            round(max(0.0, r["composite"] - r["atm_penalty"]), 1)
+            if r["composite"] is not None else None
+        ),
+        axis=1,
+    )
+    return df
+
+def render_earth2_sidebar(atm: dict, wb_key: str) -> None:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🌍 הקשר אטמוספרי\n<small style='color:#888;'>Open-Meteo · GFS/ERA5 · עדכון שעתי</small>", unsafe_allow_html=True)
+
+    if atm.get("_error"):
+        st.sidebar.warning(atm["_error"])
+        return
+
+    ws  = atm.get("wind_speed")
+    wd  = atm.get("wind_dir_deg")
+    tc  = atm.get("temp_c")
+    pr  = atm.get("precip_mm")
+    rh  = atm.get("humidity")
+    ts  = atm.get("analysis_time", "—")
+
+    if ws is not None:
+        arrows = ["↑","↗","→","↘","↓","↙","←","↖"]
+        arrow = arrows[int((wd + 22.5) / 45) % 8] if wd is not None else ""
+        
+        # Beaufort calculation
+        bf = 12
+        for b, t in enumerate([0.3,1.6,3.4,5.5,8.0,10.8,13.9,17.2,20.8,24.5,28.5,32.7]):
+            if ws < t: bf = b; break
+            
+        st.sidebar.metric(label=f"💨 רוח {arrow}", value=f"{ws:.1f} m/s", delta=f"Beaufort {bf}", delta_color="inverse" if bf >= 5 else "normal")
+
+    if tc is not None: st.sidebar.metric("🌡️ טמפרטורה", f"{tc:.1f} °C")
+    if pr is not None: st.sidebar.metric("🌧️ גשם" if pr > 0.5 else "☀️ יבש", f"{pr:.1f} mm/h")
+    if rh is not None: st.sidebar.metric("💧 לחות", f"{int(rh)}%")
+
+    # Risk assessment
+    score = 0
+    reasons = []
+    if ws and ws > 7: score += 1; reasons.append("רוח ערנית")
+    if pr and pr > 0.5: score += 2; reasons.append("משקעים")
+    
+    if score == 0:
+        st.sidebar.markdown('<div style="background:#f8f9fa;border-radius:10px;padding:10px;border-right:4px solid #27AE60;direction:rtl;"><b>✅ סיכון אטמוספרי נמוך</b></div>', unsafe_allow_html=True)
+    else:
+        st.sidebar.markdown(f'<div style="background:#f8f9fa;border-radius:10px;padding:10px;border-right:4px solid #F1C40F;direction:rtl;"><b>🟡 סיכון בינוני</b><br><span style="font-size:12px;">{", ".join(reasons)}</span></div>', unsafe_allow_html=True)
+
+# =============================================================================
+# 2. אימות Google Earth Engine (GEE)
 # =============================================================================
 @st.cache_resource
 def init_gee():
@@ -41,7 +223,7 @@ def init_gee():
 init_gee()
 
 # =============================================================================
-# גיאומטריות וחיתוך קשיח למים טריטוריאליים בלבד
+# 3. גיאומטריות ומקרא מובנה
 # =============================================================================
 HAIFA_CENTER = [32.4, 34.85]
 HAIFA_BBOX   = ee.Geometry.Rectangle([34.20, 31.20, 35.20, 33.20])
@@ -73,9 +255,6 @@ WATER_BODIES = {
     "🐠 ים סוף": {"center": [29.55, 34.95], "zoom": 13, "bbox": RED_SEA_BBOX, "clip_geom": RED_SEA_BBOX, "points": [{"name": "מפרץ אילת", "lat": 29.530, "lon": 34.951}]}
 }
 
-# =============================================================================
-# מקרא רציף
-# =============================================================================
 class OnMapWaterLegend(MacroElement):
     def __init__(self):
         super(OnMapWaterLegend, self).__init__()
@@ -107,6 +286,9 @@ class OnMapWaterLegend(MacroElement):
             {% endmacro %}
         """)
 
+# =============================================================================
+# 4. עיבוד וטעינת נתונים לוויניים
+# =============================================================================
 @st.cache_data(ttl=14400)
 def get_available_s3_dates(wb_key: str, days_back: int = 30):
     wb = WATER_BODIES[wb_key]
@@ -118,8 +300,7 @@ def get_available_s3_dates(wb_key: str, days_back: int = 30):
             .filterDate(start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')))
     
     dates_list = coll.aggregate_array("system:time_start").getInfo()
-    unique_dates = sorted(list(set([datetime.utcfromtimestamp(d / 1000).strftime("%Y-%m-%d") for d in dates_list])), reverse=True)
-    return unique_dates
+    return sorted(list(set([datetime.utcfromtimestamp(d / 1000).strftime("%Y-%m-%d") for d in dates_list])), reverse=True)
 
 def process_s3_wqi_data(wb_key, target_date_str):
     wb = WATER_BODIES[wb_key]
@@ -140,12 +321,8 @@ def process_s3_wqi_data(wb_key, target_date_str):
     img = coll.median().clip(wb["clip_geom"]).updateMask(water_mask)
     
     s3_ndwi = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).rename('S3_NDWI')
-    
-    b10 = img.select('Oa10_radiance')
-    b11 = img.select('Oa11_radiance')
-    b12 = img.select('Oa12_radiance')
+    b10, b11, b12 = img.select('Oa10_radiance'), img.select('Oa11_radiance'), img.select('Oa12_radiance')
     mci = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75 - 681.25) / (753.75 - 681.25)))).rename('MCI')
-    
     turbidity = img.select('Oa08_radiance').rename('S3_Turb')
     
     ndwi_norm = s3_ndwi.unitScale(-0.2, 0.5).clamp(0, 1)
@@ -153,22 +330,13 @@ def process_s3_wqi_data(wb_key, target_date_str):
     turb_norm = ee.Image(1).subtract(turbidity.unitScale(10, 80)).clamp(0, 1)
     
     raw_composite_wqi = ndwi_norm.add(mci_norm).add(turb_norm).divide(3).multiply(100).rename('WQI')
-    
     boxcar = ee.Kernel.square(radius=1, units='pixels')
-    composite_wqi = raw_composite_wqi.reduceNeighborhood(
-        reducer=ee.Reducer.mean(),
-        kernel=boxcar
-    ).rename('WQI').updateMask(water_mask)
+    composite_wqi = raw_composite_wqi.reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=boxcar).rename('WQI').updateMask(water_mask)
     
     def get_point_wqi(pt_info):
         pt_geom = ee.Geometry.Point([pt_info["lon"], pt_info["lat"]])
         try:
-            val = composite_wqi.reduceRegion(
-                reducer=ee.Reducer.mean(), 
-                geometry=pt_geom.buffer(450), 
-                scale=300, 
-                bestEffort=True
-            ).getInfo()
+            val = composite_wqi.reduceRegion(reducer=ee.Reducer.mean(), geometry=pt_geom.buffer(450), scale=300, bestEffort=True).getInfo()
             wqi_val = val.get('WQI')
             return {**pt_info, "wqi": round(wqi_val, 1) if wqi_val is not None else None}
         except:
@@ -177,17 +345,20 @@ def process_s3_wqi_data(wb_key, target_date_str):
     with ThreadPoolExecutor(max_workers=4) as executor:
         sampled_points = list(executor.map(get_point_wqi, wb["points"]))
         
-    df_res = pd.DataFrame(sampled_points)
-    return composite_wqi, df_res, None
+    return composite_wqi, pd.DataFrame(sampled_points), None
 
 # =============================================================================
-# ממשק המשתמש (UI Layout)
+# 5. ממשק משתמש ותצוגת מפה נקייה
 # =============================================================================
 st.title("🛰️ מערכת Sentinel-3: ניטור ערך משוכלל של איכות המים")
-st.markdown("תצוגה בלעדית של הציון המשוכלל (WQI), חתוך קשיח למים טריטוריאליים, כולל סקלה רציפה מובנית על המפה ורשימת החופים.")
+st.markdown("תצוגה של הציון המשוכלל (WQI) חתוך קשיח למים טריטוריאליים, כולל מודול הקשר אטמוספרי ומפת חופים נקייה לחלוטין.")
 
 st.sidebar.header("🔧 הגדרות ותאריכים")
 wb_selection = st.sidebar.selectbox("בחר גוף מים לניטור:", list(WATER_BODIES.keys()))
+
+# טעינת נתוני מזג אוויר לסיידבר
+atm_data = get_atmospheric_context(wb_selection)
+render_earth2_sidebar(atm_data, wb_selection)
 
 with st.spinner("מאתר תאריכי מעבר זמינים של Sentinel-3..."):
     available_dates = get_available_s3_dates(wb_selection)
@@ -197,7 +368,6 @@ if available_dates:
     date_selection_raw = st.sidebar.selectbox("בחר תאריך מעבר של הלוויין:", formatted_options)
     selected_date_str = date_selection_raw.replace("🟢 ", "")
 else:
-    st.sidebar.warning("לא נמצאו סריקות בארכיון, מציג תאריך ברירת מחדל.")
     selected_date_str = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
 
 with st.spinner("מחשב ערכים משוכללים ומפיק נתוני חופים..."):
@@ -206,11 +376,13 @@ with st.spinner("מחשב ערכים משוכללים ומפיק נתוני חו
 if error_msg:
     st.error(error_msg)
 elif wqi_layer:
+    # הטמעת שקלול עונתי/אטמוספרי לטבלה
+    df_beaches = blend_atmospheric_penalty(df_beaches, atm_data, wb_selection)
+    
     col_map, col_info = st.columns([2.2, 1.1])
     
     with col_map:
         st.subheader(f"📍 מפת מדד משוכלל (WQI): {wb_selection}")
-        
         m = folium.Map(location=WATER_BODIES[wb_selection]["center"], zoom_start=WATER_BODIES[wb_selection]["zoom"])
         
         vis_params = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
@@ -224,33 +396,35 @@ elif wqi_layer:
             opacity=0.85
         ).add_to(m)
         
-        # הוספת נקודות החופים - מבוסס Circle בלבד, ללא פרמטר popup או tooltip מכל סוג שהוא
+        # הוספת עיגולים נקיים בלבד ללא שום ארגומנט של popup, tooltip, או hover
         for _, r in df_beaches.iterrows():
-            color_marker = "green" if (r['wqi'] and r['wqi'] > 65) else "orange" if r['wqi'] else "red"
+            score_for_color = r['composite_with_atm'] if pd.notna(r['composite_with_atm']) else r['wqi']
+            color_marker = "green" if (score_for_color and score_for_color > 65) else "orange" if score_for_color else "red"
             folium.Circle(
                 location=[r["lat"], r["lon"]],
-                radius=1500, # גודל קבוע במטרים כדי שלא יתקעו עליו בועות טקסט של גיאומטריית נקודה
+                radius=1400,
                 color="black",
+                weight=1,
                 fill_color=color_marker,
-                fill_opacity=0.85,
+                fill_opacity=0.9,
                 fill=True
             ).add_to(m)
             
         m.add_child(OnMapWaterLegend())
         
-        # שינוי ה-key לערך חדש לגמרי שמכריח את פוליום להתנקות מהזיכרון הקודם של הדפדפן
-        st_folium(m, width=800, height=550, key="s3_pure_and_clean_map_v3")
+        # שימוש במפתח ייחודי קשיח (key) חדש המונע מהרכיב להשתמש ב-Cache הישן של הדפדפן
+        st_folium(m, width=800, height=550, key="s3_final_pure_map_v5")
         
     with col_info:
         st.subheader("🏖️ סטטוס ורמת ניקיון החופים")
-        st.markdown("ערכי המדד המשוכלל (WQI) שנדגמו סביב תחנות הניטור המבוקשות:")
         
         if df_beaches is not None and not df_beaches.empty:
-            df_display = df_beaches[["name", "wqi"]].copy()
-            df_display.columns = ["שם החוף / תחנה", "מדד איכות מים משוכלל"]
-            df_display["מדד איכות מים משוכלל"] = df_display["מדד איכות מים משוכלל"].fillna("אין נתונים")
+            df_display = df_beaches[["name", "wqi", "composite_with_atm"]].copy()
+            df_display.columns = ["שם התחנה", "WQI לווייני גולמי", "ציון משוקלל אטמוספרי"]
+            df_display["WQI לווייני גולמי"] = df_display["WQI לווייני גולמי"].fillna("אין נתונים")
+            df_display["ציון משוקלל אטמוספרי"] = df_display["ציון משוקלל אטמוספרי"].fillna("אין נתונים")
             st.dataframe(df_display, use_container_width=True, hide_index=True)
         else:
             st.write("לא נמצאו תחנות מוגדרות לאזור זה.")
             
-        st.info("💡 **כיצד לקרוא את המדד:** ככל שהציון המשוכלל בטבלה ועל המפה קרוב יותר לירוק (ערכים גבוהים), המים מוגדרים נקיים וצלולים יותר. ערכים נמוכים (צבע אדום) מעידים על עכירות חלקיקים או הצטברות חומר אורגני.")
+        st.info("💡 **הסבר על המדד:** צבע ירוק במפה וערכים גבוהים בטבלה מעידים על מים צלולים ונקיים. ערכים נמוכים (צבע אדום) מעידים על עכירות חלקיקים או פריחת חומר אורגני. העמודה המשוקללת לוקחת בחשבון את השפעת הרוחות והמשקעים באזור.")
