@@ -1,8 +1,8 @@
 """
 app.py
 =============================================================================
-Israel Water Quality Monitor Dashboard - Sentinel-3 Destriped Edition
-גרסה מעודכנת: ללא תיבת המידע על תיקון הראסטר בתחתית העמודה הצידית.
+Israel Water Quality Monitor Dashboard - Sentinel-3 Clean Edition
+גרסה מעודכנת: הסרת הבועות הקופצות אוטומטית (Popups) מהמרקורים, מעבר ל-Tooltips בריחופ עכבר בלבד.
 =============================================================================
 """
 
@@ -233,14 +233,14 @@ elif wqi_layer:
             opacity=0.85
         ).add_to(m)
         
-        # הוספת נקודות החופים למפה
+        # הוספת נקודות החופים למפה ללא Popup אוטומטי - שימוש ב-Tooltip בלבד!
         for _, r in df_beaches.iterrows():
-            popup_text = f"{r['name']} | ציון: {r['wqi'] if r['wqi'] is not None else 'N/A'}"
+            tooltip_text = f"<b>{r['name']}</b><br>ציון WQI: {r['wqi'] if r['wqi'] is not None else 'N/A'}"
             color_marker = "green" if (r['wqi'] and r['wqi'] > 65) else "orange" if r['wqi'] else "red"
             folium.CircleMarker(
                 location=[r["lat"], r["lon"]],
                 radius=6,
-                popup=popup_text,
+                tooltip=tooltip_text, # החלפת ה-popup ב-tooltip לריחוף נקי
                 color="black",
                 fill_color=color_marker,
                 fill_opacity=0.9,
@@ -248,7 +248,7 @@ elif wqi_layer:
             ).add_to(m)
             
         m.add_child(OnMapWaterLegend())
-        st_folium(m, width=800, height=550, key="s3_clean_map")
+        st_folium(m, width=800, height=550, key="s3_clean_map_no_popups")
         
     with col_info:
         st.subheader("🏖️ סטטוס ורמת ניקיון החופים")
