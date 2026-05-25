@@ -2,9 +2,8 @@
 app.py
 =============================================================================
 Israel & Global Water Quality Monitor Dashboard
-Combines real-time atmospheric adjustments via Open-Meteo, 
-Multi-sensor parallel GEE processing (Sentinel-1, 2, 3), 
-and an automated Global Remote Sensing Geolocation Tab.
+כולל החלפת שכבות ראסטר לוויניות (מקומי וגלובלי), התאמה אטמוספרית,
+ועיבוד מקבילי מהיר ב-Google Earth Engine.
 =============================================================================
 """
 
@@ -18,21 +17,13 @@ import streamlit as st
 import folium
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from streamlit_folium import st_folium
 import ee
 
 # ==============================================================================
 # SEO Optimization & Analytics Injection
 # ==============================================================================
-seo_html = """
-<meta name="description" content="מערכת מדעית לניטור איכות המים בישראל ובעולם בזמן אמת באמצעות חישה מרחוק, נתוני הלוויין Sentinel-2 ו-Google Earth Engine." />
-<meta name="keywords" content="איכות מים, חישה מרחוק, לוויין, Sentinel-2, GEE, כנרת, ים המלח, עכירות, כלורופיל, אצות, Water Quality Israel, Remote Sensing, Google Earth Engine" />
-<meta property="og:title" content="ניטור איכות מים לוויני — ישראל ועולמי (Sentinel-2 & GEE)" />
-<meta property="og:description" content="ניטור ומעקב מדעי מתקדם של עכירות, כלורופיל ופריחת אצות בגופי המים בישראל ובעולם באמצעות חישה מרחוק." />
-<meta property="og:type" content="website" />
-<meta property="og:url" content="https://israel-water-quality.streamlit.app/" />
-"""
 st.markdown(
     '<meta name="google-site-verification" content="להדביק_כאן_את_הקוד_מגוגל" />', 
     unsafe_allow_html=True
@@ -89,7 +80,6 @@ _WB_CENTRES = {
 
 @st.cache_data(ttl=3600)
 def get_atmospheric_context(wb_key: str) -> dict:
-    """Fetch current atmospheric conditions for *wb_key* from Open-Meteo."""
     empty = _empty_atm()
     lat, lon = _WB_CENTRES.get(wb_key, (32.0, 35.0))
     try:
@@ -147,7 +137,6 @@ def _empty_atm() -> dict:
     }
 
 def blend_atmospheric_penalty(df, atm: dict, wb_key: str):
-    """Adds composite_with_atm column = composite − atmospheric penalty (0–25 pts)."""
     def _penalty(row) -> float:
         if row.get("composite") is None:
             return 0.0
@@ -186,11 +175,10 @@ def blend_atmospheric_penalty(df, atm: dict, wb_key: str):
     return df
 
 def render_earth2_sidebar(atm: dict, wb_key: str) -> None:
-    """Render atmospheric context card in the Streamlit sidebar."""
     st.sidebar.markdown("---")
     st.sidebar.markdown(
         "### 🌍 הקשר אטמוספרי\n"
-        "<small style='color:#888;'>Open-Meteo · GFS/ERA5 · עדכון שעתי</small>",
+        "<small style='color:#888;'>Open-Meteo · GFS/ERA5</small>",
         unsafe_allow_html=True,
     )
     if atm.get("_error"):
@@ -209,7 +197,6 @@ def render_earth2_sidebar(atm: dict, wb_key: str) -> None:
     if pr is not None: st.sidebar.metric("🌧️ גשם" if pr > 0.5 else "☀️ יבש", f"{pr:.1f} mm/h")
     if rh is not None: st.sidebar.metric("💧 לחות", f"{int(rh)}%")
 
-    # Risk badge logic
     score, reasons = 0, []
     if ws and ws > 7: score += 1; reasons.append("רוח חזקה")
     if pr and pr > 0.5: score += 1; reasons.append("גשם")
@@ -219,25 +206,18 @@ def render_earth2_sidebar(atm: dict, wb_key: str) -> None:
         rl, rc, rt = "🟡 סיכון בינוני", "#F1C40F", " · ".join(reasons) + " — ייתכן עיוות קל בנתוני הלוויין."
         
     st.sidebar.markdown(f"""<div style="background:#f8f9fa;border-radius:10px;padding:10px 14px;border-right:4px solid {rc};direction:rtl;font-family:Arial;margin-top:6px;"><b style="color:{rc};">{rl}</b><br><span style="font-size:12px;color:#555;">{rt}</span></div>""", unsafe_allow_html=True)
-    st.sidebar.caption(f"🕐 {ts} · {atm.get('_source','')}")
 
 
 # =============================================================================
-# 2. Global Visitor Geolocation Helper (IP-Based Routing Check)
+# 2. Global Visitor Geolocation Helper (IP-Based Lookup)
 # =============================================================================
 def get_visitor_geolocation():
-    """
-    Detects client country location using safe server-side IP tracking lookup.
-    Defaults to the Mediterranean Coast if the visitor is located inside Israel.
-    """
-    default_lat, default_lon = 32.40, 34.85  # Default Mediterranean Center
+    default_lat, default_lon = 32.40, 34.85
     try:
         response = requests.get("https://ipapi.co/json/", timeout=3)
         if response.status_code == 200:
             data = response.json()
             country_code = data.get("country_code", "IL")
-            
-            # If the client logs in outside of Israel, serve their exact proximity coordinate
             if country_code != "IL":
                 lat = data.get("latitude", default_lat)
                 lon = data.get("longitude", default_lon)
@@ -253,15 +233,9 @@ def get_visitor_geolocation():
 # 3. Global Remote Sensing Engine (Fast-Overhead 100x100km Raster Matrix)
 # =============================================================================
 def generate_global_raster_thumb(lat, lon, feature_type="Composite Score"):
-    """
-    Generates a fast-loading 100x100 km bounding-box static raster URL for any global coordinate.
-    Strict limits are set on the area buffer to ensure speed and prevent GEE memory timeout.
-    """
-    # 1. Form an exact 100km x 100km matrix centered on the target coordinate
     point = ee.Geometry.Point([lon, lat])
-    bbox = point.buffer(50000).bounds()  # 50km buffer radius = 100km window
+    bbox = point.buffer(50000).bounds()  # 100x100km Bound Box
     
-    # 2. Fetch the past 30 days cloud-free median Sentinel-2 assets
     now = ee.Date(datetime.utcnow().strftime('%Y-%m-%d'))
     start_date = now.advance(-30, 'day')
     
@@ -270,42 +244,37 @@ def generate_global_raster_thumb(lat, lon, feature_type="Composite Score"):
                      .filterDate(start_date, now)
                      .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25)))
     
-    # Fallback checking for data presence
     if s2_collection.size().getInfo() == 0:
         return None, "לא נמצאו סריקות לוויין נקיות מעננים עבור אזור זה ב-30 הימים האחרונים."
         
     s2_image = s2_collection.median().clip(bbox)
     
-    # 3. Process Remote Sensing Indices
     ndwi = s2_image.normalizedDifference(['B3', 'B8']).rename('NDWI')
     chl = s2_image.select('B5').divide(s2_image.select('B4')).rename('Chl_proxy')
     turbidity = s2_image.select('B4').rename('Turbidity')
-    
-    # Strictly mask out land surfaces to limit index skew
     water_mask = ndwi.gt(0.0)
     
-    # 4. Normalize and isolate target metrics based on user product selection
-    if feature_type == "Chlorophyll (כלורופיל)":
+    if "Chlorophyll" in feature_type:
         target_raster = chl.updateMask(water_mask)
         vis_params = {'min': 1.0, 'max': 2.0, 'palette': ['#0000FF', '#FFFF00', '#00FF00']}
-    elif feature_type == "Turbidity (עכירות)":
+    elif "Turbidity" in feature_type:
         target_raster = turbidity.updateMask(water_mask)
         vis_params = {'min': 100, 'max': 1500, 'palette': ['#0000FF', '#00FFFF', '#8B4513']}
-    else:  # Composite Water Quality Index Score
+    elif "True Color" in feature_type:
+        target_raster = s2_image.select(['B4', 'B3', 'B2'])
+        vis_params = {'min': 0, 'max': 3000, 'bands': ['B4', 'B3', 'B2']}
+    else:  # Composite Score
         ndwi_norm = ndwi.unitScale(-0.1, 0.6).clamp(0, 1)
         chl_norm = ee.Image(1).subtract(chl.unitScale(0.9, 1.9)).clamp(0, 1)
         turb_norm = ee.Image(1).subtract(turbidity.unitScale(100, 2000)).clamp(0, 1)
-        
-        # Merge metrics into a balanced 0-100 Water Quality score
         composite = ndwi_norm.add(chl_norm).add(turb_norm).divide(3).multiply(100)
         target_raster = composite.updateMask(water_mask)
         vis_params = {'min': 35, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
         
-    # 5. Compile the rapid thumbnail imagery link via GEE cloud render engine
     try:
         thumb_url = target_raster.getThumbnailURL({
             'params': vis_params,
-            'dimensions': 750,  # Web interface crisp visualization width
+            'dimensions': 750,
             'format': 'png'
         })
         return thumb_url, None
@@ -343,7 +312,6 @@ BEACHES = [
     {"name": "זיקים",        "lat": 31.6098, "lon": 34.5198},
 ]
 
-# ... [Keep your KINNERET_POINTS, DEAD_SEA_POINTS, RED_SEA_POINTS from file] ...
 KINNERET_CENTER = [32.82, 35.59]
 KINNERET_BBOX   = ee.Geometry.Rectangle([35.50, 32.70, 35.68, 32.95])
 KINNERET_POINTS = [{"name": "טבריה", "lat": 32.794, "lon": 35.534}, {"name": "צפון הכנרת", "lat": 32.920, "lon": 35.595}]
@@ -357,10 +325,10 @@ RED_SEA_BBOX   = ee.Geometry.Rectangle([34.80, 29.35, 35.10, 29.75])
 RED_SEA_POINTS = [{"name": "אילת צפון", "lat": 29.558, "lon": 34.952}, {"name": "מפרץ עקבה", "lat": 29.430, "lon": 34.930}]
 
 WATER_BODIES = {
-    "🏖️ חוף הים התיכון": {"center": HAIFA_CENTER, "zoom": 8, "bbox": HAIFA_BBOX, "clip_geom": ISRAEL_TERRITORIAL, "points": BEACHES, "sensor": "S2", "cloud_pct": 20, "days_back": 90, "days_back_s1": 30},
-    "🌊 כנרת": {"center": KINNERET_CENTER, "zoom": 12, "bbox": KINNERET_BBOX, "clip_geom": KINNERET_BBOX, "points": KINNERET_POINTS, "sensor": "S2", "cloud_pct": 10, "days_back": 60, "days_back_s1": 30},
-    "🧂 ים המלח": {"center": DEAD_SEA_CENTER, "zoom": 11, "bbox": DEAD_SEA_BBOX, "clip_geom": DEAD_SEA_BBOX, "points": DEAD_SEA_POINTS, "sensor": "S2", "cloud_pct": 20, "days_back": 90, "days_back_s1": 30},
-    "🐠 ים סוף": {"center": RED_SEA_CENTER, "zoom": 12, "bbox": RED_SEA_BBOX, "clip_geom": RED_SEA_BBOX, "points": RED_SEA_POINTS, "sensor": "S2", "cloud_pct": 10, "days_back": 120, "days_back_s1": 30}
+    "🏖️ חוף הים התיכון": {"center": HAIFA_CENTER, "zoom": 8, "bbox": HAIFA_BBOX, "clip_geom": ISRAEL_TERRITORIAL, "points": BEACHES, "sensor": "S2", "cloud_pct": 20, "days_back": 90},
+    "🌊 כנרת": {"center": KINNERET_CENTER, "zoom": 12, "bbox": KINNERET_BBOX, "clip_geom": KINNERET_BBOX, "points": KINNERET_POINTS, "sensor": "S2", "cloud_pct": 10, "days_back": 60},
+    "🧂 ים המלח": {"center": DEAD_SEA_CENTER, "zoom": 11, "bbox": DEAD_SEA_BBOX, "clip_geom": DEAD_SEA_BBOX, "points": DEAD_SEA_POINTS, "sensor": "S2", "cloud_pct": 20, "days_back": 90},
+    "🐠 ים סוף": {"center": RED_SEA_CENTER, "zoom": 12, "bbox": RED_SEA_BBOX, "clip_geom": RED_SEA_BBOX, "points": RED_SEA_POINTS, "sensor": "S2", "cloud_pct": 10, "days_back": 120}
 }
 
 @st.cache_data(ttl=604800)
@@ -380,7 +348,7 @@ def snap_points_to_coastline(points_key: str, points_list: list, search_radius: 
     return ordered
 
 @st.cache_data(ttl=3600)
-def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
+def load_data(wb_key: str, start_date: str, end_date: str):
     wb = WATER_BODIES[wb_key]
     collection = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
                   .filterBounds(wb["bbox"])
@@ -397,7 +365,7 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
         turbidity = image.select("B4").rename("Turbidity")
         return image.addBands([ndwi, chl_proxy, turbidity])
 
-    processed = collection.map(compute_indices_s2).median()
+    processed = collection.map(compute_indices_s2).median().clip(wb["clip_geom"])
     snapped_points = snap_points_to_coastline(wb_key, wb["points"])
     
     def get_point_values(point):
@@ -417,14 +385,13 @@ def load_data(wb_key: str, start_date: str, end_date: str, sensor: str = "S2"):
 
 
 # =============================================================================
-# 5. Interface Tabs & Routing Construction
+# 5. Interface Layout & Router Generation
 # =============================================================================
 st.set_page_config(page_title="Israel & Global Water Quality Monitor", layout="wide")
 
 st.title("🛰️ מערכת לווינית לניטור מדדי איכות מים")
 st.markdown("פיתוח מחקרי מתקדם המבוסס על שילוב מנועי תצפיות ומודלים הידרו-אופטיים בזמן אמת.")
 
-# Generate Global Tab Selection alongside local architecture
 tab_local, tab_global = st.tabs(["🇮🇱 ניטור אזורי (ישראל)", "🌐 ניטור גלובלי (Global)"])
 
 with tab_local:
@@ -434,7 +401,13 @@ with tab_local:
     st.sidebar.header("🔧 הגדרות מערכת")
     wb_selection = st.sidebar.selectbox("בחר גוף מים לניטור:", list(WATER_BODIES.keys()))
     
-    # Timeline config
+    # תיבת בחירת שכבות הלוויין שהוחזרה למשתמש
+    local_product = st.sidebar.selectbox(
+        "בחר שכבת מפה להצגה בישראל:",
+        ["Composite Score (מדד משולב)", "Chlorophyll (כלורופיל)", "Turbidity (עכירות)", "True Color RGB (צבע אמיתי)"],
+        key="local_product_selector"
+    )
+    
     selected_date = st.sidebar.date_input("תאריך מטרה לניתוח:", datetime.utcnow() - timedelta(days=2))
     date_str = selected_date.strftime('%Y-%m-%d')
     start_date_str = (selected_date - timedelta(days=WATER_BODIES[wb_selection]["days_back"])).strftime('%Y-%m-%d')
@@ -450,21 +423,57 @@ with tab_local:
         
         col_m, col_t = st.columns([2, 1])
         with col_m:
-            st.subheader(f"מפת איכות מים: {wb_selection}")
+            st.subheader(f"מפת איכות מים: {wb_selection} — {local_product}")
             st.caption(f"תאריך קליטה עדכני: {img_date} | סך הכל תמונות שנמצאו במערך: {img_count}")
             
-            # Simple interactive folium viewport
+            # יצירת מפת Folium
             m = folium.Map(location=WATER_BODIES[wb_selection]["center"], zoom_start=WATER_BODIES[wb_selection]["zoom"])
+            
+            # הגדרת הפרמטרים הוויזואליים של הראסטר המקומי בהתאם לבחירה
+            ndwi = processed_layer.select('NDWI')
+            water_mask = ndwi.gt(0.0)
+            
+            if "Chlorophyll" in local_product:
+                layer_to_show = processed_layer.select('Chl_proxy').updateMask(water_mask)
+                vis = {'min': 1.0, 'max': 2.0, 'palette': ['#0000FF', '#FFFF00', '#00FF00']}
+            elif "Turbidity" in local_product:
+                layer_to_show = processed_layer.select('Turbidity').updateMask(water_mask)
+                vis = {'min': 100, 'max': 1500, 'palette': ['#0000FF', '#00FFFF', '#8B4513']}
+            elif "True Color" in local_product:
+                layer_to_show = processed_layer.select(['B4', 'B3', 'B2'])
+                vis = {'min': 0, 'max': 3000}
+            else:  # Composite Score
+                ndwi_norm = ndwi.unitScale(-0.1, 0.6).clamp(0, 1)
+                chl_norm = ee.Image(1).subtract(processed_layer.select('Chl_proxy').unitScale(0.9, 1.9)).clamp(0, 1)
+                turb_norm = ee.Image(1).subtract(processed_layer.select('Turbidity').unitScale(100, 2000)).clamp(0, 1)
+                layer_to_show = ndwi_norm.add(chl_norm).add(turb_norm).divide(3).multiply(100).updateMask(water_mask)
+                vis = {'min': 35, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
+            
+            # הזרקת שכבת הראסטר מתוך Google Earth Engine ישירות לתוך Folium
+            map_id_dict = ee.Image(layer_to_show).getMapId(vis)
+            folium.TileLayer(
+                tiles=map_id_dict['tile_fetcher'].url_format,
+                attr='Google Earth Engine',
+                name=local_product,
+                overlay=True,
+                control=True,
+                opacity=0.75
+            ).add_to(m)
+            
+            # הוספת נקודות דיגום קבועות על גבי המפה
             for _, r in df_points.iterrows():
                 if not r["no_data"]:
                     folium.CircleMarker(
                         location=[r["lat"], r["lon"]],
-                        radius=8,
+                        radius=6,
                         popup=f"{r['name']}: WQI {r['composite_with_atm']}",
-                        color="green" if (r["composite_with_atm"] or 0) > 50 else "red",
+                        color="black",
+                        fill_color="green" if (r["composite_with_atm"] or 0) > 55 else "red",
+                        fill_opacity=0.9,
                         fill=True
                     ).add_to(m)
-            st_folium(m, width=700, height=500, key="local_map")
+            
+            st_folium(m, width=750, height=500, key="local_map_viewport")
             
         with col_t:
             st.subheader("📊 נתוני תחנות מדידה")
@@ -481,7 +490,6 @@ with tab_global:
     st.subheader("🌐 ניטור מדדים גלובלי — מבוסס מיקום אוטומטי")
     st.markdown("שונית זו מזהה את מיקום השרת/המשתמש בחו\"ל ומציגה מפת ערכים ברזולוציה גבוהה התחומה בדיוק בטווח של **100×100 ק\"מ**.")
     
-    # 1. Initiate IP Routing Session Trigger
     if 'global_lat' not in st.session_state:
         with st.spinner("מזהה כתובת פרוקסי ומיקום גיאוגרפי במערכת..."):
             d_lat, d_lon, loc_name = get_visitor_geolocation()
@@ -491,19 +499,16 @@ with tab_global:
             
     st.success(f"📍 **נמצא מיקום רשת קרוב:** {st.session_state.global_loc_name} ({st.session_state.global_lat:.4f}, {st.session_state.global_lon:.4f})")
     
-    # Allow manually tuning or resetting longitude/latitude coordinates
     c_lat, c_lon = st.columns(2)
     target_lat = c_lat.number_input("שינוי קו רוחב מטרה (Latitude)", value=st.session_state.global_lat, format="%.4f")
     target_lon = c_lon.number_input("שינוי קו אורך מטרה (Longitude)", value=st.session_state.global_lon, format="%.4f")
     
-    # 2. Product Selector Dropdown for Rasters
     global_product = st.selectbox(
-        "בחר שכבת אינדקס לוויינית להצגה:",
-        ["Composite Score (מדד איכות מים משולב)", "Chlorophyll (כלורופיל)", "Turbidity (עכירות)"],
+        "בחר שכבת אינדקס לוויינית להצגה גלובלית:",
+        ["Composite Score (מדד איכות מים משולב)", "Chlorophyll (כלורופיל)", "Turbidity (עכירות)", "True Color RGB (צבע אמיתי)"],
         key="product_layer_dropdown"
     )
     
-    # 3. Request Image Build from Earth Engine Stack
     with st.spinner("מפיק שכבת ראסטר רנדר מהיר מ-Google Earth Engine..."):
         raster_link, err = generate_global_raster_thumb(target_lat, target_lon, global_product)
         
@@ -511,13 +516,11 @@ with tab_global:
             st.error(err)
         elif raster_link:
             st.markdown("---")
-            # Draw fast raster composite directly inside container frame
             st.image(raster_link, caption=f"תמונת ראסטר חציונית 30 יום עבור: {global_product} (גבולות חסומים קשיח: 100x100 ק\"מ)", use_container_width=True)
             
-            # Simple UI Legend Rendering based on selection
             if "Composite" in global_product:
                 st.markdown("<div style='text-align: center; direction: rtl;'>🔴 <b>איכות נמוכה (אנומליה)</b> ─── 🟡 <b>בינוני</b> ─── 🟢 <b>איכות מים מעולה</b></div>", unsafe_allow_html=True)
             elif "Chlorophyll" in global_product:
                 st.markdown("<div style='text-align: center; direction: rtl;'>🔵 <b>מים צלולים</b> ─── 🟡 <b>עקבות אצות קלות</b> ─── 🟢 <b>ריכוז פריחה גבוה (Algae Bloom)</b></div>", unsafe_allow_html=True)
-            else:
+            elif "Turbidity" in global_product:
                 st.markdown("<div style='text-align: center; direction: rtl;'>🔵 <b>מים צלולים ונקיים</b> ─── 🌐 <b>סחף חלקיקים קל</b> ─── 🟤 <b>עכירות גבוהה / נגר חופשי חזק</b></div>", unsafe_allow_html=True)
