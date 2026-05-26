@@ -60,7 +60,7 @@ if "ga_loaded" not in st.session_state:
     )
 
 # =============================================================================
-# 1. Atmospheric Context Module (Open-Meteo)
+# 1. Atmospheric & Marine Context Module (Open-Meteo)
 # =============================================================================
 _WB_CENTRES = {
     "🏖️ Mediterranean Coast": (32.40, 34.85),
@@ -68,6 +68,9 @@ _WB_CENTRES = {
     "🧂 Dead Sea":            (31.50, 35.47),
     "🐠 Red Sea":             (29.55, 34.95),
 }
+
+# Water bodies where marine API is meaningful
+_MARINE_WBS = {"🏖️ Mediterranean Coast", "🐠 Red Sea"}
 
 @st.cache_data(ttl=3600)
 def get_atmospheric_context(wb_key: str) -> dict:
@@ -126,6 +129,92 @@ def _empty_atm() -> dict:
         "humidity": None, "precip_mm": None, "weather_code": None,
         "analysis_time": None, "centre_lat": None, "centre_lon": None,
         "_error": None, "_source": "Open-Meteo (GFS/ERA5)",
+    }
+
+@st.cache_data(ttl=3600)
+def get_marine_grid(lat_min: float, lat_max: float, lon_min: float, lon_max: float, steps: int = 6) -> dict:
+    """
+    Fetches wind U/V, wave direction/height/period on a grid over a bounding box.
+    Returns velocity-field dicts ready for Leaflet-Velocity JSON format.
+    steps: number of grid points per axis (steps x steps grid).
+    """
+    import requests as _req
+    import numpy as np
+
+    lats = [lat_min + (lat_max - lat_min) * i / (steps - 1) for i in range(steps)]
+    lons = [lon_min + (lon_max - lon_min) * i / (steps - 1) for i in range(steps)]
+
+    wind_u_grid  = []
+    wind_v_grid  = []
+    wave_u_grid  = []
+    wave_v_grid  = []
+
+    for lat in lats:
+        row_wu, row_wv, row_wau, row_wav = [], [], [], []
+        for lon in lons:
+            # -- Atmospheric wind (always available)
+            try:
+                r = _req.get("https://api.open-meteo.com/v1/forecast", params={
+                    "latitude": round(lat, 3), "longitude": round(lon, 3),
+                    "current": "wind_speed_10m,wind_direction_10m",
+                    "wind_speed_unit": "ms", "forecast_days": 1,
+                }, timeout=8)
+                cur = r.json().get("current", {})
+                ws  = cur.get("wind_speed_10m") or 0.0
+                wd  = cur.get("wind_direction_10m") or 0.0
+                wd_rad = math.radians(wd)
+                u = -ws * math.sin(wd_rad)   # meteorological → cartesian
+                v = -ws * math.cos(wd_rad)
+            except Exception:
+                u, v = 0.0, 0.0
+            row_wu.append(round(u, 3))
+            row_wv.append(round(v, 3))
+
+            # -- Marine waves (open-meteo marine endpoint)
+            try:
+                r2 = _req.get("https://marine-api.open-meteo.com/v1/marine", params={
+                    "latitude": round(lat, 3), "longitude": round(lon, 3),
+                    "current": "wave_height,wave_direction,wave_period",
+                    "forecast_days": 1,
+                }, timeout=8)
+                mc  = r2.json().get("current", {})
+                wh  = mc.get("wave_height") or 0.0
+                wdir = mc.get("wave_direction") or 0.0
+                wdir_rad = math.radians(wdir)
+                wu = -wh * math.sin(wdir_rad)
+                wv = -wh * math.cos(wdir_rad)
+            except Exception:
+                wu, wv = 0.0, 0.0
+            row_wau.append(round(wu, 3))
+            row_wav.append(round(wv, 3))
+
+        wind_u_grid.append(row_wu)
+        wind_v_grid.append(row_wv)
+        wave_u_grid.append(row_wau)
+        wave_v_grid.append(row_wav)
+
+    def _to_leaflet_velocity(u_grid, v_grid, label_u, label_v):
+        """Pack a U/V grid into Leaflet-Velocity JSON format."""
+        flat_u = [val for row in u_grid for val in row]
+        flat_v = [val for row in v_grid for val in row]
+        header = {
+            "parameterCategory": 2,
+            "parameterNumber": 2,
+            "la1": lat_max, "la2": lat_min,
+            "lo1": lon_min, "lo2": lon_max,
+            "nx": steps, "ny": steps,
+            "dx": (lon_max - lon_min) / max(steps - 1, 1),
+            "dy": (lat_max - lat_min) / max(steps - 1, 1),
+            "refTime": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return [
+            {"header": {**header, "parameterUnit": "m/s"}, "data": flat_u},
+            {"header": {**header, "parameterUnit": "m/s"}, "data": flat_v},
+        ]
+
+    return {
+        "wind":  _to_leaflet_velocity(wind_u_grid,  wind_v_grid,  "wind-u",  "wind-v"),
+        "waves": _to_leaflet_velocity(wave_u_grid,  wave_v_grid,  "wave-u",  "wave-v"),
     }
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -427,88 +516,58 @@ class OnMapWaterLegend(MacroElement):
             {% endmacro %}
         """)
 
+
 # =============================================================================
-# 3b. Data Freshness Helpers & Map Control
+# 3b. Animated Wind / Wave Velocity Overlay (Leaflet-Velocity)
 # =============================================================================
 
-def data_age_days(date_str: str) -> int:
-    """Returns how many days ago the satellite image date was."""
-    try:
-        img_date = datetime.strptime(date_str, "%Y-%m-%d")
-        return (datetime.utcnow() - img_date).days
-    except Exception:
-        return 99
-
-def freshness_meta(age: int) -> dict:
-    """Returns color, label, and bar width for a given age in days."""
-    if age <= 1:
-        return {"color": "#27AE60", "bar_color": "#27AE60", "label": "Fresh", "bar_pct": 100}
-    elif age <= 2:
-        return {"color": "#2ECC71", "bar_color": "#2ECC71", "label": "Recent", "bar_pct": 85}
-    elif age <= 5:
-        return {"color": "#F39C12", "bar_color": "#F39C12", "label": "Moderate", "bar_pct": 55}
-    elif age <= 10:
-        return {"color": "#E67E22", "bar_color": "#E67E22", "label": "Aging", "bar_pct": 30}
-    else:
-        return {"color": "#E74C3C", "bar_color": "#E74C3C", "label": "Outdated", "bar_pct": 10}
-
-
-class OnMapFreshnessTag(MacroElement):
-    """Bottom-right map badge showing data age and freshness indicator."""
-    def __init__(self, date_str: str):
-        super(OnMapFreshnessTag, self).__init__()
-        age  = data_age_days(date_str)
-        meta = freshness_meta(age)
-
-        age_label = "today" if age == 0 else f"{age}d ago"
-        bar_pct   = meta["bar_pct"]
-        color     = meta["color"]
-        label     = meta["label"]
-
-        html_content = f"""
-            <div style="
-                background: rgba(255,255,255,0.93);
-                border: 1.5px solid #ccc;
-                border-radius: 8px;
-                padding: 8px 11px;
-                font-family: Arial, sans-serif;
-                font-size: 12px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-                min-width: 140px;
-            ">
-                <div style="font-weight:bold; color:#444; margin-bottom:5px;">📡 Data Freshness</div>
-                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                    <span style="color:#666;">Image date</span>
-                    <span style="font-weight:bold;">{date_str}</span>
-                </div>
-                <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-                    <span style="color:#666;">Age</span>
-                    <span style="font-weight:bold; color:{color};">{age_label}</span>
-                </div>
-                <div style="background:#eee; border-radius:4px; height:7px; width:100%; margin-bottom:4px;">
-                    <div style="background:{color}; width:{bar_pct}%; height:7px; border-radius:4px;"></div>
-                </div>
-                <div style="text-align:right; font-size:11px; color:{color}; font-weight:bold;">{label}</div>
-            </div>
-        """
+class OnMapVelocityLayer(MacroElement):
+    """
+    Injects Leaflet-Velocity via CDN and renders animated wind or wave
+    particle streams directly on the Folium map.
+    velocity_data: list in Leaflet-Velocity JSON format (U+V component pair)
+    layer_name: display label shown in the velocity legend
+    color_scale: velocity colorscale ['#3288bd','#66c2a5',...] or None for default
+    """
+    def __init__(self, velocity_data: list, layer_name: str = "Wind", color: str = "#ffffff"):
+        super(OnMapVelocityLayer, self).__init__()
+        data_json = json.dumps(velocity_data)
 
         self._template = Template("""
+            {% macro header(this, kwargs) %}
+            <link rel="stylesheet"
+                href="https://cdn.jsdelivr.net/npm/leaflet-velocity@2.1.2/dist/leaflet-velocity.min.css"/>
+            <script
+                src="https://cdn.jsdelivr.net/npm/leaflet-velocity@2.1.2/dist/leaflet-velocity.min.js">
+            </script>
+            {% endmacro %}
+
             {% macro script(this, kwargs) %}
-            var freshnessTag = L.control({position: 'bottomright'});
-            freshnessTag.onAdd = function(map) {
-                var div = L.DomUtil.create('div', 'freshness-tag');
-                div.innerHTML = `""" + html_content.replace("`", "'") + """`;
-                L.DomEvent.disableClickPropagation(div);
-                return div;
-            };
-            freshnessTag.addTo({{ this._parent.get_name() }});
+            (function() {
+                var velocityData = """ + data_json + """;
+                var velocityLayer = L.velocityLayer({
+                    displayValues: true,
+                    displayOptions: {
+                        velocityType:   \"""" + layer_name + """\",
+                        displayPosition: 'bottomleft',
+                        displayEmptyString: 'No data',
+                    },
+                    data: velocityData,
+                    maxVelocity: 15,
+                    velocityScale: 0.012,
+                    colorScale: [
+                        '#3288bd','#66c2a5','#abdda4',
+                        '#e6f598','#fee08b','#fdae61',
+                        '#f46d43','#d53e4f'
+                    ],
+                    opacity: 0.85,
+                });
+                velocityLayer.addTo({{ this._parent.get_name() }});
+            })();
             {% endmacro %}
         """)
 
 
-# =============================================================================
-# 4. Satellite Data Processing and Loading
-# =============================================================================
 @st.cache_data(ttl=14400)
 def get_available_s3_dates(wb_key: str, days_back: int = 30):
     wb = WATER_BODIES[wb_key]
@@ -715,6 +774,37 @@ atm_data = st.session_state.atm_data
 # Add current location message to sidebar
 
 # ---------------------------------------------------------------
+# Overlay layer toggle
+# ---------------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🌊 Environmental Overlays")
+overlay_choice = st.sidebar.radio(
+    "Animated flow layer:",
+    ["None", "💨 Wind", "🌊 Waves"],
+    horizontal=True,
+)
+
+# Fetch marine grid for the selected area (cached, 1h TTL)
+marine_grid_data = None
+if overlay_choice != "None":
+    if not is_global:
+        wb      = WATER_BODIES[wb_selection]
+        bbox_ee = wb["bbox"].bounds().getInfo()["coordinates"][0]
+        lons    = [p[0] for p in bbox_ee]
+        lats    = [p[1] for p in bbox_ee]
+        g_lat_min, g_lat_max = min(lats), max(lats)
+        g_lon_min, g_lon_max = min(lons), max(lons)
+    else:
+        bbox_s = st.session_state.get("global_bbox")
+        if bbox_s:
+            g_lon_min, g_lat_min, g_lon_max, g_lat_max = bbox_s
+        else:
+            g_lat_min, g_lat_max, g_lon_min, g_lon_max = 29.0, 34.0, 34.0, 36.5
+
+    with st.spinner("Fetching environmental flow data..."):
+        marine_grid_data = get_marine_grid(g_lat_min, g_lat_max, g_lon_min, g_lon_max, steps=6)
+
+# ---------------------------------------------------------------
 # Date selection — shared between both modes
 # ---------------------------------------------------------------
 if not is_global:
@@ -724,17 +814,9 @@ else:
     available_dates = [(datetime.utcnow() - timedelta(days=d)).strftime('%Y-%m-%d') for d in range(1, 8)]
 
 if available_dates:
-    def _date_label(d: str) -> str:
-        age = data_age_days(d)
-        if age <= 1:   icon = "🟢"
-        elif age <= 5: icon = "🟡"
-        else:          icon = "🔴"
-        age_str = "today" if age == 0 else f"{age}d ago"
-        return f"{icon} {d}  ({age_str})"
-
-    formatted_options  = [_date_label(d) for d in available_dates]
+    formatted_options  = [f"🟢 {d}" for d in available_dates]
     date_selection_raw = st.sidebar.selectbox("Select satellite pass date:", formatted_options)
-    selected_date_str  = date_selection_raw.split("  ")[0].lstrip("🟢🟡🔴 ")
+    selected_date_str  = date_selection_raw.replace("🟢 ", "")
 else:
     selected_date_str = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
 
@@ -792,7 +874,12 @@ if is_global:
                 ).add_to(m_global)
 
         m_global.add_child(OnMapWaterLegend())
-        m_global.add_child(OnMapFreshnessTag(selected_date_str))
+
+        # Animated environmental overlay
+        if marine_grid_data and overlay_choice != "None":
+            key = "waves" if overlay_choice == "🌊 Waves" else "wind"
+            label = "Waves (m)" if key == "waves" else "Wind (m/s)"
+            m_global.add_child(OnMapVelocityLayer(marine_grid_data[key], layer_name=label))
 
         map_data_global = st_folium(
             m_global,
@@ -931,7 +1018,12 @@ else:
 
             m.add_child(OnMapAtmosphereControl(atm_data))
             m.add_child(OnMapWaterLegend())
-            m.add_child(OnMapFreshnessTag(selected_date_str))
+
+            # Animated environmental overlay
+            if marine_grid_data and overlay_choice != "None":
+                key = "waves" if overlay_choice == "🌊 Waves" else "wind"
+                label = "Waves (m)" if key == "waves" else "Wind (m/s)"
+                m.add_child(OnMapVelocityLayer(marine_grid_data[key], layer_name=label))
 
             map_data = st_folium(
                 m,
