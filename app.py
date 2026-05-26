@@ -534,7 +534,7 @@ if error_msg:
 elif wqi_layer:
     df_beaches = blend_atmospheric_penalty(df_beaches, atm_data, wb_selection)
 
-    col_map, col_info = st.columns([2.2, 1.1])
+    col_map, col_info = st.columns([4.0, 1.0])
 
     with col_map:
         st.subheader(f"📍 מפת מדד משוכלל (WQI): {wb_selection}")
@@ -593,15 +593,26 @@ elif wqi_layer:
                 st.rerun()
 
     with col_info:
-        st.subheader("🏖️ סטטוס ורמת ניקיון החופים")
+        st.subheader("🏖️ מדד ניקיון מי חוף")
 
         if df_beaches is not None and not df_beaches.empty:
             df_display = df_beaches[["name", "wqi", "composite_with_atm"]].copy()
             df_display.columns = ["שם התחנה", "WQI לווייני גולמי", "ציון משוקלל אטמוספרי"]
             df_display["WQI לווייני גולמי"] = df_display["WQI לווייני גולמי"].fillna("אין נתונים")
             df_display["ציון משוקלל אטמוספרי"] = df_display["ציון משוקלל אטמוספרי"].fillna("אין נתונים")
+
+            def _status(score):
+                try:
+                    v = float(score)
+                except (ValueError, TypeError):
+                    return "❓ אין נתונים"
+                if v >= 70:  return "🟢 נקי"
+                if v >= 55:  return "🟡 בינוני"
+                return "🔴 מזוהם"
+
+            df_display["סטטוס ורמת ניקיון"] = df_display["ציון משוקלל אטמוספרי"].apply(_status)
             st.dataframe(df_display, use_container_width=True, hide_index=True)
         else:
             st.write("לא נמצאו תחנות מוגדרות לאזור זה.")
 
-        st.info("💡 **הסבר על המדד:** צבע ירוק במפה וערכים גבוהים בטבלה מעידים על מים צלולים ונקיים. ערכים נמוכים (צבע אדום) מעידים על עכירות חלקיקים או פריחת חומר אורגני. העמודה המשוקללת לוקחת בחשבון את השפעת הרוחות והמשקעים באזור.")
+
