@@ -607,7 +607,7 @@ elif wqi_layer:
                 return "🔴 מזוהם"
 
             df_display["סטטוס ורמת ניקיון"] = df_display["_score"].apply(_status)
-            df_display = df_display[["שם התחנה", "WQI לווייני גולמי", "סטטוס ורמת ניקיון"]]
+            df_display = df_display[["שם התחנה", "סטטוס ורמת ניקיון"]]
             st.dataframe(df_display, use_container_width=True, hide_index=True)
         else:
             st.write("לא נמצאו תחנות מוגדרות לאזור זה.")
