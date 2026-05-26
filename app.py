@@ -411,12 +411,15 @@ class OnMapWaterLegend(MacroElement):
                 div.style.boxShadow = '0 0 15px rgba(0,0,0,0.2)';
                 
                 div.innerHTML = `
-                    <div style="font-weight: bold; margin-bottom: 6px; text-align: center;">Water Quality Index (Sentinel-3)</div>
-                    <div style="display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: bold; margin-bottom: 3px;">
-                        <span style="color: green;">Clean Water</span>
-                        <span style="color: red;">Polluted/Turbid Water</span>
+                    <div style="font-weight: bold; margin-bottom: 8px; text-align: center;">Water Quality Index</div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <div style="height: 150px; width: 16px; background: linear-gradient(to bottom, #00FF00, #FFFF00, #FF0000); border: 1px solid #666; border-radius: 3px; flex-shrink: 0;"></div>
+                        <div style="display: flex; flex-direction: column; justify-content: space-between; height: 150px; font-size: 11px; font-weight: bold;">
+                            <span style="color: green;">Clean</span>
+                            <span style="color: orange;">Moderate</span>
+                            <span style="color: red;">Polluted</span>
+                        </div>
                     </div>
-                    <div style="height: 15px; width: 180px; background: linear-gradient(to right, #00FF00, #FFFF00, #FF0000); border: 1px solid #666; border-radius: 3px;"></div>
                 `;
                 return div;
             };
