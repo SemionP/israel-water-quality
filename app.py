@@ -128,7 +128,7 @@ def _empty_atm() -> dict:
 
 def blend_atmospheric_penalty(df, atm: dict, wb_key: str):
     def _penalty(row) -> float:
-        if row.get("composite") is None:
+        if row.get("wqi") is None:
             return 0.0
         p   = 0.0
         ws  = atm.get("wind_speed")
@@ -157,8 +157,8 @@ def blend_atmospheric_penalty(df, atm: dict, wb_key: str):
     df["atm_penalty"] = df.apply(_penalty, axis=1)
     df["composite_with_atm"] = df.apply(
         lambda r: (
-            round(max(0.0, r["composite"] - r["atm_penalty"]), 1)
-            if r["composite"] is not None else None
+            round(max(0.0, r["wqi"] - r["atm_penalty"]), 1)
+            if r["wqi"] is not None else None
         ),
         axis=1,
     )
