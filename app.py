@@ -428,6 +428,85 @@ class OnMapWaterLegend(MacroElement):
         """)
 
 # =============================================================================
+# 3b. Data Freshness Helpers & Map Control
+# =============================================================================
+
+def data_age_days(date_str: str) -> int:
+    """Returns how many days ago the satellite image date was."""
+    try:
+        img_date = datetime.strptime(date_str, "%Y-%m-%d")
+        return (datetime.utcnow() - img_date).days
+    except Exception:
+        return 99
+
+def freshness_meta(age: int) -> dict:
+    """Returns color, label, and bar width for a given age in days."""
+    if age <= 1:
+        return {"color": "#27AE60", "bar_color": "#27AE60", "label": "Fresh", "bar_pct": 100}
+    elif age <= 2:
+        return {"color": "#2ECC71", "bar_color": "#2ECC71", "label": "Recent", "bar_pct": 85}
+    elif age <= 5:
+        return {"color": "#F39C12", "bar_color": "#F39C12", "label": "Moderate", "bar_pct": 55}
+    elif age <= 10:
+        return {"color": "#E67E22", "bar_color": "#E67E22", "label": "Aging", "bar_pct": 30}
+    else:
+        return {"color": "#E74C3C", "bar_color": "#E74C3C", "label": "Outdated", "bar_pct": 10}
+
+
+class OnMapFreshnessTag(MacroElement):
+    """Bottom-right map badge showing data age and freshness indicator."""
+    def __init__(self, date_str: str):
+        super(OnMapFreshnessTag, self).__init__()
+        age  = data_age_days(date_str)
+        meta = freshness_meta(age)
+
+        age_label = "today" if age == 0 else f"{age}d ago"
+        bar_pct   = meta["bar_pct"]
+        color     = meta["color"]
+        label     = meta["label"]
+
+        html_content = f"""
+            <div style="
+                background: rgba(255,255,255,0.93);
+                border: 1.5px solid #ccc;
+                border-radius: 8px;
+                padding: 8px 11px;
+                font-family: Arial, sans-serif;
+                font-size: 12px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+                min-width: 140px;
+            ">
+                <div style="font-weight:bold; color:#444; margin-bottom:5px;">📡 Data Freshness</div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                    <span style="color:#666;">Image date</span>
+                    <span style="font-weight:bold;">{date_str}</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                    <span style="color:#666;">Age</span>
+                    <span style="font-weight:bold; color:{color};">{age_label}</span>
+                </div>
+                <div style="background:#eee; border-radius:4px; height:7px; width:100%; margin-bottom:4px;">
+                    <div style="background:{color}; width:{bar_pct}%; height:7px; border-radius:4px;"></div>
+                </div>
+                <div style="text-align:right; font-size:11px; color:{color}; font-weight:bold;">{label}</div>
+            </div>
+        """
+
+        self._template = Template("""
+            {% macro script(this, kwargs) %}
+            var freshnessTag = L.control({position: 'bottomright'});
+            freshnessTag.onAdd = function(map) {
+                var div = L.DomUtil.create('div', 'freshness-tag');
+                div.innerHTML = `""" + html_content.replace("`", "'") + """`;
+                L.DomEvent.disableClickPropagation(div);
+                return div;
+            };
+            freshnessTag.addTo({{ this._parent.get_name() }});
+            {% endmacro %}
+        """)
+
+
+# =============================================================================
 # 4. Satellite Data Processing and Loading
 # =============================================================================
 @st.cache_data(ttl=14400)
@@ -645,9 +724,17 @@ else:
     available_dates = [(datetime.utcnow() - timedelta(days=d)).strftime('%Y-%m-%d') for d in range(1, 8)]
 
 if available_dates:
-    formatted_options = [f"🟢 {d}" for d in available_dates]
+    def _date_label(d: str) -> str:
+        age = data_age_days(d)
+        if age <= 1:   icon = "🟢"
+        elif age <= 5: icon = "🟡"
+        else:          icon = "🔴"
+        age_str = "today" if age == 0 else f"{age}d ago"
+        return f"{icon} {d}  ({age_str})"
+
+    formatted_options  = [_date_label(d) for d in available_dates]
     date_selection_raw = st.sidebar.selectbox("Select satellite pass date:", formatted_options)
-    selected_date_str = date_selection_raw.replace("🟢 ", "")
+    selected_date_str  = date_selection_raw.split("  ")[0].lstrip("🟢🟡🔴 ")
 else:
     selected_date_str = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
 
@@ -705,6 +792,7 @@ if is_global:
                 ).add_to(m_global)
 
         m_global.add_child(OnMapWaterLegend())
+        m_global.add_child(OnMapFreshnessTag(selected_date_str))
 
         map_data_global = st_folium(
             m_global,
@@ -843,6 +931,7 @@ else:
 
             m.add_child(OnMapAtmosphereControl(atm_data))
             m.add_child(OnMapWaterLegend())
+            m.add_child(OnMapFreshnessTag(selected_date_str))
 
             map_data = st_folium(
                 m,
