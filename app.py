@@ -134,90 +134,125 @@ def _empty_atm() -> dict:
 @st.cache_data(ttl=3600)
 def get_marine_grid(lat_min: float, lat_max: float, lon_min: float, lon_max: float, steps: int = 6) -> dict:
     """
-    Fetches wind U/V, wave direction/height/period on a grid over a bounding box.
-    Returns velocity-field dicts ready for Leaflet-Velocity JSON format.
-    steps: number of grid points per axis (steps x steps grid).
+    Fetches wind U/V + wave U/V on a steps×steps grid using Open-Meteo batch requests.
+    All grid points are fetched in 2 HTTP calls total (one wind, one marine).
     """
     import requests as _req
-    import numpy as np
 
-    lats = [lat_min + (lat_max - lat_min) * i / (steps - 1) for i in range(steps)]
-    lons = [lon_min + (lon_max - lon_min) * i / (steps - 1) for i in range(steps)]
+    lats = [round(lat_min + (lat_max - lat_min) * i / (steps - 1), 4) for i in range(steps)]
+    lons = [round(lon_min + (lon_max - lon_min) * i / (steps - 1), 4) for i in range(steps)]
 
-    wind_u_grid  = []
-    wind_v_grid  = []
-    wave_u_grid  = []
-    wave_v_grid  = []
+    # Build flat list of (lat, lon) grid points — row-major order
+    points = [(lat, lon) for lat in lats for lon in lons]
+    n = len(points)
 
-    for lat in lats:
-        row_wu, row_wv, row_wau, row_wav = [], [], [], []
-        for lon in lons:
-            # -- Atmospheric wind (always available)
-            try:
-                r = _req.get("https://api.open-meteo.com/v1/forecast", params={
-                    "latitude": round(lat, 3), "longitude": round(lon, 3),
-                    "current": "wind_speed_10m,wind_direction_10m",
-                    "wind_speed_unit": "ms", "forecast_days": 1,
-                }, timeout=8)
-                cur = r.json().get("current", {})
-                ws  = cur.get("wind_speed_10m") or 0.0
-                wd  = cur.get("wind_direction_10m") or 0.0
-                wd_rad = math.radians(wd)
-                u = -ws * math.sin(wd_rad)   # meteorological → cartesian
-                v = -ws * math.cos(wd_rad)
-            except Exception:
-                u, v = 0.0, 0.0
-            row_wu.append(round(u, 3))
-            row_wv.append(round(v, 3))
+    all_lats = ",".join(str(p[0]) for p in points)
+    all_lons = ",".join(str(p[1]) for p in points)
 
-            # -- Marine waves (open-meteo marine endpoint)
-            try:
-                r2 = _req.get("https://marine-api.open-meteo.com/v1/marine", params={
-                    "latitude": round(lat, 3), "longitude": round(lon, 3),
-                    "current": "wave_height,wave_direction,wave_period",
-                    "forecast_days": 1,
-                }, timeout=8)
-                mc  = r2.json().get("current", {})
-                wh  = mc.get("wave_height") or 0.0
-                wdir = mc.get("wave_direction") or 0.0
-                wdir_rad = math.radians(wdir)
-                wu = -wh * math.sin(wdir_rad)
-                wv = -wh * math.cos(wdir_rad)
-            except Exception:
-                wu, wv = 0.0, 0.0
-            row_wau.append(round(wu, 3))
-            row_wav.append(round(wv, 3))
+    # ---- Wind: single batch request ----------------------------------------
+    wind_u = [0.0] * n
+    wind_v = [0.0] * n
+    try:
+        r = _req.get("https://api.open-meteo.com/v1/forecast", params={
+            "latitude":        all_lats,
+            "longitude":       all_lons,
+            "current":         "wind_speed_10m,wind_direction_10m",
+            "wind_speed_unit": "ms",
+            "forecast_days":   1,
+        }, timeout=12)
+        results = r.json()
+        # Response is a list when multiple points are requested
+        if isinstance(results, dict):
+            results = [results]
+        for i, res in enumerate(results):
+            cur = res.get("current", {})
+            ws  = cur.get("wind_speed_10m") or 0.0
+            wd  = cur.get("wind_direction_10m") or 0.0
+            rad = math.radians(wd)
+            wind_u[i] = round(-ws * math.sin(rad), 3)
+            wind_v[i] = round(-ws * math.cos(rad), 3)
+    except Exception:
+        pass  # leave zeros — overlay will be blank but won't crash
 
-        wind_u_grid.append(row_wu)
-        wind_v_grid.append(row_wv)
-        wave_u_grid.append(row_wau)
-        wave_v_grid.append(row_wav)
+    # ---- Waves: single batch request ----------------------------------------
+    wave_u = [0.0] * n
+    wave_v = [0.0] * n
+    try:
+        r2 = _req.get("https://marine-api.open-meteo.com/v1/marine", params={
+            "latitude":      all_lats,
+            "longitude":     all_lons,
+            "current":       "wave_height,wave_direction",
+            "forecast_days": 1,
+        }, timeout=12)
+        results2 = r2.json()
+        if isinstance(results2, dict):
+            results2 = [results2]
+        for i, res in enumerate(results2):
+            cur = res.get("current", {})
+            wh  = cur.get("wave_height") or 0.0
+            wdir = cur.get("wave_direction") or 0.0
+            rad = math.radians(wdir)
+            wave_u[i] = round(-wh * math.sin(rad), 3)
+            wave_v[i] = round(-wh * math.cos(rad), 3)
+    except Exception:
+        pass
 
-    def _to_leaflet_velocity(u_grid, v_grid, label_u, label_v):
-        """Pack a U/V grid into Leaflet-Velocity JSON format."""
-        flat_u = [val for row in u_grid for val in row]
-        flat_v = [val for row in v_grid for val in row]
+    # ---- Pack into Leaflet-Velocity format ----------------------------------
+    def _to_leaflet_velocity(u_flat, v_flat):
         header = {
             "parameterCategory": 2,
-            "parameterNumber": 2,
+            "parameterNumber":   2,
+            "parameterUnit":     "m/s",
             "la1": lat_max, "la2": lat_min,
             "lo1": lon_min, "lo2": lon_max,
-            "nx": steps, "ny": steps,
-            "dx": (lon_max - lon_min) / max(steps - 1, 1),
-            "dy": (lat_max - lat_min) / max(steps - 1, 1),
+            "nx": steps,   "ny": steps,
+            "dx": round((lon_max - lon_min) / max(steps - 1, 1), 4),
+            "dy": round((lat_max - lat_min) / max(steps - 1, 1), 4),
             "refTime": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
         }
         return [
-            {"header": {**header, "parameterUnit": "m/s"}, "data": flat_u},
-            {"header": {**header, "parameterUnit": "m/s"}, "data": flat_v},
+            {"header": header, "data": u_flat},
+            {"header": header, "data": v_flat},
         ]
 
     return {
-        "wind":  _to_leaflet_velocity(wind_u_grid,  wind_v_grid,  "wind-u",  "wind-v"),
-        "waves": _to_leaflet_velocity(wave_u_grid,  wave_v_grid,  "wave-u",  "wave-v"),
+        "wind":  _to_leaflet_velocity(wind_u, wind_v),
+        "waves": _to_leaflet_velocity(wave_u, wave_v),
     }
 
-def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+@st.cache_data(ttl=3600)
+def get_sst_for_points(points: tuple) -> dict:
+    """
+    Fetches sea surface temperature for a list of (lat, lon) points in one
+    batch request to the Open-Meteo marine API.
+    `points` must be a tuple of (lat, lon) tuples for cache-key stability.
+    Returns dict: {(lat, lon): sst_celsius or None}
+    """
+    import requests as _req
+    if not points:
+        return {}
+    all_lats = ",".join(str(p[0]) for p in points)
+    all_lons = ",".join(str(p[1]) for p in points)
+    try:
+        r = _req.get("https://marine-api.open-meteo.com/v1/marine", params={
+            "latitude":      all_lats,
+            "longitude":     all_lons,
+            "current":       "sea_surface_temperature",
+            "forecast_days": 1,
+        }, timeout=12)
+        results = r.json()
+        if isinstance(results, dict):
+            results = [results]
+        out = {}
+        for i, res in enumerate(results):
+            cur = res.get("current", {})
+            sst = cur.get("sea_surface_temperature")
+            out[points[i]] = round(sst, 1) if sst is not None else None
+        return out
+    except Exception:
+        return {p: None for p in points}
+
+
     """Distance in km between two geographic points."""
     R = 6371.0
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -986,6 +1021,11 @@ else:
     elif wqi_layer:
         df_beaches = blend_atmospheric_penalty(df_beaches, atm_data, wb_selection)
 
+        # --- Sea surface temperature (one batch call for all beach points) ---
+        pt_keys = tuple((row["lat"], row["lon"]) for _, row in df_beaches.iterrows())
+        sst_map = get_sst_for_points(pt_keys)
+        df_beaches["sst"] = df_beaches.apply(lambda r: sst_map.get((r["lat"], r["lon"])), axis=1)
+
         col_map, col_info = st.columns([4.0, 1.0])
 
         with col_map:
@@ -1051,9 +1091,8 @@ else:
             st.subheader("🏖️ Coastal Water Cleanliness Index")
 
             if df_beaches is not None and not df_beaches.empty:
-                df_display = df_beaches[["name", "wqi", "composite_with_atm"]].copy()
-                df_display.columns = ["Station Name", "Raw Satellite WQI", "_score"]
-                df_display["Raw Satellite WQI"] = df_display["Raw Satellite WQI"].fillna("No Data")
+                df_display = df_beaches[["name", "composite_with_atm", "sst"]].copy()
+                df_display.columns = ["Station Name", "_score", "sst"]
 
                 def _status(score):
                     try:
@@ -1064,8 +1103,20 @@ else:
                     if v >= 55:  return "🟡 Moderate"
                     return "🔴 Polluted"
 
-                df_display["Status & Cleanliness"] = df_display["_score"].apply(_status)
-                df_display = df_display[["Station Name", "Status & Cleanliness"]]
+                def _sst_label(sst):
+                    if sst is None:
+                        return "—"
+                    t = float(sst)
+                    if t >= 28:   icon = "🔴"
+                    elif t >= 24: icon = "🟠"
+                    elif t >= 20: icon = "🟡"
+                    elif t >= 16: icon = "🟢"
+                    else:         icon = "🔵"
+                    return f"{icon} {t:.1f}°C"
+
+                df_display["Status"] = df_display["_score"].apply(_status)
+                df_display["Sea Temp"] = df_display["sst"].apply(_sst_label)
+                df_display = df_display[["Station Name", "Status", "Sea Temp"]]
                 st.dataframe(df_display, use_container_width=True, hide_index=True)
             else:
                 st.write("No defined stations found for this area.")
