@@ -510,11 +510,8 @@ if "atm_center" not in st.session_state or st.session_state.get("last_wb") != wb
 atm_data = st.session_state.atm_data
 
 # סיידבר — הצגת נתוני אטמוספרה נוכחיים
-render_earth2_sidebar(atm_data, wb_selection)
 
 # הוספת הודעת מיקום נוכחי לסיידבר
-clat, clon = st.session_state.atm_center
-st.sidebar.caption(f"📍 מיקום אטמוספרה: {clat:.3f}°N, {clon:.3f}°E")
 
 with st.spinner("מאתר תאריכי מעבר זמינים של Sentinel-3..."):
     available_dates = get_available_s3_dates(wb_selection)
