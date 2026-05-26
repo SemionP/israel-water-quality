@@ -487,6 +487,118 @@ def process_s3_wqi_data(wb_key, target_date_str):
         
     return composite_wqi, pd.DataFrame(sampled_points), None
 
+
+# =============================================================================
+# 6. מצב גלובלי — נקודות חוף דינמיות לפי מרכז המפה וזום
+# =============================================================================
+
+def generate_coastal_points_in_bbox(lat_min, lat_max, lon_min, lon_max, spacing_deg=0.45):
+    """
+    יוצר רשת של נקודות בתוך bbox שניתן עליה לבדוק קרבה לחוף.
+    spacing_deg ~ 0.45° ≈ 50 ק"מ.
+    מחזיר רשימת dict עם lat/lon.
+    """
+    points = []
+    lat = lat_min
+    while lat <= lat_max:
+        lon = lon_min
+        while lon <= lon_max:
+            points.append({"name": f"{lat:.2f},{lon:.2f}", "lat": round(lat, 4), "lon": round(lon, 4)})
+            lon += spacing_deg
+        lat += spacing_deg
+    return points
+
+
+@st.cache_data(ttl=7200)
+def filter_coastal_points_gee(points: list, bbox_rect: tuple) -> list:
+    """
+    מסנן נקודות שנמצאות קרוב לחוף באמצעות GSW (Global Surface Water).
+    bbox_rect = (lon_min, lat_min, lon_max, lat_max)
+    מחזיר רק נקודות שבהן ה-occurrence >= 1 (מים) בבאפר 500 מ'.
+    """
+    if not points:
+        return []
+    lon_min, lat_min, lon_max, lat_max = bbox_rect
+    gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence")
+    coastal_pts = []
+    # בדיקה בבלוקים של 20 לחיסכון בקריאות GEE
+    for i in range(0, len(points), 20):
+        batch = points[i:i+20]
+        fc = ee.FeatureCollection([
+            ee.Feature(ee.Geometry.Point([p["lon"], p["lat"]]).buffer(2000), {"idx": j})
+            for j, p in enumerate(batch)
+        ])
+        try:
+            reduced = gsw.reduceRegions(collection=fc, reducer=ee.Reducer.max(), scale=300)
+            feats = reduced.getInfo().get("features", [])
+            for feat in feats:
+                idx = feat["properties"].get("idx")
+                val = feat["properties"].get("max", 0) or 0
+                # occurrence >= 5 = קרוב מספיק לגוף מים
+                if val >= 5 and idx is not None:
+                    coastal_pts.append(batch[idx])
+        except Exception:
+            pass
+    return coastal_pts
+
+
+@st.cache_data(ttl=14400)
+def get_global_wqi_layer(target_date_str: str, bbox_rect: tuple):
+    """
+    מחשב שכבת WQI גלובלית ל-bbox נתון, ללא חיתוך לישראל.
+    bbox_rect = (lon_min, lat_min, lon_max, lat_max)
+    """
+    lon_min, lat_min, lon_max, lat_max = bbox_rect
+    bbox = ee.Geometry.Rectangle([lon_min, lat_min, lon_max, lat_max])
+    gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
+    water_mask = gsw.select("occurrence").gte(25)
+
+    t_date = ee.Date(target_date_str)
+    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+            .filterBounds(bbox)
+            .filterDate(t_date.advance(-1, 'day'), t_date.advance(1, 'day')))
+
+    if coll.size().getInfo() == 0:
+        return None, "לא נמצאו נתוני לוויין לאזור זה בתאריך שנבחר."
+
+    img = coll.median().clip(bbox).updateMask(water_mask)
+
+    s3_ndwi = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).rename('S3_NDWI')
+    b10 = img.select('Oa10_radiance')
+    b11 = img.select('Oa11_radiance')
+    b12 = img.select('Oa12_radiance')
+    mci = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75 - 681.25) / (753.75 - 681.25)))).rename('MCI')
+    turbidity = img.select('Oa08_radiance').rename('S3_Turb')
+
+    ndwi_norm = s3_ndwi.unitScale(-0.2, 0.5).clamp(0, 1)
+    mci_norm  = ee.Image(1).subtract(mci.unitScale(-2, 12)).clamp(0, 1)
+    turb_norm = ee.Image(1).subtract(turbidity.unitScale(10, 80)).clamp(0, 1)
+
+    raw_wqi = ndwi_norm.add(mci_norm).add(turb_norm).divide(3).multiply(100).rename('WQI')
+    boxcar  = ee.Kernel.square(radius=1, units='pixels')
+    wqi     = raw_wqi.reduceNeighborhood(reducer=ee.Reducer.mean(), kernel=boxcar).rename('WQI').updateMask(water_mask)
+    return wqi, None
+
+
+def get_bbox_from_map(map_data: dict, zoom: int):
+    """
+    מחשב bbox גס לפי מרכז המפה וזום — לשימוש בחישוב גלובלי.
+    """
+    if not map_data or not map_data.get("center"):
+        return None
+    lat = map_data["center"]["lat"]
+    lon = map_data["center"]["lng"]
+    # degrees per pixel at equator / zoom:  360 / (256 * 2^zoom)
+    # viewport ~800x550 px → half-size in degrees:
+    deg_per_px = 360.0 / (256 * (2 ** zoom))
+    half_w = deg_per_px * 400   # 800/2 px
+    half_h = deg_per_px * 275   # 550/2 px
+    lon_min = max(-180, lon - half_w)
+    lon_max = min(180,  lon + half_w)
+    lat_min = max(-85,  lat - half_h)
+    lat_max = min(85,   lat + half_h)
+    return (lon_min, lat_min, lon_max, lat_max)
+
 # =============================================================================
 # 5. ממשק משתמש ותצוגת מפה נקייה
 # =============================================================================
@@ -494,18 +606,27 @@ st.title("🛰️ מערכת Sentinel-3: ניטור ערך משוכלל של א�
 st.markdown("תצוגה של הציון המשוכלל (WQI) חתוך קשיח למים טריטוריאליים, כולל מודול הקשר אטמוספרי ומפת חופים נקייה לחלוטין.")
 
 st.sidebar.header("🔧 הגדרות ותאריכים")
-wb_selection = st.sidebar.selectbox("בחר גוף מים לניטור:", list(WATER_BODIES.keys()))
+MODE_GLOBAL = "🌍 גלובלי"
+_wb_options = [MODE_GLOBAL] + list(WATER_BODIES.keys())
+wb_selection = st.sidebar.selectbox("בחר גוף מים לניטור:", _wb_options)
+is_global = (wb_selection == MODE_GLOBAL)
 
 # =============================================================================
 # אתחול session_state לניהול מרכז אחרון ונתוני אטמוספרה
 # =============================================================================
-wb_center_default = WATER_BODIES[wb_selection]["center"]
+wb_center_default = [20.0, 0.0] if is_global else WATER_BODIES[wb_selection]["center"]
 
 if "atm_center" not in st.session_state or st.session_state.get("last_wb") != wb_selection:
-    # החלפת גוף מים — איפוס מרכז ונתוני אטמוספרה
     st.session_state.atm_center = (wb_center_default[0], wb_center_default[1])
-    st.session_state.atm_data   = get_atmospheric_context(wb_selection)
-    st.session_state.last_wb    = wb_selection
+    if not is_global:
+        st.session_state.atm_data = get_atmospheric_context(wb_selection)
+    else:
+        st.session_state.atm_data = _empty_atm()
+    st.session_state.last_wb = wb_selection
+    st.session_state.global_zoom = 3
+    st.session_state.global_bbox = None
+    st.session_state.global_coastal_pts = []
+    st.session_state.global_wqi_layer = None
 
 atm_data = st.session_state.atm_data
 
@@ -513,8 +634,14 @@ atm_data = st.session_state.atm_data
 
 # הוספת הודעת מיקום נוכחי לסיידבר
 
-with st.spinner("מאתר תאריכי מעבר זמינים של Sentinel-3..."):
-    available_dates = get_available_s3_dates(wb_selection)
+# ---------------------------------------------------------------
+# בחירת תאריך — משותף לשני המצבים
+# ---------------------------------------------------------------
+if not is_global:
+    with st.spinner("מאתר תאריכי מעבר זמינים של Sentinel-3..."):
+        available_dates = get_available_s3_dates(wb_selection)
+else:
+    available_dates = [(datetime.utcnow() - timedelta(days=d)).strftime('%Y-%m-%d') for d in range(1, 8)]
 
 if available_dates:
     formatted_options = [f"🟢 {d}" for d in available_dates]
@@ -523,93 +650,235 @@ if available_dates:
 else:
     selected_date_str = (datetime.utcnow() - timedelta(days=1)).strftime('%Y-%m-%d')
 
-with st.spinner("מחשב ערכים משוכללים ומפיק נתוני חופים..."):
-    wqi_layer, df_beaches, error_msg = process_s3_wqi_data(wb_selection, selected_date_str)
-
-if error_msg:
-    st.error(error_msg)
-elif wqi_layer:
-    df_beaches = blend_atmospheric_penalty(df_beaches, atm_data, wb_selection)
-
+# ---------------------------------------------------------------
+# ענף גלובלי
+# ---------------------------------------------------------------
+if is_global:
     col_map, col_info = st.columns([4.0, 1.0])
 
     with col_map:
-        st.subheader(f"📍 מפת מדד משוכלל (WQI): {wb_selection}")
-        m = folium.Map(location=wb_center_default, zoom_start=WATER_BODIES[wb_selection]["zoom"])
+        st.subheader("🌍 מפת ניטור WQI גלובלית")
 
-        vis_params = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
-        map_id_dict = ee.Image(wqi_layer).getMapId(vis_params)
-        folium.TileLayer(
-            tiles=map_id_dict['tile_fetcher'].url_format,
-            attr='Google Earth Engine Sentinel-3',
-            name="WQI Index",
-            overlay=True,
-            control=False,
-            opacity=0.85
-        ).add_to(m)
+        zoom_init = st.session_state.get("global_zoom", 3)
+        center_init = list(st.session_state.atm_center)
 
-        for _, r in df_beaches.iterrows():
-            score_for_color = r['composite_with_atm'] if pd.notna(r['composite_with_atm']) else r['wqi']
-            color_marker = "green" if (score_for_color and score_for_color > 65) else "orange" if score_for_color else "red"
-            folium.CircleMarker(
-                location=[r["lat"], r["lon"]],
-                radius=6,
-                color="black",
-                weight=1,
-                fill_color=color_marker,
-                fill_opacity=0.9,
-                fill=True
-            ).add_to(m)
+        m_global = folium.Map(location=center_init, zoom_start=zoom_init)
 
-        # כרטיסיית אטמוספרה על המפה (אפשרות ג')
-        m.add_child(OnMapAtmosphereControl(atm_data))
-        m.add_child(OnMapWaterLegend())
+        # אם יש שכבת WQI גלובלית שמורה — מוסיפים אותה
+        cached_layer = st.session_state.get("global_wqi_layer")
+        if cached_layer is not None:
+            vis_params = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
+            try:
+                map_id_dict = ee.Image(cached_layer).getMapId(vis_params)
+                folium.TileLayer(
+                    tiles=map_id_dict['tile_fetcher'].url_format,
+                    attr='Google Earth Engine Sentinel-3',
+                    name="WQI Index",
+                    overlay=True,
+                    control=False,
+                    opacity=0.85
+                ).add_to(m_global)
+            except Exception:
+                pass
 
-        # מפה — מחזירה center לטיפול בעדכון אטמוספרה דינמי
-        map_data = st_folium(
-            m,
+        # נקודות חוף — רק בזום >= 7
+        current_zoom = st.session_state.get("global_zoom", 3)
+        coastal_pts  = st.session_state.get("global_coastal_pts", [])
+
+        if current_zoom >= 7 and coastal_pts:
+            for pt in coastal_pts:
+                wqi_val = pt.get("wqi")
+                if wqi_val is not None:
+                    score = wqi_val
+                    color_marker = "green" if score > 65 else "orange" if score > 45 else "red"
+                else:
+                    color_marker = "gray"
+                folium.CircleMarker(
+                    location=[pt["lat"], pt["lon"]],
+                    radius=5,
+                    color="black",
+                    weight=1,
+                    fill_color=color_marker,
+                    fill_opacity=0.85,
+                    fill=True,
+                ).add_to(m_global)
+
+        m_global.add_child(OnMapWaterLegend())
+
+        map_data_global = st_folium(
+            m_global,
             width=800,
             height=550,
-            key="s3_map_v7",
-            returned_objects=["center"],
+            key="global_map_v1",
+            returned_objects=["center", "zoom"],
         )
 
-        # =================================================================
-        # עדכון אטמוספרה לפי מרכז המפה — רק אם הזזה > 50 ק"מ
-        # =================================================================
-        if map_data and map_data.get("center"):
-            new_lat = map_data["center"]["lat"]
-            new_lon = map_data["center"]["lng"]
-            prev_lat, prev_lon = st.session_state.atm_center
+        # עדכון zoom ו-bbox לפי תנועת המפה
+        if map_data_global:
+            new_zoom = map_data_global.get("zoom") or zoom_init
+            new_center = map_data_global.get("center")
 
-            dist_km = haversine_km(prev_lat, prev_lon, new_lat, new_lon)
+            if new_center:
+                new_lat = new_center["lat"]
+                new_lon = new_center["lng"]
+                prev_lat, prev_lon = st.session_state.atm_center
+                dist_km = haversine_km(prev_lat, prev_lon, new_lat, new_lon)
+                zoom_changed = (new_zoom != st.session_state.get("global_zoom", 3))
+                moved_far    = (dist_km > 200)
 
-            if dist_km > 50:
-                st.session_state.atm_data   = get_atmospheric_context_by_coords(new_lat, new_lon)
-                st.session_state.atm_center = (new_lat, new_lon)
-                st.rerun()
+                if zoom_changed or moved_far:
+                    st.session_state.global_zoom   = new_zoom
+                    st.session_state.atm_center    = (new_lat, new_lon)
+                    new_bbox = get_bbox_from_map(map_data_global, new_zoom)
+                    st.session_state.global_bbox   = new_bbox
+
+                    # חישוב שכבת WQI לאזור החדש
+                    if new_bbox:
+                        with st.spinner("מחשב WQI לאזור..."):
+                            g_layer, g_err = get_global_wqi_layer(selected_date_str, new_bbox)
+                            st.session_state.global_wqi_layer = g_layer if not g_err else None
+
+                        # נקודות חוף רק בזום גבוה
+                        if new_zoom >= 7:
+                            lon_min, lat_min, lon_max, lat_max = new_bbox
+                            candidate_pts = generate_coastal_points_in_bbox(lat_min, lat_max, lon_min, lon_max)
+                            with st.spinner("מאתר נקודות חוף בזום גבוה..."):
+                                coast_pts = filter_coastal_points_gee(candidate_pts, new_bbox)
+
+                            # WQI לכל נקודת חוף
+                            if g_layer and coast_pts:
+                                def _sample_pt(pt):
+                                    try:
+                                        geom = ee.Geometry.Point([pt["lon"], pt["lat"]])
+                                        val  = g_layer.reduceRegion(
+                                            reducer=ee.Reducer.mean(),
+                                            geometry=geom.buffer(2000),
+                                            scale=300,
+                                            bestEffort=True
+                                        ).getInfo()
+                                        wqi_v = val.get("WQI")
+                                        return {**pt, "wqi": round(wqi_v, 1) if wqi_v is not None else None}
+                                    except Exception:
+                                        return {**pt, "wqi": None}
+                                with ThreadPoolExecutor(max_workers=6) as ex:
+                                    coast_pts = list(ex.map(_sample_pt, coast_pts))
+
+                            st.session_state.global_coastal_pts = coast_pts
+                        else:
+                            st.session_state.global_coastal_pts = []
+
+                    st.rerun()
 
     with col_info:
         st.subheader("🏖️ מדד ניקיון מי חוף")
-
-        if df_beaches is not None and not df_beaches.empty:
-            df_display = df_beaches[["name", "wqi", "composite_with_atm"]].copy()
-            df_display.columns = ["שם התחנה", "WQI לווייני גולמי", "_score"]
-            df_display["WQI לווייני גולמי"] = df_display["WQI לווייני גולמי"].fillna("אין נתונים")
-
-            def _status(score):
-                try:
-                    v = float(score)
-                except (ValueError, TypeError):
-                    return "❓ אין נתונים"
-                if v >= 70:  return "🟢 נקי"
-                if v >= 55:  return "🟡 בינוני"
-                return "🔴 מזוהם"
-
-            df_display["סטטוס ורמת ניקיון"] = df_display["_score"].apply(_status)
-            df_display = df_display[["שם התחנה", "סטטוס ורמת ניקיון"]]
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+        current_zoom = st.session_state.get("global_zoom", 3)
+        if current_zoom < 7:
+            st.info("🔍 הגדל את הזום על אזור חוף כדי לראות נקודות מדידה (כ-50 ק\"מ)")
         else:
-            st.write("לא נמצאו תחנות מוגדרות לאזור זה.")
+            pts = st.session_state.get("global_coastal_pts", [])
+            if pts:
+                def _status_g(score):
+                    try:
+                        v = float(score)
+                    except (ValueError, TypeError):
+                        return "❓ אין נתונים"
+                    if v >= 70: return "🟢 נקי"
+                    if v >= 55: return "🟡 בינוני"
+                    return "🔴 מזוהם"
+                df_g = pd.DataFrame(pts)[["lat", "lon", "wqi"]].copy()
+                df_g["סטטוס"] = df_g["wqi"].apply(_status_g)
+                df_g = df_g.rename(columns={"lat": "קו רוחב", "lon": "קו אורך"})
+                df_g = df_g[["קו רוחב", "קו אורך", "סטטוס"]]
+                st.dataframe(df_g, use_container_width=True, hide_index=True)
+            else:
+                st.write("לא נמצאו נקודות חוף באזור הנוכחי.")
+
+# ---------------------------------------------------------------
+# ענף ישראל / גופי מים מוגדרים
+# ---------------------------------------------------------------
+else:
+    with st.spinner("מחשב ערכים משוכללים ומפיק נתוני חופים..."):
+        wqi_layer, df_beaches, error_msg = process_s3_wqi_data(wb_selection, selected_date_str)
+
+    if error_msg:
+        st.error(error_msg)
+    elif wqi_layer:
+        df_beaches = blend_atmospheric_penalty(df_beaches, atm_data, wb_selection)
+
+        col_map, col_info = st.columns([4.0, 1.0])
+
+        with col_map:
+            st.subheader(f"📍 מפת מדד משוכלל (WQI): {wb_selection}")
+            m = folium.Map(location=wb_center_default, zoom_start=WATER_BODIES[wb_selection]["zoom"])
+
+            vis_params = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
+            map_id_dict = ee.Image(wqi_layer).getMapId(vis_params)
+            folium.TileLayer(
+                tiles=map_id_dict['tile_fetcher'].url_format,
+                attr='Google Earth Engine Sentinel-3',
+                name="WQI Index",
+                overlay=True,
+                control=False,
+                opacity=0.85
+            ).add_to(m)
+
+            for _, r in df_beaches.iterrows():
+                score_for_color = r['composite_with_atm'] if pd.notna(r['composite_with_atm']) else r['wqi']
+                color_marker = "green" if (score_for_color and score_for_color > 65) else "orange" if score_for_color else "red"
+                folium.CircleMarker(
+                    location=[r["lat"], r["lon"]],
+                    radius=6,
+                    color="black",
+                    weight=1,
+                    fill_color=color_marker,
+                    fill_opacity=0.9,
+                    fill=True
+                ).add_to(m)
+
+            m.add_child(OnMapAtmosphereControl(atm_data))
+            m.add_child(OnMapWaterLegend())
+
+            map_data = st_folium(
+                m,
+                width=800,
+                height=550,
+                key="s3_map_v7",
+                returned_objects=["center"],
+            )
+
+            if map_data and map_data.get("center"):
+                new_lat = map_data["center"]["lat"]
+                new_lon = map_data["center"]["lng"]
+                prev_lat, prev_lon = st.session_state.atm_center
+
+                dist_km = haversine_km(prev_lat, prev_lon, new_lat, new_lon)
+
+                if dist_km > 50:
+                    st.session_state.atm_data   = get_atmospheric_context_by_coords(new_lat, new_lon)
+                    st.session_state.atm_center = (new_lat, new_lon)
+                    st.rerun()
+
+        with col_info:
+            st.subheader("🏖️ מדד ניקיון מי חוף")
+
+            if df_beaches is not None and not df_beaches.empty:
+                df_display = df_beaches[["name", "wqi", "composite_with_atm"]].copy()
+                df_display.columns = ["שם התחנה", "WQI לווייני גולמי", "_score"]
+                df_display["WQI לווייני גולמי"] = df_display["WQI לווייני גולמי"].fillna("אין נתונים")
+
+                def _status(score):
+                    try:
+                        v = float(score)
+                    except (ValueError, TypeError):
+                        return "❓ אין נתונים"
+                    if v >= 70:  return "🟢 נקי"
+                    if v >= 55:  return "🟡 בינוני"
+                    return "🔴 מזוהם"
+
+                df_display["סטטוס ורמת ניקיון"] = df_display["_score"].apply(_status)
+                df_display = df_display[["שם התחנה", "סטטוס ורמת ניקיון"]]
+                st.dataframe(df_display, use_container_width=True, hide_index=True)
+            else:
+                st.write("לא נמצאו תחנות מוגדרות לאזור זה.")
 
 
