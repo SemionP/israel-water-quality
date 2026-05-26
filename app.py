@@ -724,14 +724,19 @@ if is_global:
                 new_lon = new_center["lng"]
                 prev_lat, prev_lon = st.session_state.atm_center
                 dist_km = haversine_km(prev_lat, prev_lon, new_lat, new_lon)
-                zoom_changed = (new_zoom != st.session_state.get("global_zoom", 3))
-                moved_far    = (dist_km > 200)
 
-                if zoom_changed or moved_far:
-                    st.session_state.global_zoom   = new_zoom
-                    st.session_state.atm_center    = (new_lat, new_lon)
+                prev_zoom = st.session_state.get("global_zoom", 3)
+                # Crossed the coastal-points threshold (6↔7) or panned far enough
+                threshold_crossed = (prev_zoom < 7) != (new_zoom < 7)
+                moved_far = (dist_km > 200)
+
+                # Always persist the latest zoom + center so the map never snaps back
+                st.session_state.global_zoom = new_zoom
+                st.session_state.atm_center  = (new_lat, new_lon)
+
+                if threshold_crossed or moved_far:
                     new_bbox = get_bbox_from_map(map_data_global, new_zoom)
-                    st.session_state.global_bbox   = new_bbox
+                    st.session_state.global_bbox = new_bbox
 
                     # Compute WQI layer for the new area
                     if new_bbox:
@@ -854,9 +859,11 @@ else:
 
                 dist_km = haversine_km(prev_lat, prev_lon, new_lat, new_lon)
 
+                # Always persist the latest center so the map never snaps back
+                st.session_state.atm_center = (new_lat, new_lon)
+
                 if dist_km > 50:
-                    st.session_state.atm_data   = get_atmospheric_context_by_coords(new_lat, new_lon)
-                    st.session_state.atm_center = (new_lat, new_lon)
+                    st.session_state.atm_data = get_atmospheric_context_by_coords(new_lat, new_lon)
                     st.rerun()
 
         with col_info:
