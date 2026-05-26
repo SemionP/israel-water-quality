@@ -597,9 +597,8 @@ elif wqi_layer:
 
         if df_beaches is not None and not df_beaches.empty:
             df_display = df_beaches[["name", "wqi", "composite_with_atm"]].copy()
-            df_display.columns = ["שם התחנה", "WQI לווייני גולמי", "ציון משוקלל אטמוספרי"]
+            df_display.columns = ["שם התחנה", "WQI לווייני גולמי", "_score"]
             df_display["WQI לווייני גולמי"] = df_display["WQI לווייני גולמי"].fillna("אין נתונים")
-            df_display["ציון משוקלל אטמוספרי"] = df_display["ציון משוקלל אטמוספרי"].fillna("אין נתונים")
 
             def _status(score):
                 try:
@@ -610,7 +609,8 @@ elif wqi_layer:
                 if v >= 55:  return "🟡 בינוני"
                 return "🔴 מזוהם"
 
-            df_display["סטטוס ורמת ניקיון"] = df_display["ציון משוקלל אטמוספרי"].apply(_status)
+            df_display["סטטוס ורמת ניקיון"] = df_display["_score"].apply(_status)
+            df_display = df_display[["שם התחנה", "WQI לווייני גולמי", "סטטוס ורמת ניקיון"]]
             st.dataframe(df_display, use_container_width=True, hide_index=True)
         else:
             st.write("לא נמצאו תחנות מוגדרות לאזור זה.")
