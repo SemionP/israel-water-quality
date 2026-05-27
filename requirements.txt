@@ -4,4 +4,4 @@ folium
 streamlit-folium
 pandas
 numpy
-google-generativeai
+google-genai
