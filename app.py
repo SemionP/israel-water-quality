@@ -288,10 +288,9 @@ def generate_medi_explanation(result: MEDIResult, api_key: str) -> MEDIResult:
     """
     Calls Gemini to generate explanation + recommendation.
     """
+    # Always call Gemini — even for low risk (good for demo)
     if not result.drivers:
-        result.explanation    = "No significant anomalies detected in active signals."
-        result.recommendation = "Continue routine monitoring."
-        return result
+        result.drivers = ["no significant anomalies detected"]
 
     profile_desc = PROFILES.get(result.profile, {}).get("description", "")
     drivers_str  = ", ".join(result.drivers)
