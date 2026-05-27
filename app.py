@@ -407,10 +407,8 @@ MODE_ISRAEL = "🏖️ Israel Coast"
 MODE_GLOBAL = "🌍 Global"
 mode = st.sidebar.selectbox("Select monitoring zone:", [MODE_ISRAEL, MODE_GLOBAL])
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🎯 Risk Profile")
-medi_profile = st.sidebar.selectbox("Select risk profile:", list(PROFILES.keys()))
-st.sidebar.caption(PROFILES[medi_profile]["description"])
+# Risk profile shown in MEDI tab only — initialized here for session state
+medi_profile = "Beach Safety"  # default
 
 # ── Israel Coast ──────────────────────────────────────────────────────────────
 if mode == MODE_ISRAEL:
@@ -433,56 +431,67 @@ if mode == MODE_ISRAEL:
     elif wqi_layer is not None:
         atm = get_atm(32.4, 34.85)
 
+    # Shared map builder
+    def _build_map():
+        m = folium.Map(location=[32.4, 34.85], zoom_start=8)
+        vis = {'min':40,'max':85,'palette':['#FF0000','#FFFF00','#00FF00']}
+        mid = ee.Image(wqi_layer).getMapId(vis)
+        folium.TileLayer(tiles=mid['tile_fetcher'].url_format,attr='GEE S3',
+                         name="WQI",overlay=True,control=False,opacity=0.85).add_to(m)
+        for _,r in df.iterrows():
+            sc = r.get('wqi')
+            cm = "#1ecb7b" if sc and sc>65 else "#f0a500" if sc and sc>45 else "#e03c3c"
+            wqi_str = f"{sc:.1f}" if sc else "N/A"
+            folium.Marker(
+                location=[r["lat"],r["lon"]],
+                tooltip=f"🏖️ {r['name']} | WQI: {wqi_str}",
+                popup=folium.Popup(f"<b>{r['name']}</b><br>WQI: <span style='color:{cm};font-weight:bold;'>{wqi_str}</span>", max_width=180),
+                icon=folium.DivIcon(
+                    html=f'''<div style="background:{cm};border:2px solid white;border-radius:50%;width:13px;height:13px;box-shadow:0 0 6px {cm}99;"></div>
+<div style="position:absolute;top:15px;left:-28px;white-space:nowrap;font-family:Arial;font-size:10px;font-weight:600;color:white;text-shadow:0 1px 3px rgba(0,0,0,0.9);">{r["name"]}</div>''',
+                    icon_size=(13,13),icon_anchor=(6,6))
+            ).add_to(m)
+        m.add_child(OnMapWaterLegend())
+        m.add_child(OnMapAtmosphereControl(atm))
+        return m
+
     # ── Tab 1: Water Quality Index ─────────────────────────────────────────────
     with tab_wqi:
         if err:
             st.error(err)
         elif wqi_layer is not None:
-            col_map, col_info = st.columns([4.0, 1.0])
-
-        with col_map:
-            m = folium.Map(location=[32.4, 34.85], zoom_start=8)
-            vis = {'min':40,'max':85,'palette':['#FF0000','#FFFF00','#00FF00']}
-            mid = ee.Image(wqi_layer).getMapId(vis)
-            folium.TileLayer(tiles=mid['tile_fetcher'].url_format,attr='GEE S3',
-                             name="WQI",overlay=True,control=False,opacity=0.85).add_to(m)
-
-            for _,r in df.iterrows():
-                sc = r.get('wqi')
-                cm = "#1ecb7b" if sc and sc>65 else "#f0a500" if sc and sc>45 else "#e03c3c"
-                wqi_str = f"{sc:.1f}" if sc else "N/A"
-                folium.Marker(
-                    location=[r["lat"],r["lon"]],
-                    tooltip=f"🏖️ {r['name']} | WQI: {wqi_str}",
-                    popup=folium.Popup(f"<b>{r['name']}</b><br>WQI: <span style='color:{cm};font-weight:bold;'>{wqi_str}</span>", max_width=180),
-                    icon=folium.DivIcon(
-                        html=f"""<div style="background:{cm};border:2px solid white;border-radius:50%;width:13px;height:13px;box-shadow:0 0 6px {cm}99;"></div>
-<div style="position:absolute;top:15px;left:-28px;white-space:nowrap;font-family:Arial;font-size:10px;font-weight:600;color:white;text-shadow:0 1px 3px rgba(0,0,0,0.9);">{r["name"]}</div>""",
-                        icon_size=(13,13),icon_anchor=(6,6))
-                ).add_to(m)
-
-            m.add_child(OnMapWaterLegend())
-            m.add_child(OnMapAtmosphereControl(atm))
-            st_folium(m, width=820, height=550, key="israel_map", returned_objects=[])
-
-        with col_info:
-            st.markdown("#### 🏖️ Station Status")
-            if df is not None and not df.empty:
-                def _st(s):
-                    try: v=float(s)
-                    except: return "❓ N/A"
-                    return "🟢 Clean" if v>=70 else "🟡 Moderate" if v>=55 else "🔴 Polluted"
-                df_d = df[["name","wqi"]].copy()
-                df_d["Status"] = df_d["wqi"].apply(_st)
-                df_d = df_d.rename(columns={"name":"Station","wqi":"WQI"})
-                st.dataframe(df_d[["Station","WQI","Status"]], use_container_width=True, hide_index=True)
+            col_map, col_info = st.columns([3.5, 1.5])
+            with col_map:
+                st_folium(_build_map(), width=820, height=550, key="israel_map_wqi", returned_objects=[])
+            with col_info:
+                st.markdown("#### 🏖️ Station Status")
+                if df is not None and not df.empty:
+                    def _st(s):
+                        try: v=float(s)
+                        except: return "❓ N/A"
+                        return "🟢 Clean" if v>=70 else "🟡 Moderate" if v>=55 else "🔴 Polluted"
+                    df_d = df[["name","wqi"]].copy()
+                    df_d["Status"] = df_d["wqi"].apply(_st)
+                    df_d = df_d.rename(columns={"name":"Station","wqi":"WQI"})
+                    st.dataframe(df_d[["Station","WQI","Status"]], use_container_width=True, hide_index=True)
 
     # ── Tab 2: MEDI Risk Assessment ───────────────────────────────────────────
     with tab_medi:
         if err:
             st.error(err)
         elif wqi_layer is not None:
-            try:
+            # Profile selector inside the tab
+            col_prof, _ = st.columns([2, 3])
+            with col_prof:
+                medi_profile = st.selectbox("🎯 Risk Profile:", list(PROFILES.keys()), key="medi_profile_select")
+                st.caption(PROFILES[medi_profile]["description"])
+
+            col_map2, col_medi = st.columns([3.0, 2.0])
+            with col_map2:
+                st_folium(_build_map(), width=580, height=520, key="israel_map_medi", returned_objects=[])
+
+            with col_medi:
+              try:
                 with st.spinner("Computing MEDI score..."):
                     valid = df["wqi"].dropna()
                     avg_wqi = float(valid.mean()) if not valid.empty else 60.0
@@ -543,8 +552,8 @@ box-shadow:0 0 28px {medi.risk_color}44;margin-top:8px;">
   </div>
 </div>
 """, unsafe_allow_html=True)
-            except Exception as e:
-                st.warning(f"MEDI computation unavailable: {e}")
+              except Exception as e:
+                  st.warning(f"MEDI computation unavailable: {e}")
 
 
 # ── Global ────────────────────────────────────────────────────────────────────
