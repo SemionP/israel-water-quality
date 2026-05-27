@@ -287,8 +287,9 @@ GSW=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
 
 def build_grid(bbox=None):
     if bbox is None: bbox=ISRAEL_COAST_BBOX
-    lats=np.arange(bbox["lat_min"],bbox["lat_max"],GRID_STEP_DEG)
-    lons=np.arange(bbox["lon_min"],bbox["lon_max"],GRID_STEP_DEG)
+    step=bbox.get("step", GRID_STEP_DEG)
+    lats=np.arange(bbox["lat_min"],bbox["lat_max"],step)
+    lons=np.arange(bbox["lon_min"],bbox["lon_max"],step)
     records=[]
     for i,lat in enumerate(lats):
         for j,lon in enumerate(lons):
@@ -367,14 +368,15 @@ def _pick_winner(readings):
 @st.cache_data(ttl=3600)
 def run_fusion_pipeline() -> pd.DataFrame:
     aoi=ee.Geometry.Rectangle([ISRAEL_COAST_BBOX["lon_min"],ISRAEL_COAST_BBOX["lat_min"],ISRAEL_COAST_BBOX["lon_max"],ISRAEL_COAST_BBOX["lat_max"]])
-    grid=build_grid()
+    # Use 1km grid for demo — fast enough for Streamlit Cloud (~1500 cells vs 490K)
+    grid=build_grid(bbox={**ISRAEL_COAST_BBOX, "step": 0.009})
     s3_layer    = get_s3_fusion_layer(aoi)
     modis_layer = get_modis_fusion_layer(aoi)
     s2_layer    = get_s2_fusion_layer(aoi)
     layers=[
-        (s3_layer,    "WQI_S3",    "cloud_S3",    "valid_S3",    "S3",    300),
-        (modis_layer, "WQI_MODIS", "cloud_MODIS", "valid_MODIS", "MODIS", 500),
-        (s2_layer,    "WQI_S2",    "cloud_S2",    "valid_S2",    "S2",    300),
+        (s3_layer,    "WQI_S3",    "cloud_S3",    "valid_S3",    "S3",    1000),
+        (modis_layer, "WQI_MODIS", "cloud_MODIS", "valid_MODIS", "MODIS", 1000),
+        (s2_layer,    "WQI_S2",    "cloud_S2",    "valid_S2",    "S2",    1000),
     ]
     readings=[_sample_layer(l,grid,wb,cb,vb,sn,sc) for l,wb,cb,vb,sn,sc in layers if l is not None]
     valid=[df for df in readings if not df.empty]
