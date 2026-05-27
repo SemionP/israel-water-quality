@@ -24,7 +24,102 @@ import ee
 from branca.element import MacroElement
 from jinja2 import Template
 
-st.set_page_config(page_title="AquaWatch Global — Sentinel WQI", layout="wide")
+st.set_page_config(
+    page_title="MEDI Platform — Maritime Environmental Decision Intelligence",
+    page_icon="🌊",
+    layout="wide",
+)
+
+# ==============================================================================
+# MEDI Platform — Global Styling
+# ==============================================================================
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=Exo+2:wght@300;400;600&display=swap');
+:root {
+    --ocean-deep:    #020d18;
+    --ocean-mid:     #041e33;
+    --ocean-surface: #062d4a;
+    --teal-bright:   #00c8c8;
+    --teal-dim:      #007f8a;
+    --amber-alert:   #f0a500;
+    --red-danger:    #e03c3c;
+    --green-safe:    #1ecb7b;
+    --text-primary:  #d6eaf8;
+    --text-dim:      #7fb3d3;
+    --grid-line:     rgba(0,200,200,0.08);
+    --glow:          0 0 18px rgba(0,200,200,0.25);
+}
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: var(--ocean-deep) !important;
+    color: var(--text-primary) !important;
+}
+[data-testid="stAppViewContainer"] {
+    background-image:
+        linear-gradient(var(--grid-line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-line) 1px, transparent 1px),
+        radial-gradient(ellipse 80% 60% at 50% -10%, rgba(0,100,140,0.35) 0%, transparent 70%);
+    background-size: 60px 60px, 60px 60px, 100% 100%;
+}
+[data-testid="stHeader"] { background: transparent !important; }
+[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #031624 0%, #020d18 100%) !important;
+    border-right: 1px solid rgba(0,200,200,0.15) !important;
+}
+[data-testid="stSidebar"] * { color: var(--text-primary) !important; }
+h1, h2, h3 {
+    font-family: 'Rajdhani', sans-serif !important;
+    letter-spacing: 0.06em;
+    color: var(--teal-bright) !important;
+}
+h1 { font-size: 2.1rem !important; font-weight: 700 !important; }
+h2 { font-size: 1.4rem !important; font-weight: 600 !important; }
+p, div, span, label { font-family: 'Exo 2', sans-serif !important; color: var(--text-primary) !important; }
+.medi-header {
+    display: flex; align-items: center; gap: 18px;
+    padding: 18px 28px;
+    background: linear-gradient(90deg, rgba(0,200,200,0.08) 0%, transparent 100%);
+    border-left: 3px solid var(--teal-bright);
+    border-bottom: 1px solid rgba(0,200,200,0.15);
+    margin-bottom: 24px;
+}
+.medi-header .logo-text { font-family: 'Rajdhani', sans-serif; font-size: 2rem; font-weight: 700; color: var(--teal-bright); letter-spacing: 0.1em; line-height: 1; }
+.medi-header .logo-sub { font-family: 'Share Tech Mono', monospace; font-size: 0.72rem; color: var(--teal-dim); letter-spacing: 0.18em; text-transform: uppercase; margin-top: 3px; }
+.medi-header .status-badge { margin-left: auto; font-family: 'Share Tech Mono', monospace; font-size: 0.72rem; color: var(--green-safe); border: 1px solid var(--green-safe); padding: 4px 10px; border-radius: 2px; letter-spacing: 0.1em; animation: pulse-badge 2.5s ease-in-out infinite; }
+@keyframes pulse-badge { 0%,100% { opacity:1; } 50% { opacity:0.5; } }
+[data-testid="stSelectbox"] > div > div, [data-testid="stRadio"] label {
+    background: var(--ocean-surface) !important;
+    border: 1px solid rgba(0,200,200,0.2) !important;
+    color: var(--text-primary) !important;
+    border-radius: 3px !important;
+    font-family: 'Exo 2', sans-serif !important;
+}
+[data-testid="stMetric"] { background: rgba(0,200,200,0.05) !important; border: 1px solid rgba(0,200,200,0.15) !important; border-radius: 4px !important; padding: 10px 14px !important; }
+[data-testid="stMetricLabel"] { color: var(--teal-dim) !important; font-size: 0.75rem !important; letter-spacing: 0.08em; }
+[data-testid="stMetricValue"] { color: var(--teal-bright) !important; font-family: 'Share Tech Mono', monospace !important; }
+[data-testid="stDataFrame"] { border: 1px solid rgba(0,200,200,0.2) !important; border-radius: 4px !important; }
+[data-testid="stDataFrame"] th { background: var(--ocean-surface) !important; color: var(--teal-bright) !important; font-family: 'Share Tech Mono', monospace !important; font-size: 0.75rem !important; }
+[data-testid="stDataFrame"] td { color: var(--text-primary) !important; border-bottom: 1px solid var(--grid-line) !important; }
+[data-testid="stSpinner"] p { color: var(--teal-dim) !important; font-family: 'Share Tech Mono', monospace !important; }
+[data-testid="stAlert"] { background: rgba(0,200,200,0.06) !important; border: 1px solid rgba(0,200,200,0.25) !important; border-radius: 3px !important; }
+[data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 { font-family: 'Rajdhani', sans-serif !important; color: var(--teal-bright) !important; letter-spacing: 0.08em; }
+[data-testid="stSidebar"] hr { border-color: rgba(0,200,200,0.15) !important; }
+[data-testid="stIFrame"], iframe { border: 1px solid rgba(0,200,200,0.2) !important; border-radius: 4px !important; box-shadow: var(--glow) !important; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--ocean-deep); }
+::-webkit-scrollbar-thumb { background: var(--teal-dim); border-radius: 3px; }
+</style>
+""", unsafe_allow_html=True)
+
+st.markdown('''
+<div class="medi-header">
+    <div>
+        <div class="logo-text">⬡ MEDI PLATFORM</div>
+        <div class="logo-sub">Maritime Environmental Decision Intelligence</div>
+    </div>
+    <div class="status-badge">● LIVE MONITORING</div>
+</div>
+''', unsafe_allow_html=True)
 
 # ==============================================================================
 # Analytics
@@ -468,12 +563,11 @@ def get_bbox_from_map(map_data,zoom):
 # =============================================================================
 # 7. UI
 # =============================================================================
-st.title("🛰️ AquaWatch Global — Multi-Satellite Water Quality Monitor")
-st.markdown("Composite WQI from Sentinel-3, Sentinel-2, and MODIS — dynamic fusion with confidence scoring.")
+st.markdown("### 🛰️ Multi-Source Water Quality Intelligence — Sentinel-3 · Sentinel-2 · MODIS")
 
-st.sidebar.header("🔧 Settings & Dates")
+st.sidebar.markdown("### 🔧 Mission Parameters")
 MODE_GLOBAL="🌍 Global"; MODE_FUSION="🔀 Israel Coast Fusion"
-wb_selection=st.sidebar.selectbox("Select water body to monitor:",[MODE_GLOBAL,MODE_FUSION]+list(WATER_BODIES.keys()))
+wb_selection=st.sidebar.selectbox("Select monitoring zone:",[MODE_GLOBAL,MODE_FUSION]+list(WATER_BODIES.keys()))
 is_global=(wb_selection==MODE_GLOBAL); is_fusion=(wb_selection==MODE_FUSION)
 
 wb_center_default=[32.0,34.9] if is_fusion else ([20.0,0.0] if is_global else WATER_BODIES[wb_selection]["center"])
@@ -488,7 +582,7 @@ atm_data=st.session_state.atm_data
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🌊 Environmental Overlays")
-overlay_choice=st.sidebar.radio("Animated flow layer:",["None","💨 Wind","🌊 Waves"],horizontal=True)
+overlay_choice=st.sidebar.radio("Environmental overlay:",["None","💨 Wind","🌊 Waves"],horizontal=True)
 
 marine_grid_data=None
 if overlay_choice!="None":
@@ -513,7 +607,7 @@ else:
     available_dates=[(datetime.utcnow()-timedelta(days=d)).strftime('%Y-%m-%d') for d in range(1,8)]
 
 if available_dates:
-    selected_date_str=st.sidebar.selectbox("Select satellite pass date:",[f"🟢 {d}" for d in available_dates]).replace("🟢 ","")
+    selected_date_str=st.sidebar.selectbox("Select acquisition date:",[f"🟢 {d}" for d in available_dates]).replace("🟢 ","")
 else:
     selected_date_str=(datetime.utcnow()-timedelta(days=1)).strftime('%Y-%m-%d')
 
