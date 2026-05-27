@@ -506,7 +506,7 @@ if mode == MODE_ISRAEL:
         sel_date = (datetime.utcnow()-timedelta(days=1)).strftime('%Y-%m-%d')
 
     # ── Tab selector ──────────────────────────────────────────────────────────
-    tab_wqi, tab_medi, tab_ports = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment", "🚢 Port MEDI"])
+    tab_wqi, tab_medi, tab_ports, tab_compare = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment", "🚢 Port MEDI", "⚖️ Port Comparison"])
 
     with st.spinner("Computing WQI from Sentinel-3..."):
         wqi_layer, df, err, img_age_hours = process_israel_wqi(sel_date)
@@ -800,6 +800,178 @@ box-shadow:0 0 28px {medi.risk_color}44;">
 
                 except Exception as e:
                     st.warning(f"Port MEDI unavailable: {e}")
+
+    # ── Tab 4: Port Comparison ────────────────────────────────────────────────
+    with tab_compare:
+        import math as _math
+        import json as _json
+
+        st.markdown("### ⚖️ Port Comparison — MEDI Risk Intelligence")
+        comp_profile = st.selectbox("Risk profile:", list(PROFILES.keys()), key="comp_profile")
+
+        # Compute MEDI for all three ports
+        with st.spinner("Computing MEDI for all ports..."):
+            port_results = {}
+            for pk in PORTS:
+                try:
+                    wv, sa, ah = process_port_medi(pk, sel_date)
+                    avg_w  = wv or 60.0
+                    atm_p  = get_atm(PORTS[pk]["atm_coords"][0], PORTS[pk]["atm_coords"][1])
+                    ws_p   = atm_p.get("wind_speed") or 0.0
+                    pr_p   = atm_p.get("precip_mm")  or 0.0
+                    tp     = min(1.0,(ws_p/20.0)*0.5+(pr_p/10.0)*0.5)
+                    cp     = max(0.0,min(1.0,1.0-(avg_w/100.0)))
+                    ss     = max(0.0,min(1.0,(sa or 0.0)/5.0))
+                    wc     = round(_math.exp(-0.03*ah)*0.85, 3)
+                    ad     = ah/24.0
+                    sigs   = {
+                        "wqi":        SignalReading("wqi",avg_w,raw_value=avg_w,unit="score",age_days=ad,confidence=wc),
+                        "turbidity":  SignalReading("turbidity",tp,age_days=ad,confidence=wc*0.8),
+                        "chlorophyll":SignalReading("chlorophyll",cp,age_days=ad,confidence=wc*0.85),
+                        "sst_anomaly":SignalReading("sst_anomaly",ss,raw_value=sa,unit="degC",age_days=0.5,confidence=0.9 if sa else 0.0),
+                    }
+                    prev_c = st.session_state.get(f"comp_prev_{pk}")
+                    m      = compute_medi(sigs, comp_profile, previous_score=prev_c, zone=pk)
+                    st.session_state[f"comp_prev_{pk}"] = m.risk_score
+                    api_key = st.secrets.get("gemini_api_key","")
+                    if api_key:
+                        m = generate_medi_explanation(m, api_key)
+                    port_results[pk] = {"medi": m, "wqi": wv, "sst": sa, "age_h": ah}
+                except Exception as ex:
+                    port_results[pk] = None
+
+        # ── Score cards ────────────────────────────────────────────────────
+        cols = st.columns(3)
+        port_keys = list(PORTS.keys())
+        for i, pk in enumerate(port_keys):
+            res = port_results.get(pk)
+            with cols[i]:
+                if res:
+                    m    = res["medi"]
+                    wv   = res["wqi"]
+                    sa   = res["sst"]
+                    ah   = res["age_h"]
+                    ti   = "📈" if m.trend=="RISING" else "📉" if m.trend=="FALLING" else "➡️"
+                    ds   = f"{m.trend_delta:+.1f}" if m.trend_delta is not None else "—"
+                    dr   = " · ".join(m.drivers[:2]) if m.drivers else "No anomalies"
+                    sst_s= f"{sa:+.1f}°C" if sa else "N/A"
+                    wq_s = f"{wv:.1f}" if wv else "N/A"
+                    border_style = f"border:1.5px solid {m.risk_color};" if m.risk_score >= 55 else "border:1px solid rgba(0,200,200,0.2);"
+                    st.markdown(f"""
+<div style="background:linear-gradient(135deg,rgba(2,13,24,0.97),rgba(4,30,51,0.95));
+{border_style}border-radius:10px;padding:18px 20px;
+box-shadow:0 0 20px {m.risk_color}33;height:100%;">
+  <div style="font-family:'Share Tech Mono',monospace;font-size:0.68rem;color:#7fb3d3;letter-spacing:0.12em;margin-bottom:4px;">{PORTS[pk]['description'][:35]}...</div>
+  <div style="font-family:'Rajdhani',sans-serif;font-size:1.1rem;font-weight:700;color:#d6eaf8;margin-bottom:12px;">{pk}</div>
+  <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:14px;">
+    <span style="font-family:'Rajdhani',sans-serif;font-size:3.2rem;font-weight:700;color:{m.risk_color};line-height:1;">{m.risk_score:.0f}</span>
+    <span style="font-size:0.9rem;color:{m.risk_color};font-weight:600;padding:2px 8px;border:1px solid {m.risk_color};border-radius:3px;">{m.risk_level}</span>
+  </div>
+  <div style="border-top:1px solid rgba(0,200,200,0.12);padding-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:6px;font-family:'Share Tech Mono',monospace;font-size:0.68rem;">
+    <div style="color:#7fb3d3;">TREND</div><div style="color:#d6eaf8;text-align:right;">{ti} {ds}</div>
+    <div style="color:#7fb3d3;">CONFIDENCE</div><div style="color:#d6eaf8;text-align:right;">{m.confidence:.0%}</div>
+    <div style="color:#7fb3d3;">WQI</div><div style="color:#d6eaf8;text-align:right;">{wq_s}</div>
+    <div style="color:#7fb3d3;">SST ANOM</div><div style="color:#d6eaf8;text-align:right;">{sst_s}</div>
+    <div style="color:#7fb3d3;">DATA AGE</div><div style="color:#d6eaf8;text-align:right;">{ah:.1f}h</div>
+  </div>
+  <div style="margin-top:10px;border-top:1px solid rgba(0,200,200,0.12);padding-top:8px;">
+    <div style="font-family:'Share Tech Mono',monospace;font-size:0.65rem;color:#7fb3d3;margin-bottom:4px;">DRIVERS</div>
+    <div style="font-size:0.8rem;color:#d6eaf8;">{dr}</div>
+  </div>
+  <div style="margin-top:10px;background:rgba(0,200,200,0.06);border-left:2px solid #00c8c8;padding:8px 10px;border-radius:3px;">
+    <div style="font-family:'Share Tech Mono',monospace;font-size:0.65rem;color:#00c8c8;margin-bottom:3px;">ACTION</div>
+    <div style="font-size:0.78rem;color:#d6eaf8;">{m.recommendation or "Monitor situation."}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+                else:
+                    st.warning(f"Data unavailable for {pk}")
+
+        # ── Score comparison bar chart ──────────────────────────────────────
+        st.markdown("---")
+        st.markdown("#### 📊 Score Comparison")
+
+        valid_ports = {pk: r for pk, r in port_results.items() if r}
+        if valid_ports:
+            chart_data = {
+                "ports":  [pk.split(" ",1)[1] for pk in valid_ports],
+                "scores": [round(r["medi"].risk_score, 1) for r in valid_ports.values()],
+                "colors": [r["medi"].risk_color for r in valid_ports.values()],
+                "wqis":   [round(r["wqi"], 1) if r["wqi"] else 0 for r in valid_ports.values()],
+            }
+            chart_json = _json.dumps(chart_data)
+
+            st.markdown(f"""
+<div style="background:linear-gradient(135deg,rgba(2,13,24,0.97),rgba(4,30,51,0.95));
+border:1px solid rgba(0,200,200,0.2);border-radius:10px;padding:20px 24px;margin-top:8px;">
+  <canvas id="compChart" role="img" aria-label="Bar chart comparing MEDI scores across ports" style="width:100%;height:200px;"></canvas>
+  <script>
+  (function(){{
+    var d = {chart_json};
+    var ctx = document.getElementById('compChart');
+    if(!ctx) return;
+    new Chart(ctx, {{
+      type: 'bar',
+      data: {{
+        labels: d.ports,
+        datasets: [
+          {{
+            label: 'MEDI Score',
+            data: d.scores,
+            backgroundColor: d.colors.map(c => c + '99'),
+            borderColor: d.colors,
+            borderWidth: 2,
+            borderRadius: 4,
+          }},
+          {{
+            label: 'WQI (inverted)',
+            data: d.wqis.map(v => 100-v),
+            backgroundColor: 'rgba(0,200,200,0.15)',
+            borderColor: '#00c8c8',
+            borderWidth: 1,
+            borderRadius: 4,
+            borderDash: [4,2],
+          }}
+        ]
+      }},
+      options: {{
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {{
+          legend: {{ display: false }},
+          tooltip: {{ callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y }} }}
+        }},
+        scales: {{
+          x: {{ ticks: {{ color: '#7fb3d3', font: {{ size: 12 }} }}, grid: {{ color: 'rgba(0,200,200,0.05)' }} }},
+          y: {{ min: 0, max: 100, ticks: {{ color: '#7fb3d3', font: {{ size: 11 }}, stepSize: 25 }}, grid: {{ color: 'rgba(0,200,200,0.05)' }} }}
+        }}
+      }}
+    }});
+  }})();
+  </script>
+  <div style="display:flex;gap:20px;margin-top:12px;font-family:'Share Tech Mono',monospace;font-size:0.68rem;color:#7fb3d3;">
+    <span>■ MEDI Score (higher = more risk)</span>
+    <span>■ WQI inverted (higher = worse water quality)</span>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+""", unsafe_allow_html=True)
+
+        # ── Fleet summary ───────────────────────────────────────────────────
+        if valid_ports:
+            scores   = [r["medi"].risk_score for r in valid_ports.values()]
+            avg_s    = sum(scores)/len(scores)
+            max_port = max(valid_ports, key=lambda k: valid_ports[k]["medi"].risk_score)
+            rising   = [pk for pk,r in valid_ports.items() if r["medi"].trend=="RISING"]
+
+            st.markdown("---")
+            mc1, mc2, mc3 = st.columns(3)
+            with mc1:
+                st.metric("Fleet avg MEDI", f"{avg_s:.1f}")
+            with mc2:
+                st.metric("Highest risk", max_port.split(" ",1)[1], f"{valid_ports[max_port]['medi'].risk_score:.0f}")
+            with mc3:
+                st.metric("Rising ports", len(rising), f"{', '.join(p.split(' ',1)[1] for p in rising) or 'None'}")
 
 # ── Global ────────────────────────────────────────────────────────────────────
 else:
