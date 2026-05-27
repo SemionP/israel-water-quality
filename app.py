@@ -909,6 +909,11 @@ if "atm_center" not in st.session_state or st.session_state.get("last_wb")!=wb_s
 atm_data=st.session_state.atm_data
 
 st.sidebar.markdown("---")
+st.sidebar.markdown("### 🎯 Risk Profile")
+medi_profile=st.sidebar.selectbox("Select risk profile:",list(PROFILES.keys()))
+st.sidebar.caption(PROFILES[medi_profile]["description"])
+
+st.sidebar.markdown("---")
 st.sidebar.markdown("### 🌊 Environmental Overlays")
 overlay_choice=st.sidebar.radio("Environmental overlay:",["None","💨 Wind","🌊 Waves"],horizontal=True)
 
@@ -1129,3 +1134,78 @@ else:
                 df_d["Status"]=df_d["_score"].apply(_st); df_d["Sea Temp"]=df_d["sst"].apply(_sst)
                 st.dataframe(df_d[["Station Name","Status","Sea Temp"]],use_container_width=True,hide_index=True)
             else: st.write("No defined stations found for this area.")
+
+        # ── MEDI Risk Card ──────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### ⬡ MEDI Risk Assessment")
+        with st.spinner("Computing MEDI risk score..."):
+            try:
+                # Build signals from available data
+                valid_wqi = df_beaches["composite_with_atm"].dropna()
+                avg_wqi   = float(valid_wqi.mean()) if not valid_wqi.empty else 60.0
+
+                atm = st.session_state.get("atm_data", _empty_atm())
+                ws  = atm.get("wind_speed") or 0.0
+                pr  = atm.get("precip_mm")  or 0.0
+
+                # Turbidity proxy from atmospheric conditions
+                turb_proxy = min(1.0, (ws / 20.0) * 0.5 + (pr / 10.0) * 0.5)
+                # Chlorophyll proxy from WQI inverse
+                chl_proxy  = max(0.0, min(1.0, 1.0 - (avg_wqi / 100.0)))
+
+                signals = {
+                    "wqi":        SignalReading("wqi",        avg_wqi,    raw_value=avg_wqi, unit="score", age_days=1.0, confidence=0.85),
+                    "turbidity":  SignalReading("turbidity",  turb_proxy, raw_value=turb_proxy, unit="index", age_days=0.1, confidence=0.7),
+                    "chlorophyll":SignalReading("chlorophyll", chl_proxy, raw_value=chl_proxy, unit="index", age_days=1.0, confidence=0.75),
+                }
+
+                prev = st.session_state.get("medi_prev_score")
+                medi = compute_medi(signals, medi_profile, previous_score=prev, zone=wb_selection)
+                st.session_state["medi_prev_score"] = medi.risk_score
+
+                # Call Claude for explanation
+                api_key = st.secrets.get("anthropic_api_key", "")
+                if api_key:
+                    medi = generate_medi_explanation(medi, api_key)
+
+                # Render card
+                trend_icon = "📈" if medi.trend == "RISING" else "📉" if medi.trend == "FALLING" else "➡️"
+                delta_str  = f" ({medi.trend_delta:+.1f})" if medi.trend_delta is not None else ""
+                drivers_str = " · ".join(medi.drivers) if medi.drivers else "No significant anomalies"
+
+                st.markdown(f"""
+<div style="background:linear-gradient(135deg,rgba(2,13,24,0.95),rgba(6,45,74,0.9));
+            border:1px solid {medi.risk_color};border-radius:8px;padding:20px 24px;
+            box-shadow:0 0 24px {medi.risk_color}44;margin-top:8px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+    <div>
+      <span style="font-family:'Rajdhani',sans-serif;font-size:1.1rem;color:#7fb3d3;letter-spacing:0.1em;">MEDI RISK SCORE</span><br>
+      <span style="font-family:'Rajdhani',sans-serif;font-size:2.8rem;font-weight:700;color:{medi.risk_color};line-height:1;">{medi.risk_score:.0f}</span>
+      <span style="font-size:1rem;color:{medi.risk_color};margin-left:6px;font-weight:600;">{medi.risk_level}</span>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-family:'Share Tech Mono',monospace;font-size:0.8rem;color:#7fb3d3;">TREND</div>
+      <div style="font-size:1.3rem;">{trend_icon} {medi.trend}{delta_str}</div>
+      <div style="font-family:'Share Tech Mono',monospace;font-size:0.75rem;color:#7fb3d3;margin-top:4px;">CONFIDENCE: {medi.confidence:.0%}</div>
+    </div>
+  </div>
+  <div style="border-top:1px solid rgba(0,200,200,0.15);padding-top:12px;margin-bottom:10px;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#7fb3d3;letter-spacing:0.1em;">RISK DRIVERS</span><br>
+    <span style="color:#d6eaf8;font-size:0.9rem;">{drivers_str}</span>
+  </div>
+  <div style="border-top:1px solid rgba(0,200,200,0.15);padding-top:12px;margin-bottom:10px;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#7fb3d3;letter-spacing:0.1em;">ASSESSMENT</span><br>
+    <span style="color:#d6eaf8;font-size:0.9rem;font-style:italic;">{medi.explanation}</span>
+  </div>
+  <div style="background:rgba(0,200,200,0.07);border-radius:4px;padding:10px 14px;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#00c8c8;letter-spacing:0.1em;">⚡ RECOMMENDED ACTION</span><br>
+    <span style="color:#d6eaf8;font-size:0.92rem;font-weight:600;">{medi.recommendation}</span>
+  </div>
+  <div style="margin-top:10px;text-align:right;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.65rem;color:#3a6b8a;">PROFILE: {medi.profile.upper()} · ZONE: {wb_selection}</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+            except Exception as e:
+                st.warning(f"MEDI computation unavailable: {e}")
