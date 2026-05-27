@@ -355,7 +355,13 @@ def process_israel_wqi(target_date_str):
     t=ee.Date(target_date_str)
     coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(HAIFA_BBOX)
           .filterDate(t.advance(-1,'day'),t.advance(1,'day')))
-    if coll.size().getInfo()==0: return None,None,"No Sentinel-3 data for this date."
+    if coll.size().getInfo()==0: return None,None,"No Sentinel-3 data for this date.",None
+    # Get actual image acquisition time
+    img_first = coll.sort("system:time_start", False).first()
+    img_time_ms = img_first.get("system:time_start").getInfo()
+    img_dt = datetime.utcfromtimestamp(img_time_ms / 1000)
+    age_hours = (datetime.utcnow() - img_dt).total_seconds() / 3600
+
     img=coll.median().clip(ISRAEL_CLIP).updateMask(wm)
     ndwi=img.normalizedDifference(['Oa06_radiance','Oa17_radiance'])
     b10,b11,b12=img.select('Oa10_radiance'),img.select('Oa11_radiance'),img.select('Oa12_radiance')
@@ -369,7 +375,7 @@ def process_israel_wqi(target_date_str):
             wv=v.get('WQI'); return {**pt,"wqi":round(wv,1) if wv else None}
         except: return {**pt,"wqi":None}
     with ThreadPoolExecutor(max_workers=4) as ex: pts=list(ex.map(_pt,BEACHES))
-    return wqi, pd.DataFrame(pts), None
+    return wqi, pd.DataFrame(pts), None, round(age_hours, 1)
 
 @st.cache_data(ttl=14400)
 def get_global_wqi_layer(target_date_str, bbox_rect):
@@ -424,7 +430,7 @@ if mode == MODE_ISRAEL:
     tab_wqi, tab_medi = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment"])
 
     with st.spinner("Computing WQI from Sentinel-3..."):
-        wqi_layer, df, err = process_israel_wqi(sel_date)
+        wqi_layer, df, err, img_age_hours = process_israel_wqi(sel_date)
 
     if err:
         st.error(err)
@@ -502,10 +508,18 @@ if mode == MODE_ISRAEL:
                     _, sst_anom = get_modis_sst_anomaly(sel_date)
                     sst_signal = max(0.0, min(1.0, (sst_anom or 0.0) / 5.0))
                     sst_conf   = 0.9 if sst_anom is not None else 0.0
+
+                    # Actual data age from satellite pass
+                    age_h = img_age_hours or 24.0
+                    age_d = age_h / 24.0
+                    # Confidence decay: 100% fresh, ~70% at 12h, ~50% at 24h
+                    import math as _math
+                    wqi_conf = round(_math.exp(-0.03 * age_h) * 0.85, 3)
+
                     signals = {
-                        "wqi":        SignalReading("wqi",avg_wqi,raw_value=avg_wqi,unit="score",age_days=1.0,confidence=0.85),
-                        "turbidity":  SignalReading("turbidity",turb_proxy,age_days=0.1,confidence=0.7),
-                        "chlorophyll":SignalReading("chlorophyll",chl_proxy,age_days=1.0,confidence=0.75),
+                        "wqi":        SignalReading("wqi",avg_wqi,raw_value=avg_wqi,unit="score",age_days=age_d,confidence=wqi_conf),
+                        "turbidity":  SignalReading("turbidity",turb_proxy,age_days=age_d,confidence=wqi_conf*0.8),
+                        "chlorophyll":SignalReading("chlorophyll",chl_proxy,age_days=age_d,confidence=wqi_conf*0.85),
                         "sst_anomaly":SignalReading("sst_anomaly",sst_signal,raw_value=sst_anom,unit="degC",age_days=0.5,confidence=sst_conf),
                     }
                     prev = st.session_state.get("medi_prev_score")
@@ -533,6 +547,7 @@ box-shadow:0 0 28px {medi.risk_color}44;margin-top:8px;">
       <div style="font-size:1.3rem;color:#d6eaf8;">{ti} {medi.trend}{ds}</div>
       <div style="font-family:'Share Tech Mono',monospace;font-size:0.75rem;color:#7fb3d3;margin-top:6px;">CONFIDENCE: {medi.confidence:.0%}</div>
       <div style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#7fb3d3;margin-top:3px;">SST ANOMALY: {sst_str}</div>
+      <div style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#7fb3d3;margin-top:3px;">DATA AGE: {age_h:.1f}h</div>
     </div>
   </div>
   <div style="border-top:1px solid rgba(0,200,200,0.15);padding-top:12px;margin-bottom:10px;">
