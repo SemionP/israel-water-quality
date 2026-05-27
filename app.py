@@ -626,7 +626,7 @@ if mode == MODE_ISRAEL:
                     age_d = age_h / 24.0
                     # Confidence decay: 100% fresh, ~70% at 12h, ~50% at 24h
                     import math as _math
-                    wqi_conf = round(_math.exp(-0.03 * age_h) * 0.85, 3)
+                    wqi_conf = round(max(0.20, _math.exp(-0.03 * age_h) * 0.85), 3)
 
                     signals = {
                         "wqi":        SignalReading("wqi",avg_wqi,raw_value=avg_wqi,unit="score",age_days=age_d,confidence=wqi_conf),
@@ -737,7 +737,7 @@ box-shadow:0 0 28px {medi.risk_color}44;margin-top:8px;">
                     sst_signal = max(0.0,min(1.0,(sst_anom or 0.0)/5.0))
 
                     import math as _math
-                    wqi_conf = round(_math.exp(-0.03*age_h)*0.85, 3)
+                    wqi_conf = round(max(0.20, _math.exp(-0.03*age_h)*0.85), 3)
                     age_d    = age_h/24.0
 
                     signals = {
@@ -893,69 +893,19 @@ box-shadow:0 0 20px {m.risk_color}33;height:100%;">
 
         valid_ports = {pk: r for pk, r in port_results.items() if r}
         if valid_ports:
-            chart_data = {
-                "ports":  [pk.split(" ",1)[1] for pk in valid_ports],
-                "scores": [round(r["medi"].risk_score, 1) for r in valid_ports.values()],
-                "colors": [r["medi"].risk_color for r in valid_ports.values()],
-                "wqis":   [round(r["wqi"], 1) if r["wqi"] else 0 for r in valid_ports.values()],
-            }
-            chart_json = _json.dumps(chart_data)
+            port_names = [pk.split(" ",1)[1] for pk in valid_ports]
+            scores     = [round(r["medi"].risk_score, 1) for r in valid_ports.values()]
+            wqis_inv   = [round(100-(r["wqi"] or 60), 1) for r in valid_ports.values()]
+            confs      = [round(r["medi"].confidence*100, 1) for r in valid_ports.values()]
 
-            st.markdown(f"""
-<div style="background:linear-gradient(135deg,rgba(2,13,24,0.97),rgba(4,30,51,0.95));
-border:1px solid rgba(0,200,200,0.2);border-radius:10px;padding:20px 24px;margin-top:8px;">
-  <canvas id="compChart" role="img" aria-label="Bar chart comparing MEDI scores across ports" style="width:100%;height:200px;"></canvas>
-  <script>
-  (function(){{
-    var d = {chart_json};
-    var ctx = document.getElementById('compChart');
-    if(!ctx) return;
-    new Chart(ctx, {{
-      type: 'bar',
-      data: {{
-        labels: d.ports,
-        datasets: [
-          {{
-            label: 'MEDI Score',
-            data: d.scores,
-            backgroundColor: d.colors.map(c => c + '99'),
-            borderColor: d.colors,
-            borderWidth: 2,
-            borderRadius: 4,
-          }},
-          {{
-            label: 'WQI (inverted)',
-            data: d.wqis.map(v => 100-v),
-            backgroundColor: 'rgba(0,200,200,0.15)',
-            borderColor: '#00c8c8',
-            borderWidth: 1,
-            borderRadius: 4,
-            borderDash: [4,2],
-          }}
-        ]
-      }},
-      options: {{
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {{
-          legend: {{ display: false }},
-          tooltip: {{ callbacks: {{ label: ctx => ctx.dataset.label + ': ' + ctx.parsed.y }} }}
-        }},
-        scales: {{
-          x: {{ ticks: {{ color: '#7fb3d3', font: {{ size: 12 }} }}, grid: {{ color: 'rgba(0,200,200,0.05)' }} }},
-          y: {{ min: 0, max: 100, ticks: {{ color: '#7fb3d3', font: {{ size: 11 }}, stepSize: 25 }}, grid: {{ color: 'rgba(0,200,200,0.05)' }} }}
-        }}
-      }}
-    }});
-  }})();
-  </script>
-  <div style="display:flex;gap:20px;margin-top:12px;font-family:'Share Tech Mono',monospace;font-size:0.68rem;color:#7fb3d3;">
-    <span>■ MEDI Score (higher = more risk)</span>
-    <span>■ WQI inverted (higher = worse water quality)</span>
-  </div>
-</div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-""", unsafe_allow_html=True)
+            chart_df = pd.DataFrame({
+                "MEDI Score":       scores,
+                "WQI Risk (100-WQI)": wqis_inv,
+                "Confidence %":     confs,
+            }, index=port_names)
+
+            st.bar_chart(chart_df[["MEDI Score","WQI Risk (100-WQI)"]], height=280, use_container_width=True)
+            st.caption("MEDI Score = overall risk · WQI Risk = 100 minus water quality (higher = worse)")
 
         # ── Fleet summary ───────────────────────────────────────────────────
         if valid_ports:
