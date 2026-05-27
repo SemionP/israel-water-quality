@@ -438,7 +438,7 @@ if mode == MODE_ISRAEL:
         atm = get_atm(32.4, 34.85)
 
     # Shared map builder
-    def _build_map():
+    def _build_map(selected_beach=None):
         m = folium.Map(location=[32.4, 34.85], zoom_start=8)
         vis = {'min':40,'max':85,'palette':['#FF0000','#FFFF00','#00FF00']}
         mid = ee.Image(wqi_layer).getMapId(vis)
@@ -448,14 +448,17 @@ if mode == MODE_ISRAEL:
             sc = r.get('wqi')
             cm = "#1ecb7b" if sc and sc>65 else "#f0a500" if sc and sc>45 else "#e03c3c"
             wqi_str = f"{sc:.1f}" if sc else "N/A"
+            is_selected = selected_beach == r["name"]
+            size = "20px" if is_selected else "14px"
+            ring = f"box-shadow:0 0 0 3px white, 0 0 0 5px {cm};" if is_selected else f"box-shadow:0 0 8px {cm}99;"
             folium.Marker(
                 location=[r["lat"],r["lon"]],
-                tooltip=f"🏖️ {r['name']} | WQI: {wqi_str}",
-                popup=folium.Popup(f"<b>{r['name']}</b><br>WQI: <span style='color:{cm};font-weight:bold;'>{wqi_str}</span>", max_width=180),
+                tooltip=f"🏖️ {r['name']} | WQI: {wqi_str} — Click for MEDI",
+                popup=folium.Popup(f"<b>🏖️ {r['name']}</b><br>WQI: <span style='color:{cm};font-weight:bold;'>{wqi_str}</span><br><small>Click to compute MEDI</small>", max_width=200),
                 icon=folium.DivIcon(
-                    html=f'''<div style="background:{cm};border:2px solid white;border-radius:50%;width:13px;height:13px;box-shadow:0 0 6px {cm}99;"></div>
-<div style="position:absolute;top:15px;left:-28px;white-space:nowrap;font-family:Arial;font-size:10px;font-weight:600;color:white;text-shadow:0 1px 3px rgba(0,0,0,0.9);">{r["name"]}</div>''',
-                    icon_size=(13,13),icon_anchor=(6,6))
+                    html=f'''<div style="background:{cm};border:2px solid white;border-radius:50%;width:{size};height:{size};{ring};cursor:pointer;"></div>
+<div style="position:absolute;top:18px;left:-32px;white-space:nowrap;font-family:Arial;font-size:11px;font-weight:700;color:white;text-shadow:0 1px 4px rgba(0,0,0,0.95);">{r["name"]}</div>''',
+                    icon_size=(20,20),icon_anchor=(10,10))
             ).add_to(m)
         m.add_child(OnMapWaterLegend())
         m.add_child(OnMapAtmosphereControl(atm))
@@ -468,7 +471,7 @@ if mode == MODE_ISRAEL:
         elif wqi_layer is not None:
             col_map, col_info = st.columns([3.0, 1.0])
             with col_map:
-                st_folium(_build_map(), use_container_width=True, height=620, key="israel_map_wqi", returned_objects=[])
+                st_folium(_build_map(), use_container_width=True, height=680, key="israel_map_wqi", returned_objects=[])
             with col_info:
                 st.markdown("#### 🏖️ Station Status")
                 if df is not None and not df.empty:
@@ -492,15 +495,45 @@ if mode == MODE_ISRAEL:
                 medi_profile = st.selectbox("🎯 Risk Profile:", list(PROFILES.keys()), key="medi_profile_select")
                 st.caption(PROFILES[medi_profile]["description"])
 
+            # Session state for selected beach
+            if "selected_beach" not in st.session_state:
+                st.session_state.selected_beach = None
+
             col_map2, col_medi = st.columns([2.8, 2.2])
             with col_map2:
-                st_folium(_build_map(), use_container_width=True, height=600, key="israel_map_medi", returned_objects=[])
+                map_click = st_folium(
+                    _build_map(selected_beach=st.session_state.selected_beach),
+                    use_container_width=True, height=680,
+                    key="israel_map_medi",
+                    returned_objects=["last_object_clicked_tooltip"]
+                )
+                # Detect beach click from tooltip
+                clicked = map_click.get("last_object_clicked_tooltip") if map_click else None
+                if clicked and "🏖️" in str(clicked):
+                    beach_name = str(clicked).split("🏖️")[1].split("|")[0].strip()
+                    if beach_name != st.session_state.selected_beach:
+                        st.session_state.selected_beach = beach_name
+                        st.rerun()
+
+            # Get WQI for selected beach (or mean of all)
+            selected = st.session_state.selected_beach
+            if selected and df is not None:
+                row = df[df["name"] == selected]
+                beach_wqi = float(row["wqi"].iloc[0]) if not row.empty and row["wqi"].iloc[0] else None
+                zone_label = f"Israel Coast — {selected}"
+            else:
+                beach_wqi = None
+                zone_label = "Israel Mediterranean Coast"
+                selected = "All Stations (average)"
 
             with col_medi:
               try:
                 with st.spinner("Computing MEDI score..."):
-                    valid = df["wqi"].dropna()
-                    avg_wqi = float(valid.mean()) if not valid.empty else 60.0
+                    if beach_wqi is not None:
+                        avg_wqi = beach_wqi
+                    else:
+                        valid = df["wqi"].dropna()
+                        avg_wqi = float(valid.mean()) if not valid.empty else 60.0
                     ws = atm.get("wind_speed") or 0.0
                     pr = atm.get("precip_mm") or 0.0
                     turb_proxy = min(1.0,(ws/20.0)*0.5+(pr/10.0)*0.5)
@@ -523,7 +556,7 @@ if mode == MODE_ISRAEL:
                         "sst_anomaly":SignalReading("sst_anomaly",sst_signal,raw_value=sst_anom,unit="degC",age_days=0.5,confidence=sst_conf),
                     }
                     prev = st.session_state.get("medi_prev_score")
-                    medi = compute_medi(signals, medi_profile, previous_score=prev, zone="Israel Mediterranean Coast")
+                    medi = compute_medi(signals, medi_profile, previous_score=prev, zone=zone_label)
                     st.session_state["medi_prev_score"] = medi.risk_score
                     api_key = st.secrets.get("gemini_api_key","")
                     if api_key:
@@ -532,6 +565,8 @@ if mode == MODE_ISRAEL:
                     ds = f" ({medi.trend_delta:+.1f})" if medi.trend_delta is not None else ""
                     dr = " · ".join(medi.drivers) if medi.drivers else "No significant anomalies"
                     sst_str = f"{sst_anom:+.1f}°C" if sst_anom is not None else "N/A"
+                    beach_indicator = f"📍 {selected}" if selected != "All Stations (average)" else "📊 All Stations (average)"
+                    st.markdown(f"**{beach_indicator}**")
                     st.markdown(f"""
 <div style="background:linear-gradient(135deg,rgba(2,13,24,0.97),rgba(6,45,74,0.92));
 border:1px solid {medi.risk_color};border-radius:8px;padding:24px 28px;
