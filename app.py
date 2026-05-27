@@ -520,36 +520,81 @@ else:
 # ---- Fusion tab ----
 if is_fusion:
     st.subheader("🔀 Israel Coast — Multi-Satellite Fusion Map")
-    st.markdown("Each 300m cell shows the best reading from S3, MODIS, or S2 — scored by freshness × confidence × resolution.")
-    with st.spinner("Running fusion pipeline (S3 + MODIS + S2)..."):
-        fusion_df=run_fusion_pipeline()
-    if fusion_df.empty:
-        st.warning("No satellite data available right now. Try again shortly.")
-    else:
-        col_map,col_info=st.columns([3.5,1.5])
-        with col_map:
-            m_f=folium.Map(location=[31.5,34.6],zoom_start=8)
-            def _c(w): return "#27AE60" if w>=70 else "#F39C12" if w>=55 else "#E74C3C"
-            for _,row in fusion_df.iterrows():
-                folium.CircleMarker(location=[row["lat"],row["lon"]],radius=4,
-                    color=_c(row["wqi"]),fill=True,fill_color=_c(row["wqi"]),
-                    fill_opacity=row.get("confidence",0.7),
-                    tooltip=f"<b>{row['health_label']}</b><br>WQI:{row['wqi']:.1f}<br>Source:{row['source']}<br>Age:{row.get('age_days',0):.1f}d<br>Confidence:{row.get('confidence',0):.0%}"
-                ).add_to(m_f)
-            m_f.add_child(OnMapWaterLegend())
-            if marine_grid_data and overlay_choice!="None":
-                key="waves" if overlay_choice=="🌊 Waves" else "wind"
-                m_f.add_child(OnMapVelocityLayer(marine_grid_data[key],layer_name="Waves (m)" if key=="waves" else "Wind (m/s)"))
-            st_folium(m_f,width=800,height=550,key="fusion_map_v1",returned_objects=[])
-        with col_info:
-            st.subheader("📊 Fusion Summary")
-            for src,cnt in fusion_df["source"].value_counts().items(): st.metric(f"{src} cells",cnt)
-            st.markdown("---"); st.subheader("🏖️ Health Status")
-            for lbl,cnt in fusion_df["health_label"].value_counts().items(): st.write(f"{lbl}: **{cnt}** cells")
-            st.markdown("---"); st.subheader("📋 Sample Data")
-            st.dataframe(fusion_df[["lat","lon","wqi","source","health_label"]].head(20).rename(
-                columns={"lat":"Lat","lon":"Lon","wqi":"WQI","source":"Satellite","health_label":"Status"}),
-                use_container_width=True,hide_index=True)
+    st.markdown("Best available WQI layer from S3, MODIS, or S2 — selected by freshness × confidence × resolution.")
+
+    col_map, col_info = st.columns([3.5, 1.5])
+
+    with col_map:
+        m_f = folium.Map(location=[31.5, 34.6], zoom_start=8)
+        vis = {'min': 40, 'max': 85, 'palette': ['#FF0000', '#FFFF00', '#00FF00']}
+        aoi = ee.Geometry.Rectangle([
+            ISRAEL_COAST_BBOX["lon_min"], ISRAEL_COAST_BBOX["lat_min"],
+            ISRAEL_COAST_BBOX["lon_max"], ISRAEL_COAST_BBOX["lat_max"]
+        ])
+
+        # Try each satellite — add the best available as a tile layer
+        source_added = None
+        source_time  = None
+
+        with st.spinner("Loading fusion layers from GEE..."):
+            # S3 — most relevant for coastal WQI
+            s3 = get_s3_fusion_layer(aoi)
+            modis = get_modis_fusion_layer(aoi)
+            s2 = get_s2_fusion_layer(aoi)
+
+            # Score each available layer (age + cloud proxy)
+            # Pick winner and render as tile
+            candidates = []
+            if s3:
+                t = s3.get("source_time").getInfo()
+                age = (pd.Timestamp.utcnow() - pd.to_datetime(t, unit="ms", utc=True)).total_seconds() / 86400
+                candidates.append(("S3 (Sentinel-3)", s3.select("WQI_S3").rename("WQI"), age))
+            if modis:
+                t = modis.get("source_time").getInfo()
+                age = (pd.Timestamp.utcnow() - pd.to_datetime(t, unit="ms", utc=True)).total_seconds() / 86400
+                candidates.append(("MODIS", modis.select("WQI_MODIS").rename("WQI"), age))
+            if s2:
+                t = s2.get("source_time").getInfo()
+                age = (pd.Timestamp.utcnow() - pd.to_datetime(t, unit="ms", utc=True)).total_seconds() / 86400
+                candidates.append(("S2 (Sentinel-2)", s2.select("WQI_S2").rename("WQI"), age))
+
+            if candidates:
+                # Add all layers, freshest on top
+                candidates.sort(key=lambda x: x[2])
+                for name, layer, age in candidates:
+                    try:
+                        mid = layer.getMapId(vis)
+                        folium.TileLayer(
+                            tiles=mid['tile_fetcher'].url_format,
+                            attr=f'GEE {name}',
+                            name=f"{name} ({age:.1f}d ago)",
+                            overlay=True,
+                            control=True,
+                            opacity=0.85
+                        ).add_to(m_f)
+                        if source_added is None:
+                            source_added = name
+                            source_time  = age
+                    except Exception:
+                        pass
+                folium.LayerControl().add_to(m_f)
+
+        m_f.add_child(OnMapWaterLegend())
+        if marine_grid_data and overlay_choice != "None":
+            key = "waves" if overlay_choice == "🌊 Waves" else "wind"
+            m_f.add_child(OnMapVelocityLayer(marine_grid_data[key], layer_name="Waves (m)" if key == "waves" else "Wind (m/s)"))
+        st_folium(m_f, width=800, height=550, key="fusion_map_v1", returned_objects=[])
+
+    with col_info:
+        st.subheader("🛰️ Available Layers")
+        if candidates:
+            for name, _, age in candidates:
+                freshness = "🟢" if age < 2 else "🟡" if age < 5 else "🔴"
+                st.write(f"{freshness} **{name}** — {age:.1f}d ago")
+        else:
+            st.warning("No satellite data available right now.")
+        st.markdown("---")
+        st.caption("Layers ordered by freshness. Toggle visibility using the map layer control (top right of map).")
 
 # ---- Global tab ----
 elif is_global:
