@@ -10,7 +10,7 @@ import math
 import json
 import tempfile
 import os
-import anthropic
+import google.generativeai as genai
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime, timedelta
@@ -286,11 +286,7 @@ Takes MEDIResult → calls Claude API → fills explanation + recommendation
 
 def generate_medi_explanation(result: MEDIResult, api_key: str) -> MEDIResult:
     """
-    Calls Claude to generate:
-      - explanation: one sentence on WHY risk is at this level
-      - recommendation: one concrete action for the operator
-    
-    Returns the same MEDIResult with explanation + recommendation filled.
+    Calls Gemini to generate explanation + recommendation.
     """
     if not result.drivers:
         result.explanation    = "No significant anomalies detected in active signals."
@@ -326,15 +322,11 @@ EXPLANATION: <your explanation here>
 RECOMMENDATION: <your recommendation here>"""
 
     try:
-        client   = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model      = "claude-sonnet-4-20250514",
-            max_tokens = 120,
-            messages   = [{"role": "user", "content": prompt}],
-        )
-        text = response.content[0].text.strip()
+        genai.configure(api_key=api_key)
+        model    = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(prompt)
+        text     = response.text.strip()
 
-        # Parse response
         explanation    = ""
         recommendation = ""
         for line in text.splitlines():
@@ -1106,8 +1098,41 @@ else:
             folium.TileLayer(tiles=mid['tile_fetcher'].url_format,attr='GEE Sentinel-3',name="WQI",overlay=True,control=False,opacity=0.85).add_to(m)
             for _,r in df_beaches.iterrows():
                 sc=r['composite_with_atm'] if pd.notna(r['composite_with_atm']) else r['wqi']
-                cm="green" if sc and sc>65 else "orange" if sc else "red"
-                folium.CircleMarker(location=[r["lat"],r["lon"]],radius=6,color="black",weight=1,fill_color=cm,fill_opacity=0.9,fill=True).add_to(m)
+                cm="#1ecb7b" if sc and sc>65 else "#f0a500" if sc and sc>45 else "#e03c3c"
+                wqi_str=f"{sc:.1f}" if sc else "N/A"
+                sst_str=f"{r['sst']:.1f}°C" if r.get('sst') else "—"
+                popup_html=f"""<div style='font-family:Arial;min-width:140px;'>
+                    <b style='font-size:13px;'>🏖️ {r["name"]}</b><br>
+                    <span style='color:{cm};font-weight:bold;'>WQI: {wqi_str}</span><br>
+                    <span style='color:#555;font-size:11px;'>SST: {sst_str}</span>
+                </div>"""
+                # Beach icon marker with name label
+                folium.Marker(
+                    location=[r["lat"],r["lon"]],
+                    popup=folium.Popup(popup_html, max_width=200),
+                    tooltip=f"🏖️ {r['name']} | WQI: {wqi_str}",
+                    icon=folium.DivIcon(
+                        html=f"""<div style="
+                            background:{cm};
+                            border:2px solid white;
+                            border-radius:50%;
+                            width:14px;height:14px;
+                            box-shadow:0 0 6px {cm}99;">
+                        </div>
+                        <div style="
+                            position:absolute;top:16px;left:-30px;
+                            white-space:nowrap;
+                            font-family:'Exo 2',Arial,sans-serif;
+                            font-size:10px;font-weight:600;
+                            color:white;
+                            text-shadow:0 1px 3px rgba(0,0,0,0.9),0 0 6px rgba(0,0,0,0.8);
+                            pointer-events:none;">
+                            {r["name"]}
+                        </div>""",
+                        icon_size=(14,14),
+                        icon_anchor=(7,7),
+                    )
+                ).add_to(m)
             m.add_child(OnMapAtmosphereControl(atm_data)); m.add_child(OnMapWaterLegend())
             if marine_grid_data and overlay_choice!="None":
                 key="waves" if overlay_choice=="🌊 Waves" else "wind"
@@ -1164,7 +1189,7 @@ else:
                 st.session_state["medi_prev_score"] = medi.risk_score
 
                 # Call Claude for explanation
-                api_key = st.secrets.get("anthropic_api_key", "")
+                api_key = st.secrets.get("gemini_api_key", "")
                 if api_key:
                     medi = generate_medi_explanation(medi, api_key)
 
