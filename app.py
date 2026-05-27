@@ -422,7 +422,8 @@ if mode == MODE_ISRAEL:
     else:
         sel_date = (datetime.utcnow()-timedelta(days=1)).strftime('%Y-%m-%d')
 
-    st.markdown("### 🏖️ Israel Coast — Water Quality & Risk Assessment")
+    # ── Tab selector ──────────────────────────────────────────────────────────
+    tab_wqi, tab_medi = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment"])
 
     with st.spinner("Computing WQI from Sentinel-3..."):
         wqi_layer, df, err = process_israel_wqi(sel_date)
@@ -431,7 +432,13 @@ if mode == MODE_ISRAEL:
         st.error(err)
     elif wqi_layer is not None:
         atm = get_atm(32.4, 34.85)
-        col_map, col_info = st.columns([4.0, 1.0])
+
+    # ── Tab 1: Water Quality Index ─────────────────────────────────────────────
+    with tab_wqi:
+        if err:
+            st.error(err)
+        elif wqi_layer is not None:
+            col_map, col_info = st.columns([4.0, 1.0])
 
         with col_map:
             m = folium.Map(location=[32.4, 34.85], zoom_start=8)
@@ -470,76 +477,75 @@ if mode == MODE_ISRAEL:
                 df_d = df_d.rename(columns={"name":"Station","wqi":"WQI"})
                 st.dataframe(df_d[["Station","WQI","Status"]], use_container_width=True, hide_index=True)
 
-        # ── MEDI Card ──────────────────────────────────────────────────────
-        st.markdown("---")
-        st.markdown("### ⬡ MEDI Risk Assessment")
-        with st.spinner("Computing MEDI score..."):
+    # ── Tab 2: MEDI Risk Assessment ───────────────────────────────────────────
+    with tab_medi:
+        if err:
+            st.error(err)
+        elif wqi_layer is not None:
             try:
-                valid = df["wqi"].dropna()
-                avg_wqi = float(valid.mean()) if not valid.empty else 60.0
-                ws = atm.get("wind_speed") or 0.0
-                pr = atm.get("precip_mm") or 0.0
-                turb_proxy = min(1.0,(ws/20.0)*0.5+(pr/10.0)*0.5)
-                chl_proxy  = max(0.0,min(1.0,1.0-(avg_wqi/100.0)))
-
-                # MODIS SST anomaly
-                _, sst_anom = get_modis_sst_anomaly(sel_date)
-                sst_signal = max(0.0, min(1.0, (sst_anom or 0.0) / 5.0))
-                sst_conf   = 0.9 if sst_anom is not None else 0.0
-
-                signals = {
-                    "wqi":        SignalReading("wqi",avg_wqi,raw_value=avg_wqi,unit="score",age_days=1.0,confidence=0.85),
-                    "turbidity":  SignalReading("turbidity",turb_proxy,age_days=0.1,confidence=0.7),
-                    "chlorophyll":SignalReading("chlorophyll",chl_proxy,age_days=1.0,confidence=0.75),
-                    "sst_anomaly":SignalReading("sst_anomaly",sst_signal,raw_value=sst_anom,unit="degC",age_days=0.5,confidence=sst_conf),
-                }
-                prev  = st.session_state.get("medi_prev_score")
-                medi  = compute_medi(signals, medi_profile, previous_score=prev, zone="Israel Mediterranean Coast")
-                st.session_state["medi_prev_score"] = medi.risk_score
-
-                api_key = st.secrets.get("gemini_api_key","")
-                if api_key:
-                    medi = generate_medi_explanation(medi, api_key)
-
-                ti = "📈" if medi.trend=="RISING" else "📉" if medi.trend=="FALLING" else "➡️"
-                ds = f" ({medi.trend_delta:+.1f})" if medi.trend_delta is not None else ""
-                dr = " · ".join(medi.drivers) if medi.drivers else "No significant anomalies"
-
-                st.markdown(f"""
+                with st.spinner("Computing MEDI score..."):
+                    valid = df["wqi"].dropna()
+                    avg_wqi = float(valid.mean()) if not valid.empty else 60.0
+                    ws = atm.get("wind_speed") or 0.0
+                    pr = atm.get("precip_mm") or 0.0
+                    turb_proxy = min(1.0,(ws/20.0)*0.5+(pr/10.0)*0.5)
+                    chl_proxy  = max(0.0,min(1.0,1.0-(avg_wqi/100.0)))
+                    _, sst_anom = get_modis_sst_anomaly(sel_date)
+                    sst_signal = max(0.0, min(1.0, (sst_anom or 0.0) / 5.0))
+                    sst_conf   = 0.9 if sst_anom is not None else 0.0
+                    signals = {
+                        "wqi":        SignalReading("wqi",avg_wqi,raw_value=avg_wqi,unit="score",age_days=1.0,confidence=0.85),
+                        "turbidity":  SignalReading("turbidity",turb_proxy,age_days=0.1,confidence=0.7),
+                        "chlorophyll":SignalReading("chlorophyll",chl_proxy,age_days=1.0,confidence=0.75),
+                        "sst_anomaly":SignalReading("sst_anomaly",sst_signal,raw_value=sst_anom,unit="degC",age_days=0.5,confidence=sst_conf),
+                    }
+                    prev = st.session_state.get("medi_prev_score")
+                    medi = compute_medi(signals, medi_profile, previous_score=prev, zone="Israel Mediterranean Coast")
+                    st.session_state["medi_prev_score"] = medi.risk_score
+                    api_key = st.secrets.get("gemini_api_key","")
+                    if api_key:
+                        medi = generate_medi_explanation(medi, api_key)
+                    ti = "📈" if medi.trend=="RISING" else "📉" if medi.trend=="FALLING" else "➡️"
+                    ds = f" ({medi.trend_delta:+.1f})" if medi.trend_delta is not None else ""
+                    dr = " · ".join(medi.drivers) if medi.drivers else "No significant anomalies"
+                    sst_str = f"{sst_anom:+.1f}°C" if sst_anom is not None else "N/A"
+                    st.markdown(f"""
 <div style="background:linear-gradient(135deg,rgba(2,13,24,0.97),rgba(6,45,74,0.92));
-border:1px solid {medi.risk_color};border-radius:8px;padding:20px 24px;
-box-shadow:0 0 24px {medi.risk_color}44;margin-top:8px;">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+border:1px solid {medi.risk_color};border-radius:8px;padding:24px 28px;
+box-shadow:0 0 28px {medi.risk_color}44;margin-top:8px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
     <div>
       <span style="font-family:'Rajdhani',sans-serif;font-size:1rem;color:#7fb3d3;letter-spacing:0.1em;">MEDI RISK SCORE</span><br>
-      <span style="font-family:'Rajdhani',sans-serif;font-size:3rem;font-weight:700;color:{medi.risk_color};line-height:1;">{medi.risk_score:.0f}</span>
-      <span style="font-size:1rem;color:{medi.risk_color};margin-left:8px;font-weight:600;">{medi.risk_level}</span>
+      <span style="font-family:'Rajdhani',sans-serif;font-size:4rem;font-weight:700;color:{medi.risk_color};line-height:1;">{medi.risk_score:.0f}</span>
+      <span style="font-size:1.2rem;color:{medi.risk_color};margin-left:10px;font-weight:700;">{medi.risk_level}</span>
     </div>
     <div style="text-align:right;">
-      <div style="font-family:'Share Tech Mono',monospace;font-size:0.78rem;color:#7fb3d3;">TREND</div>
-      <div style="font-size:1.2rem;color:#d6eaf8;">{ti} {medi.trend}{ds}</div>
-      <div style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#7fb3d3;margin-top:4px;">CONFIDENCE: {medi.confidence:.0%}</div>
+      <div style="font-family:'Share Tech Mono',monospace;font-size:0.8rem;color:#7fb3d3;">TREND</div>
+      <div style="font-size:1.3rem;color:#d6eaf8;">{ti} {medi.trend}{ds}</div>
+      <div style="font-family:'Share Tech Mono',monospace;font-size:0.75rem;color:#7fb3d3;margin-top:6px;">CONFIDENCE: {medi.confidence:.0%}</div>
+      <div style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#7fb3d3;margin-top:3px;">SST ANOMALY: {sst_str}</div>
     </div>
   </div>
   <div style="border-top:1px solid rgba(0,200,200,0.15);padding-top:12px;margin-bottom:10px;">
-    <span style="font-family:'Share Tech Mono',monospace;font-size:0.7rem;color:#7fb3d3;letter-spacing:0.1em;">RISK DRIVERS</span><br>
-    <span style="color:#d6eaf8;font-size:0.9rem;">{dr}</span>
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#7fb3d3;letter-spacing:0.1em;">RISK DRIVERS</span><br>
+    <span style="color:#d6eaf8;font-size:0.95rem;">{dr}</span>
   </div>
   <div style="border-top:1px solid rgba(0,200,200,0.15);padding-top:12px;margin-bottom:10px;">
-    <span style="font-family:'Share Tech Mono',monospace;font-size:0.7rem;color:#7fb3d3;letter-spacing:0.1em;">ASSESSMENT</span><br>
-    <span style="color:#d6eaf8;font-size:0.9rem;font-style:italic;">{medi.explanation}</span>
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#7fb3d3;letter-spacing:0.1em;">ASSESSMENT</span><br>
+    <span style="color:#d6eaf8;font-size:0.95rem;font-style:italic;">{medi.explanation}</span>
   </div>
-  <div style="background:rgba(0,200,200,0.07);border-radius:4px;padding:10px 14px;">
-    <span style="font-family:'Share Tech Mono',monospace;font-size:0.7rem;color:#00c8c8;letter-spacing:0.1em;">⚡ RECOMMENDED ACTION</span><br>
-    <span style="color:#d6eaf8;font-size:0.92rem;font-weight:600;">{medi.recommendation}</span>
+  <div style="background:rgba(0,200,200,0.08);border-left:3px solid #00c8c8;border-radius:4px;padding:12px 16px;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#00c8c8;letter-spacing:0.1em;">⚡ RECOMMENDED ACTION</span><br>
+    <span style="color:#d6eaf8;font-size:1rem;font-weight:600;">{medi.recommendation}</span>
   </div>
-  <div style="margin-top:10px;text-align:right;">
-    <span style="font-family:'Share Tech Mono',monospace;font-size:0.63rem;color:#3a6b8a;">PROFILE: {medi.profile.upper()} · {sel_date}</span>
+  <div style="margin-top:12px;text-align:right;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.65rem;color:#3a6b8a;">PROFILE: {medi.profile.upper()} · {sel_date}</span>
   </div>
 </div>
 """, unsafe_allow_html=True)
             except Exception as e:
                 st.warning(f"MEDI computation unavailable: {e}")
+
 
 # ── Global ────────────────────────────────────────────────────────────────────
 else:
