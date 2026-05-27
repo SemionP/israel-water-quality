@@ -232,6 +232,33 @@ BEACHES = [
 ]
 
 # =============================================================================
+# Port Zones — for MEDI Port Analysis
+# =============================================================================
+PORTS = {
+    "🚢 Haifa Port": {
+        "lat": 32.8230, "lon": 35.0020,
+        "bbox": ee.Geometry.Rectangle([34.94, 32.78, 35.06, 32.87]),
+        "radius_km": 5,
+        "description": "Major Mediterranean cargo & passenger port",
+        "atm_coords": (32.82, 35.00),
+    },
+    "⚓ Ashdod Port": {
+        "lat": 31.8167, "lon": 34.6500,
+        "bbox": ee.Geometry.Rectangle([34.60, 31.77, 34.70, 31.86]),
+        "radius_km": 4,
+        "description": "Israel's largest cargo port",
+        "atm_coords": (31.82, 34.65),
+    },
+    "🐠 Eilat Port": {
+        "lat": 29.5510, "lon": 34.9480,
+        "bbox": ee.Geometry.Rectangle([34.91, 29.51, 34.99, 29.59]),
+        "radius_km": 3,
+        "description": "Red Sea port — coral reef proximity",
+        "atm_coords": (29.55, 34.95),
+    },
+}
+
+# =============================================================================
 # Map Components
 # =============================================================================
 class OnMapWaterLegend(MacroElement):
@@ -377,6 +404,58 @@ def process_israel_wqi(target_date_str):
     with ThreadPoolExecutor(max_workers=4) as ex: pts=list(ex.map(_pt,BEACHES))
     return wqi, pd.DataFrame(pts), None, round(age_hours, 1)
 
+@st.cache_data(ttl=7200)
+def process_port_medi(port_key, target_date_str):
+    """Compute WQI + SST anomaly for a specific port zone."""
+    port = PORTS[port_key]
+    bbox = port["bbox"]
+    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    t    = ee.Date(target_date_str)
+
+    # S3 WQI
+    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+            .filterBounds(bbox)
+            .filterDate(t.advance(-2,"day"), t.advance(1,"day")))
+    if coll.size().getInfo() == 0:
+        wqi_val, age_h = None, 48.0
+    else:
+        img_first  = coll.sort("system:time_start", False).first()
+        img_time   = img_first.get("system:time_start").getInfo()
+        age_h      = (datetime.utcnow() - datetime.utcfromtimestamp(img_time/1000)).total_seconds() / 3600
+        img        = coll.median().clip(bbox).updateMask(wm)
+        ndwi       = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
+        b10,b11,b12= img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
+        mci        = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
+        turb       = img.select("Oa08_radiance")
+        raw        = ndwi.unitScale(-0.2,0.5).clamp(0,1).add(
+                        ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1)).add(
+                        ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1)
+                     ).divide(3).multiply(100).rename("WQI")
+        try:
+            val     = raw.reduceRegion(reducer=ee.Reducer.mean(), geometry=bbox, scale=300, bestEffort=True).getInfo()
+            wqi_val = round(val.get("WQI"), 1) if val.get("WQI") else None
+        except:
+            wqi_val = None
+
+    # MODIS SST anomaly
+    try:
+        today_sst  = (ee.ImageCollection("MODIS/061/MOD11A1")
+                      .filterBounds(bbox)
+                      .filterDate(t.advance(-2,"day"), t.advance(1,"day"))
+                      .select("LST_Day_1km").mean().multiply(0.02).subtract(273.15).updateMask(wm))
+        base_sst   = (ee.ImageCollection("MODIS/061/MOD11A1")
+                      .filterBounds(bbox)
+                      .filterDate(t.advance(-31,"day"), t.advance(-1,"day"))
+                      .select("LST_Day_1km").mean().multiply(0.02).subtract(273.15).updateMask(wm))
+        anom_val   = today_sst.subtract(base_sst).reduceRegion(
+                        reducer=ee.Reducer.mean(), geometry=bbox, scale=1000, bestEffort=True).getInfo()
+        sst_anom   = round(float(anom_val.get("LST_Day_1km")), 2) if anom_val.get("LST_Day_1km") else None
+    except:
+        sst_anom = None
+
+    return wqi_val, sst_anom, round(age_h, 1)
+
+
 @st.cache_data(ttl=14400)
 def get_global_wqi_layer(target_date_str, bbox_rect):
     lon_min,lat_min,lon_max,lat_max=bbox_rect
@@ -427,7 +506,7 @@ if mode == MODE_ISRAEL:
         sel_date = (datetime.utcnow()-timedelta(days=1)).strftime('%Y-%m-%d')
 
     # ── Tab selector ──────────────────────────────────────────────────────────
-    tab_wqi, tab_medi = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment"])
+    tab_wqi, tab_medi, tab_ports = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment", "🚢 Port MEDI"])
 
     with st.spinner("Computing WQI from Sentinel-3..."):
         wqi_layer, df, err, img_age_hours = process_israel_wqi(sel_date)
@@ -605,6 +684,122 @@ box-shadow:0 0 28px {medi.risk_color}44;margin-top:8px;">
               except Exception as e:
                   st.warning(f"MEDI computation unavailable: {e}")
 
+
+    # ── Tab 3: Port MEDI ──────────────────────────────────────────────────────
+    with tab_ports:
+        st.markdown("### 🚢 Port Zone — MEDI Risk Assessment")
+        st.caption("Select a port to compute MEDI for its operational water zone.")
+
+        port_key = st.selectbox("Select port:", list(PORTS.keys()), key="port_selector")
+        port     = PORTS[port_key]
+        st.caption(f"📍 {port['description']} · Radius: {port['radius_km']} km")
+
+        col_pmap, col_pmedi = st.columns([2.8, 2.2])
+
+        with col_pmap:
+            # Mini map centered on port
+            pm = folium.Map(location=[port["lat"], port["lon"]], zoom_start=13)
+            # WQI layer if available
+            try:
+                vis = {'min':40,'max':85,'palette':['#FF0000','#FFFF00','#00FF00']}
+                mid = ee.Image(wqi_layer).getMapId(vis)
+                folium.TileLayer(tiles=mid['tile_fetcher'].url_format, attr='GEE S3',
+                                 overlay=True, control=False, opacity=0.85).add_to(pm)
+            except: pass
+            # Port zone circle
+            folium.Circle(
+                location=[port["lat"], port["lon"]],
+                radius=port["radius_km"]*1000,
+                color="#00c8c8", fill=True, fill_opacity=0.1,
+                weight=2, tooltip=f"{port_key} monitoring zone"
+            ).add_to(pm)
+            folium.Marker(
+                location=[port["lat"], port["lon"]],
+                tooltip=port_key,
+                icon=folium.DivIcon(
+                    html=f'''<div style="background:#00c8c8;border:2px solid white;border-radius:4px;padding:3px 7px;font-family:Arial;font-size:11px;font-weight:700;color:#020d18;white-space:nowrap;">{port_key}</div>''',
+                    icon_size=(120,28), icon_anchor=(60,14))
+            ).add_to(pm)
+            pm.add_child(OnMapWaterLegend())
+            st_folium(pm, use_container_width=True, height=500, key="port_map", returned_objects=[])
+
+        with col_pmedi:
+            with st.spinner(f"Computing MEDI for {port_key}..."):
+                try:
+                    wqi_val, sst_anom, age_h = process_port_medi(port_key, sel_date)
+                    atm_port = get_atm(port["atm_coords"][0], port["atm_coords"][1])
+
+                    avg_wqi    = wqi_val or 60.0
+                    ws         = atm_port.get("wind_speed") or 0.0
+                    pr         = atm_port.get("precip_mm")  or 0.0
+                    turb_proxy = min(1.0,(ws/20.0)*0.5+(pr/10.0)*0.5)
+                    chl_proxy  = max(0.0,min(1.0,1.0-(avg_wqi/100.0)))
+                    sst_signal = max(0.0,min(1.0,(sst_anom or 0.0)/5.0))
+
+                    import math as _math
+                    wqi_conf = round(_math.exp(-0.03*age_h)*0.85, 3)
+                    age_d    = age_h/24.0
+
+                    signals = {
+                        "wqi":        SignalReading("wqi",avg_wqi,raw_value=avg_wqi,unit="score",age_days=age_d,confidence=wqi_conf),
+                        "turbidity":  SignalReading("turbidity",turb_proxy,age_days=age_d,confidence=wqi_conf*0.8),
+                        "chlorophyll":SignalReading("chlorophyll",chl_proxy,age_days=age_d,confidence=wqi_conf*0.85),
+                        "sst_anomaly":SignalReading("sst_anomaly",sst_signal,raw_value=sst_anom,unit="degC",age_days=0.5,confidence=0.9 if sst_anom else 0.0),
+                    }
+
+                    port_profile = st.selectbox("Risk profile:", list(PROFILES.keys()), key="port_profile")
+                    prev_p = st.session_state.get(f"medi_prev_{port_key}")
+                    medi   = compute_medi(signals, port_profile, previous_score=prev_p, zone=port_key)
+                    st.session_state[f"medi_prev_{port_key}"] = medi.risk_score
+
+                    api_key = st.secrets.get("gemini_api_key","")
+                    if api_key:
+                        medi = generate_medi_explanation(medi, api_key)
+
+                    ti  = "📈" if medi.trend=="RISING" else "📉" if medi.trend=="FALLING" else "➡️"
+                    ds  = f" ({medi.trend_delta:+.1f})" if medi.trend_delta is not None else ""
+                    dr  = " · ".join(medi.drivers) if medi.drivers else "No significant anomalies"
+                    sst_str = f"{sst_anom:+.1f}°C" if sst_anom else "N/A"
+                    wqi_str = f"{wqi_val:.1f}" if wqi_val else "N/A"
+
+                    st.markdown(f"""
+<div style="background:linear-gradient(135deg,rgba(2,13,24,0.97),rgba(6,45,74,0.92));
+border:1px solid {medi.risk_color};border-radius:8px;padding:22px 26px;
+box-shadow:0 0 28px {medi.risk_color}44;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+    <div>
+      <span style="font-family:'Rajdhani',sans-serif;font-size:0.9rem;color:#7fb3d3;letter-spacing:0.1em;">MEDI RISK SCORE</span><br>
+      <span style="font-family:'Rajdhani',sans-serif;font-size:3.5rem;font-weight:700;color:{medi.risk_color};line-height:1;">{medi.risk_score:.0f}</span>
+      <span style="font-size:1.1rem;color:{medi.risk_color};margin-left:8px;font-weight:700;">{medi.risk_level}</span>
+    </div>
+    <div style="text-align:right;font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:#7fb3d3;">
+      <div>TREND: {ti} {medi.trend}{ds}</div>
+      <div style="margin-top:4px;">CONFIDENCE: {medi.confidence:.0%}</div>
+      <div style="margin-top:3px;">WQI: {wqi_str}</div>
+      <div style="margin-top:3px;">SST ANOMALY: {sst_str}</div>
+      <div style="margin-top:3px;">DATA AGE: {age_h:.1f}h</div>
+    </div>
+  </div>
+  <div style="border-top:1px solid rgba(0,200,200,0.15);padding-top:10px;margin-bottom:8px;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.7rem;color:#7fb3d3;">RISK DRIVERS</span><br>
+    <span style="color:#d6eaf8;font-size:0.9rem;">{dr}</span>
+  </div>
+  <div style="border-top:1px solid rgba(0,200,200,0.15);padding-top:10px;margin-bottom:8px;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.7rem;color:#7fb3d3;">ASSESSMENT</span><br>
+    <span style="color:#d6eaf8;font-size:0.9rem;font-style:italic;">{medi.explanation}</span>
+  </div>
+  <div style="background:rgba(0,200,200,0.08);border-left:3px solid #00c8c8;border-radius:4px;padding:10px 14px;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.7rem;color:#00c8c8;">⚡ RECOMMENDED ACTION</span><br>
+    <span style="color:#d6eaf8;font-size:0.95rem;font-weight:600;">{medi.recommendation}</span>
+  </div>
+  <div style="margin-top:10px;text-align:right;">
+    <span style="font-family:'Share Tech Mono',monospace;font-size:0.63rem;color:#3a6b8a;">PROFILE: {medi.profile.upper()} · {port_key} · {sel_date}</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.warning(f"Port MEDI unavailable: {e}")
 
 # ── Global ────────────────────────────────────────────────────────────────────
 else:
