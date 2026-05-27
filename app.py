@@ -466,9 +466,9 @@ if mode == MODE_ISRAEL:
         if err:
             st.error(err)
         elif wqi_layer is not None:
-            col_map, col_info = st.columns([3.5, 1.5])
+            col_map, col_info = st.columns([3.0, 1.0])
             with col_map:
-                st_folium(_build_map(), width=820, height=550, key="israel_map_wqi", returned_objects=[])
+                st_folium(_build_map(), use_container_width=True, height=620, key="israel_map_wqi", returned_objects=[])
             with col_info:
                 st.markdown("#### 🏖️ Station Status")
                 if df is not None and not df.empty:
@@ -492,9 +492,9 @@ if mode == MODE_ISRAEL:
                 medi_profile = st.selectbox("🎯 Risk Profile:", list(PROFILES.keys()), key="medi_profile_select")
                 st.caption(PROFILES[medi_profile]["description"])
 
-            col_map2, col_medi = st.columns([3.0, 2.0])
+            col_map2, col_medi = st.columns([2.8, 2.2])
             with col_map2:
-                st_folium(_build_map(), width=580, height=520, key="israel_map_medi", returned_objects=[])
+                st_folium(_build_map(), use_container_width=True, height=600, key="israel_map_medi", returned_objects=[])
 
             with col_medi:
               try:
