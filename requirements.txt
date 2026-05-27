@@ -4,6 +4,4 @@ folium
 streamlit-folium
 pandas
 numpy
-anthropic
 google-generativeai
-
