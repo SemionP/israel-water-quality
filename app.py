@@ -304,6 +304,51 @@ def get_available_s3_dates(days_back=30):
     dl=coll.aggregate_array("system:time_start").getInfo()
     return sorted(list(set([datetime.utcfromtimestamp(d/1000).strftime("%Y-%m-%d") for d in dl])),reverse=True)
 
+@st.cache_data(ttl=10800)
+def get_modis_sst_anomaly(target_date_str):
+    """
+    MODIS MOD11A1 — Sea Surface Temperature anomaly.
+    anomaly = today SST - 30-day mean SST
+    Returns: ee.Image with band 'SST_anomaly' (degrees C) + scalar mean anomaly
+    """
+    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    t   = ee.Date(target_date_str)
+
+    # Today SST (LST_Day_1km in Kelvin × 0.02 → Celsius)
+    today_coll = (ee.ImageCollection("MODIS/061/MOD11A1")
+                  .filterBounds(HAIFA_BBOX)
+                  .filterDate(t.advance(-2,"day"), t.advance(1,"day"))
+                  .select("LST_Day_1km"))
+    if today_coll.size().getInfo() == 0:
+        return None, None
+
+    sst_today = today_coll.mean().multiply(0.02).subtract(273.15).updateMask(wm)
+
+    # 30-day baseline
+    baseline_coll = (ee.ImageCollection("MODIS/061/MOD11A1")
+                     .filterBounds(HAIFA_BBOX)
+                     .filterDate(t.advance(-31,"day"), t.advance(-1,"day"))
+                     .select("LST_Day_1km"))
+    sst_baseline  = baseline_coll.mean().multiply(0.02).subtract(273.15).updateMask(wm)
+
+    anomaly_img = sst_today.subtract(sst_baseline).rename("SST_anomaly").clip(HAIFA_BBOX)
+
+    # Scalar mean anomaly for MEDI engine
+    try:
+        val = anomaly_img.reduceRegion(
+            reducer   = ee.Reducer.mean(),
+            geometry  = HAIFA_BBOX,
+            scale     = 1000,
+            bestEffort= True,
+        ).getInfo()
+        mean_anomaly = val.get("SST_anomaly")
+        mean_anomaly = round(float(mean_anomaly), 2) if mean_anomaly is not None else None
+    except Exception:
+        mean_anomaly = None
+
+    return anomaly_img, mean_anomaly
+
+
 @st.cache_data(ttl=7200)
 def process_israel_wqi(target_date_str):
     wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
@@ -436,10 +481,17 @@ if mode == MODE_ISRAEL:
                 pr = atm.get("precip_mm") or 0.0
                 turb_proxy = min(1.0,(ws/20.0)*0.5+(pr/10.0)*0.5)
                 chl_proxy  = max(0.0,min(1.0,1.0-(avg_wqi/100.0)))
+
+                # MODIS SST anomaly
+                _, sst_anom = get_modis_sst_anomaly(sel_date)
+                sst_signal = max(0.0, min(1.0, (sst_anom or 0.0) / 5.0))
+                sst_conf   = 0.9 if sst_anom is not None else 0.0
+
                 signals = {
                     "wqi":        SignalReading("wqi",avg_wqi,raw_value=avg_wqi,unit="score",age_days=1.0,confidence=0.85),
                     "turbidity":  SignalReading("turbidity",turb_proxy,age_days=0.1,confidence=0.7),
                     "chlorophyll":SignalReading("chlorophyll",chl_proxy,age_days=1.0,confidence=0.75),
+                    "sst_anomaly":SignalReading("sst_anomaly",sst_signal,raw_value=sst_anom,unit="degC",age_days=0.5,confidence=sst_conf),
                 }
                 prev  = st.session_state.get("medi_prev_score")
                 medi  = compute_medi(signals, medi_profile, previous_score=prev, zone="Israel Mediterranean Coast")
