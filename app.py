@@ -253,6 +253,7 @@ def get_sst_for_points(points: tuple) -> dict:
         return {p: None for p in points}
 
 
+def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Distance in km between two geographic points."""
     R = 6371.0
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
