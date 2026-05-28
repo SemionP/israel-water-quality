@@ -878,7 +878,8 @@ if mode == MODE_ISRAEL:
                     worst_val   = round(valid_vals[worst],1) if worst else "---"
                     n_beaches   = len(visible_beaches)
 
-                    st.markdown(f"""
+                    chart_html = f"""
+<!DOCTYPE html><html><body style="margin:0;background:transparent;">
 <div style="padding:0.25rem 0 0.5rem;">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
     <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · 7 ימים · Sentinel-3</p>
@@ -939,8 +940,9 @@ if mode == MODE_ISRAEL:
     el.appendChild(r);
   }});
 }})();
-</script>
-""", unsafe_allow_html=True)
+</script></body></html>
+"""
+                    components.html(chart_html, height=420, scrolling=False)
                 else:
                     st.caption("Zoom in to see beach comparison")
 
