@@ -992,7 +992,10 @@ if mode == MODE_ISRAEL:
             acq_str = acq_dt.strftime("%Y-%m-%d %H:%M UTC")
             top_l, top_r = st.columns([2, 1])
             with top_l:
-                st.caption(f"תאריך עדכון: **{acq_str}** · {data_source} · {img_age_hours:.0f}h ago")
+                s3_info  = f"S3:{s3_age:.0f}h"  if (not s3_err  and s3_layer)  else "S3:N/A"
+                s2_info  = f"S2:{s2_age:.0f}h"  if (not s2_err  and s2_layer)  else "S2:N/A"
+                mod_info = f"MOD:{mod_age:.0f}h" if (not mod_err and mod_layer) else "MOD:N/A"
+                st.caption(f"תאריך עדכון: **{acq_str}** · **{data_source}** · {img_age_hours:.0f}h ago · [{s3_info} | {s2_info} | {mod_info}]")
             with top_r:
                 history_range = st.radio("טווח:", ["7 ימים","חודש","שנה"],
                     horizontal=True, key="history_range", label_visibility="collapsed")
