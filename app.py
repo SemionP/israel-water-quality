@@ -776,7 +776,9 @@ def haversine_km(lat1,lon1,lat2,lon2):
 # =============================================================================
 MODE_ISRAEL = "🏖️ Israel Coast"
 MODE_GLOBAL = "🌍 Global"
-mode = st.sidebar.selectbox("📡 Monitoring zone:", [MODE_ISRAEL, MODE_GLOBAL])
+mode_col, _ = st.columns([1, 4])
+with mode_col:
+    mode = st.selectbox("📡 Zone:", [MODE_ISRAEL, MODE_GLOBAL], label_visibility="collapsed")
 
 # Risk profile shown in MEDI tab only — initialized here for session state
 medi_profile = "Beach Safety"  # default
