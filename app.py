@@ -1184,7 +1184,7 @@ else:
     st.markdown("### 🌍 Global WQI — Sentinel-3")
 
     if "g_center" not in st.session_state:
-        st.session_state.g_center=(20.0,0.0); st.session_state.g_zoom=3
+        st.session_state.g_center=(24.0,-90.0); st.session_state.g_zoom=5
         st.session_state.g_bbox=None; st.session_state.g_layer=None
 
     zi=st.session_state.g_zoom; ci=list(st.session_state.g_center)
