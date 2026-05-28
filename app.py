@@ -812,7 +812,8 @@ if mode == MODE_ISRAEL:
         }
 
         best_src = max(scores, key=lambda k: scores[k][0])
-        _, wqi_layer, df, img_age_hours, data_source = scores[best_src]
+        best_score, wqi_layer, df, img_age_hours, data_source = scores[best_src]
+        img_age_hours = img_age_hours if img_age_hours else 99
         err = None
 
         # If best source has no beach df, try fallbacks
