@@ -982,10 +982,20 @@ if mode == MODE_ISRAEL:
             is_selected = selected_beach == r["name"]
             size = "20px" if is_selected else "14px"
             ring = f"box-shadow:0 0 0 3px white, 0 0 0 5px {cm};" if is_selected else f"box-shadow:0 0 8px {cm}99;"
+            # Sampling zone circle (450m buffer)
+            folium.Circle(
+                location=[r["lat"], r["lon"]],
+                radius=450,
+                color=cm,
+                fill=False,
+                weight=1.5,
+                opacity=0.6,
+                tooltip=f"Sampling zone: 450m · WQI: {wqi_str}",
+            ).add_to(m)
             folium.Marker(
                 location=[r["lat"],r["lon"]],
                 tooltip=f"🏖️ {r['name']} | WQI: {wqi_str} — Click for MEDI",
-                popup=folium.Popup(f"<b>🏖️ {r['name']}</b><br>WQI: <span style='color:{cm};font-weight:bold;'>{wqi_str}</span><br><small>Click to compute MEDI</small>", max_width=200),
+                popup=folium.Popup(f"<b>🏖️ {r['name']}</b><br>WQI: <span style='color:{cm};font-weight:bold;'>{wqi_str}</span><br><small>Sampling zone: 450m radius</small>", max_width=200),
                 icon=folium.DivIcon(
                     html=f'''<div style="background:{cm};border:2px solid white;border-radius:50%;width:{size};height:{size};{ring};cursor:pointer;"></div>
 <div style="position:absolute;top:18px;left:-32px;white-space:nowrap;font-family:Arial;font-size:11px;font-weight:700;color:white;text-shadow:0 1px 4px rgba(0,0,0,0.95);">{r["name"]}</div>''',
