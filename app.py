@@ -519,7 +519,18 @@ def compute_beach_history_7d():
     for ts in s3_ts_list:
         s3_dates.add(datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d"))
 
-    # All dates = S3 + every day in range (MODIS fallback)
+    # S2 dates
+    s2_coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+               .filterBounds(wide)
+               .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+               .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+               .sort("system:time_start", False))
+    s2_ts_list = s2_coll.aggregate_array("system:time_start").getInfo()
+    s2_dates = set()
+    for ts in s2_ts_list:
+        s2_dates.add(datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d"))
+
+    # All dates = S3 + S2 + every day in range (MODIS fallback)
     days_back = 15
     all_day_dates = [(end - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_back)]
     seen_dates = set()
@@ -527,7 +538,8 @@ def compute_beach_history_7d():
     for d in all_day_dates:
         if d not in seen_dates:
             seen_dates.add(d)
-            date_ts.append((d, "S3" if d in s3_dates else "MODIS"))
+            src = "S3" if d in s3_dates else "S2" if d in s2_dates else "MODIS"
+            date_ts.append((d, src))
 
     if not date_ts:
         return {}
@@ -537,6 +549,23 @@ def compute_beach_history_7d():
         date_str, source = args
         try:
             t = ee.Date(date_str)
+            if source == "S2":
+                try:
+                    s2c = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                           .filterBounds(HAIFA_BBOX)
+                           .filterDate(t.advance(-5,"day"),t.advance(1,"day"))
+                           .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",30))
+                           .sort("system:time_start",False))
+                    if s2c.size().getInfo() == 0: return date_str, None
+                    im2 = s2c.first().updateMask(ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25))
+                    b3,b4,b5,b8,b8a=(im2.select("B3").divide(10000),im2.select("B4").divide(10000),
+                                     im2.select("B5").divide(10000),im2.select("B8").divide(10000),im2.select("B8A").divide(10000))
+                    ndwi_n=b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
+                    chl_n=b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1)
+                    turb_n=ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1)
+                    wqi=ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP)
+                    return date_str, wqi
+                except: return date_str, None
             if source == "S3":
                 coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
                         .filterBounds(HAIFA_BBOX)
@@ -718,22 +747,34 @@ if mode == MODE_ISRAEL:
     # Single MEDI Platform view
     # MEDI Platform — single view
 
-    with st.spinner("Computing WQI..."):
-        # Always try S3 first for beach point data
-        wqi_layer, df, err, img_age_hours = process_israel_wqi(sel_date)
-        data_source = "Sentinel-3"
-        if err or wqi_layer is None:
-            # Fallback to MODIS for map layer
-            wqi_layer_m, df_m, err_m, img_age_hours_m, data_source_m = process_modis_wqi(sel_date)
-            if not err_m:
-                wqi_layer  = wqi_layer_m
-                data_source= data_source_m
-                img_age_hours = img_age_hours_m
-                err = None
-                # Use MODIS df only if S3 df also empty
-                if (df is None or df.empty) and df_m is not None and not df_m.empty:
-                    df = df_m
-        # Final fallback: try latest available S3 regardless of date
+    with st.spinner("Computing WQI from S3 · S2 · MODIS..."):
+        # Pull all three satellites
+        s3_layer,  s3_df,  s3_err,  s3_age            = process_israel_wqi(sel_date)
+        s2_layer,  s2_df,  s2_err,  s2_age,  _        = process_israel_s2(sel_date)
+        mod_layer, mod_df, mod_err, mod_age, mod_src   = process_modis_wqi(sel_date)
+
+        # Score each: freshness × quality_weight
+        # S2=1.5 (10m res), S3=1.2 (300m, marine-tuned), MODIS=1.0 (250m)
+        def _score(err, layer, age, weight):
+            if err or layer is None or age is None: return -1
+            return weight / (1 + age/24)  # decay with age
+
+        scores = {
+            "S3":    (_score(s3_err,  s3_layer,  s3_age,  1.2), s3_layer,  s3_df,  s3_age,  "Sentinel-3"),
+            "S2":    (_score(s2_err,  s2_layer,  s2_age,  1.5), s2_layer,  s2_df,  s2_age,  "Sentinel-2"),
+            "MODIS": (_score(mod_err, mod_layer, mod_age, 1.0), mod_layer, mod_df, mod_age, mod_src),
+        }
+
+        best_src = max(scores, key=lambda k: scores[k][0])
+        _, wqi_layer, df, img_age_hours, data_source = scores[best_src]
+        err = None
+
+        # If best source has no beach df, try fallbacks
+        if df is None or df.empty:
+            for _, layer, df_fb, age_fb, src_fb in scores.values():
+                if df_fb is not None and not df_fb.empty:
+                    df = df_fb
+                    break
         if df is None or df.empty:
             for fallback_days in [3, 5, 7, 10]:
                 fb_date = (datetime.utcnow() - timedelta(days=fallback_days)).strftime('%Y-%m-%d')
@@ -994,4 +1035,45 @@ else:
                     with st.spinner("Loading WQI layer..."):
                         layer,e=get_global_wqi_layer(sel_date,nb)
                         st.session_state.g_layer=layer if not e else None
-                st.rerun()
+                st.rerun()@st.cache_data(ttl=21600)
+def process_israel_s2(target_date_str):
+    """Sentinel-2 MSI SR — 10m WQI for Israel coast."""
+    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    t   = ee.Date(target_date_str)
+    coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterBounds(HAIFA_BBOX)
+            .filterDate(t.advance(-5,"day"), t.advance(1,"day"))
+            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+            .sort("system:time_start", False))
+    if coll.size().getInfo() == 0:
+        return None, None, "No Sentinel-2 data.", None, "Sentinel-2"
+    img_first   = coll.first()
+    img_time_ms = img_first.get("system:time_start").getInfo()
+    img_dt      = datetime.utcfromtimestamp(img_time_ms/1000)
+    age_hours   = (datetime.utcnow()-img_dt).total_seconds()/3600
+    water = img_first.select("SCL").eq(6)
+    img   = img_first.updateMask(water).updateMask(wm)
+    b3,b4,b5,b8,b8a = (img.select("B3").divide(10000), img.select("B4").divide(10000),
+                        img.select("B5").divide(10000), img.select("B8").divide(10000),
+                        img.select("B8A").divide(10000))
+    ndwi_n = b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
+    chl_n  = b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1)
+    turb_n = ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1)
+    wqi    = ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).clip(ISRAEL_CLIP).updateMask(wm).rename("WQI")
+    def _pt(pt):
+        try:
+            v  = wqi.reduceRegion(reducer=ee.Reducer.mean(),
+                geometry=ee.Geometry.Point([pt["lon"],pt["lat"]]).buffer(300),
+                scale=10,bestEffort=True).getInfo()
+            wv = v.get("WQI")
+            return {**pt,"wqi":round(wv,1) if wv else None}
+        except: return {**pt,"wqi":None}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        pts = list(ex.map(_pt,BEACHES))
+    return wqi, pd.DataFrame(pts), None, round(age_hours,1), "Sentinel-2"
+
+
+
+
+
+
