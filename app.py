@@ -268,7 +268,7 @@ class OnMapWaterLegend(MacroElement):
 var lg=L.control({position:'topright'});
 lg.onAdd=function(map){var d=L.DomUtil.create('div','info legend');
 d.style.cssText='background:rgba(2,13,24,0.92);padding:12px;border:1px solid rgba(0,200,200,0.3);border-radius:6px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;';
-d.innerHTML='<div style="font-weight:bold;margin-bottom:8px;text-align:center;color:#00c8c8;">Water Quality Index</div><div style="display:flex;align-items:center;gap:8px;"><div style="height:120px;width:14px;background:linear-gradient(to bottom,#00FF00,#FFFF00,#FF0000);border-radius:3px;flex-shrink:0;"></div><div style="display:flex;flex-direction:column;justify-content:space-between;height:120px;font-size:11px;"><span style="color:#1ecb7b;font-weight:bold;">Clean</span><span style="color:#f0a500;font-weight:bold;">Moderate</span><span style="color:#e03c3c;font-weight:bold;">Polluted</span></div></div>';return d;};
+d.innerHTML='<div style="font-weight:bold;margin-bottom:8px;text-align:center;color:#00c8c8;">Water Quality Index</div><div style="display:flex;align-items:center;gap:8px;"><div style="height:120px;width:14px;background:linear-gradient(to bottom,#006d2c,#41ab5d,#4292c6,#08306b);border-radius:3px;flex-shrink:0;"></div><div style="display:flex;flex-direction:column;justify-content:space-between;height:120px;font-size:11px;"><span style="color:#1ecb7b;font-weight:bold;">Clean</span><span style="color:#f0a500;font-weight:bold;">Moderate</span><span style="color:#e03c3c;font-weight:bold;">Polluted</span></div></div>';return d;};
 lg.addTo({{this._parent.get_name()}});{% endmacro %}""")
 
 class OnMapAtmosphereControl(MacroElement):
@@ -345,7 +345,7 @@ def get_modis_sst_anomaly(target_date_str):
     anomaly = today SST - 30-day mean SST
     Returns: ee.Image with band 'SST_anomaly' (degrees C) + scalar mean anomaly
     """
-    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
+    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t   = ee.Date(target_date_str)
 
     # Today SST (LST_Day_1km in Kelvin × 0.02 → Celsius)
@@ -390,7 +390,7 @@ def process_modis_wqi(target_date_str):
     Used as fallback when S3 not available, or as supplement.
     Returns: (wqi_layer, df_beaches, error, age_hours, source_label)
     """
-    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
+    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t  = ee.Date(target_date_str)
     # Merge Terra (MOD) + Aqua (MYD) for better daily coverage
     now_m = datetime.utcnow()
@@ -449,7 +449,7 @@ def process_modis_wqi(target_date_str):
 @st.cache_data(ttl=21600)
 def process_israel_s2(target_date_str):
     """Sentinel-2 MSI SR — 10m WQI for Israel coast. Always uses latest available."""
-    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
+    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     now  = datetime.utcnow()
     end  = ee.Date(now.strftime("%Y-%m-%d")).advance(1,"day")
     start= ee.Date((now - timedelta(days=10)).strftime("%Y-%m-%d"))
@@ -522,7 +522,7 @@ def get_available_dates_combined(days_back=7):
 
 @st.cache_data(ttl=7200)
 def process_israel_wqi(target_date_str):
-    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
+    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t=ee.Date(target_date_str)
     coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(HAIFA_BBOX)
           .filterDate(t.advance(-2,'day'),t.advance(1,'day')))
@@ -558,7 +558,16 @@ def compute_beach_history_7d():
     end   = datetime.utcnow()
     start = end - timedelta(days=15)
     wide  = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
-    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
+    wm_gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
+    # Ocean-only: exclude inland water (use SRTM elevation > 0 as land proxy)
+    # Keep only pixels where distance to ocean shoreline is small
+    # Simple: use GSW "transition" band — permanent sea water
+    gsw_full = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
+    # type 1,2 = ocean/sea in some datasets; use permanent water near coast
+    # Practical: exclude Kinneret, Dead Sea using bbox
+    inland_mask = ee.Image(1).clip(ee.Geometry.Rectangle([35.3,32.6,35.7,33.0])).unmask(0)  # Kinneret
+    inland_mask2= ee.Image(1).clip(ee.Geometry.Rectangle([35.3,31.0,35.6,31.9])).unmask(0)  # Dead Sea
+    wm = wm_gsw.And(inland_mask.Not()).And(inland_mask2.Not())
 
     # Get S3 dates
     s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
@@ -608,7 +617,7 @@ def compute_beach_history_7d():
                            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",30))
                            .sort("system:time_start",False))
                     if s2c.size().getInfo() == 0: return date_str, None
-                    im2 = s2c.first().updateMask(ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60))
+                    im2 = s2c.first().updateMask(ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30))
                     b3,b4,b5,b8,b8a=(im2.select("B3").divide(10000),im2.select("B4").divide(10000),
                                      im2.select("B5").divide(10000),im2.select("B8").divide(10000),im2.select("B8A").divide(10000))
                     ndwi_n=b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
@@ -696,7 +705,7 @@ def process_port_medi(port_key, target_date_str):
     """Compute WQI + SST anomaly for a specific port zone."""
     port = PORTS[port_key]
     bbox = port["bbox"]
-    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
+    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t    = ee.Date(target_date_str)
 
     # S3 WQI
@@ -747,7 +756,7 @@ def process_port_medi(port_key, target_date_str):
 def get_global_wqi_layer(target_date_str, bbox_rect):
     lon_min,lat_min,lon_max,lat_max=bbox_rect
     bbox=ee.Geometry.Rectangle([lon_min,lat_min,lon_max,lat_max])
-    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
+    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t=ee.Date(target_date_str)
     coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(bbox)
           .filterDate(t.advance(-1,'day'),t.advance(1,'day')))
@@ -793,7 +802,7 @@ def compute_beach_history_range(days_back: int):
     end   = datetime.utcnow()
     start = end - timedelta(days=days_back+1)
     wide  = ee.Geometry.Rectangle([34.0,29.0,36.0,33.5])
-    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
+    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
 
     s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
                .filterBounds(wide)
