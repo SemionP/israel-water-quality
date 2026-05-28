@@ -16,6 +16,7 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import streamlit.components.v1 as components
+from folium.plugins import Draw
 import ee
 from branca.element import MacroElement
 from jinja2 import Template
@@ -208,6 +209,30 @@ def init_gee():
     ee.Initialize(ee.ServiceAccountCredentials(creds["client_email"],tmp))
     os.unlink(tmp)
 init_gee()
+
+# =============================================================================
+# Persistent Zone Storage
+# =============================================================================
+ZONES_KEY = "medi-zones-v1"
+
+def load_zones() -> dict:
+    """Load user-defined zones from persistent storage."""
+    try:
+        import json as _j
+        raw = open("/tmp/medi_zones.json").read()
+        return _j.loads(raw)
+    except:
+        return {}
+
+def save_zones(zones: dict):
+    """Save user-defined zones to persistent storage."""
+    import json as _j
+    try:
+        with open("/tmp/medi_zones.json","w") as f:
+            f.write(_j.dumps(zones))
+    except:
+        pass
+
 
 # =============================================================================
 # Geometries & Beaches
@@ -1100,9 +1125,59 @@ if mode == MODE_ISRAEL:
             source="S2" if data_source=="Sentinel-2" else "S3"
         )
 
+    # Compute user-defined zone WQI
+    user_zone_wqi = {}
+    if st.session_state.get("user_zones"):
+        wm_uz = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
+        t_uz  = ee.Date(sel_date)
+        try:
+            s3c = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                   .filterBounds(HAIFA_BBOX)
+                   .filterDate(t_uz.advance(-2,"day"),t_uz.advance(1,"day")))
+            if s3c.size().getInfo() > 0:
+                img_uz = s3c.median().clip(ISRAEL_CLIP).updateMask(wm_uz)
+                ndwi_uz = img_uz.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
+                b10u,b11u,b12u = img_uz.select("Oa10_radiance"),img_uz.select("Oa11_radiance"),img_uz.select("Oa12_radiance")
+                mci_uz = b11u.subtract(b10u.add(b12u.subtract(b10u).multiply((708.75-681.25)/(753.75-681.25))))
+                turb_uz= img_uz.select("Oa08_radiance")
+                wqi_uz = (ndwi_uz.unitScale(-0.2,0.5).clamp(0,1)
+                          .add(ee.Image(1).subtract(mci_uz.unitScale(-2,12)).clamp(0,1))
+                          .add(ee.Image(1).subtract(turb_uz.unitScale(10,80)).clamp(0,1))
+                          .divide(3).multiply(100).rename("WQI").updateMask(wm_uz))
+                for zname, zdata in st.session_state.user_zones.items():
+                    try:
+                        poly = ee.Geometry.Polygon([zdata["coords"]])
+                        val  = wqi_uz.reduceRegion(
+                            reducer=ee.Reducer.mean(),
+                            geometry=poly, scale=300, bestEffort=True
+                        ).getInfo()
+                        wv = val.get("WQI")
+                        user_zone_wqi[zname] = round(float(wv),1) if wv else None
+                    except:
+                        user_zone_wqi[zname] = None
+        except:
+            pass
+
+    # Load persistent zones
+    if "user_zones" not in st.session_state:
+        st.session_state.user_zones = load_zones()
+
     # Shared map builder
     def _build_map(selected_beach=None):
         m = folium.Map(location=[32.4, 34.85], zoom_start=8)
+        # Add draw plugin
+        Draw(
+            export=False,
+            draw_options={
+                "polygon":   {"allowIntersection": False},
+                "rectangle": True,
+                "circle":    False,
+                "polyline":  False,
+                "marker":    False,
+                "circlemarker": False,
+            },
+            edit_options={"edit": False}
+        ).add_to(m)
         vis = {'min':30,'max':90,'palette':['#08306b','#08519c','#2171b5','#4292c6','#74c476','#41ab5d','#238b45','#006d2c']}
         try:
             mid = ee.Image(wqi_layer).getMapId(vis)
@@ -1137,6 +1212,30 @@ if mode == MODE_ISRAEL:
 <div style="position:absolute;top:18px;left:-32px;white-space:nowrap;font-family:Arial;font-size:11px;font-weight:700;color:white;text-shadow:0 1px 4px rgba(0,0,0,0.95);">{r["name"]}</div>''',
                     icon_size=(20,20),icon_anchor=(10,10))
             ).add_to(m)
+        # Draw user-defined zones
+        for zone_name, zone_data in st.session_state.user_zones.items():
+            coords = zone_data.get("coords", [])
+            if coords:
+                folium.Polygon(
+                    locations=[[p[1],p[0]] for p in coords],
+                    color="#00c8c8",
+                    fill=True,
+                    fill_color="#00c8c8",
+                    fill_opacity=0.12,
+                    weight=2,
+                    dash_array="6 4",
+                    tooltip=f"📍 {zone_name}",
+                ).add_to(m)
+                # Label at centroid
+                lats = [p[1] for p in coords]
+                lons = [p[0] for p in coords]
+                folium.Marker(
+                    location=[sum(lats)/len(lats), sum(lons)/len(lons)],
+                    icon=folium.DivIcon(
+                        html=f'''<div style="background:rgba(0,200,200,0.85);color:#020d18;font-family:Arial;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;white-space:nowrap;">{zone_name}</div>''',
+                        icon_size=(100,20), icon_anchor=(50,10))
+                ).add_to(m)
+
         # Draw maritime zone polygons
         for city, polygon in MARITIME_ZONES.items():
             wv = city_wqi.get(city) if city_wqi else None
@@ -1226,11 +1325,52 @@ if mode == MODE_ISRAEL:
                     _build_map(),
                     use_container_width=True, height=650,
                     key="israel_map_wqi",
-                    returned_objects=["bounds"]
+                    returned_objects=["bounds","last_active_drawing"]
                 )
 
             # ── City WQI Summary ──────────────────────────────────────────────────
             with col_info:
+                # ── Zone Manager ──────────────────────────────────────────────
+                st.markdown("#### 📍 Custom Zones")
+                last_drawing = map_data_wqi.get("last_active_drawing") if map_data_wqi else None
+                if last_drawing:
+                    geom = last_drawing.get("geometry",{})
+                    if geom.get("type") in ["Polygon","Rectangle"]:
+                        coords = geom["coordinates"][0]
+                        st.session_state["pending_polygon"] = coords
+                        st.info("✏️ Polygon drawn — give it a name and save")
+
+                if st.session_state.get("pending_polygon"):
+                    zone_name_input = st.text_input("Zone name:", key="zone_name_inp", placeholder="e.g. Haifa Port")
+                    col_save, col_cancel = st.columns(2)
+                    with col_save:
+                        if st.button("💾 Save zone", use_container_width=True):
+                            if zone_name_input.strip():
+                                st.session_state.user_zones[zone_name_input.strip()] = {
+                                    "coords": st.session_state["pending_polygon"]
+                                }
+                                save_zones(st.session_state.user_zones)
+                                del st.session_state["pending_polygon"]
+                                st.rerun()
+                    with col_cancel:
+                        if st.button("✕ Cancel", use_container_width=True):
+                            del st.session_state["pending_polygon"]
+                            st.rerun()
+
+                if st.session_state.user_zones:
+                    for zname in list(st.session_state.user_zones.keys()):
+                        col_z, col_del = st.columns([3,1])
+                        with col_z:
+                            st.caption(f"📍 {zname}")
+                        with col_del:
+                            if st.button("🗑", key=f"del_{zname}"):
+                                del st.session_state.user_zones[zname]
+                                save_zones(st.session_state.user_zones)
+                                st.rerun()
+                else:
+                    st.caption("Draw a polygon on the map to add a zone")
+
+                st.markdown("---")
                 if city_wqi:
                     valid_cities = {k:v for k,v in city_wqi.items() if v is not None}
                     if valid_cities:
@@ -1282,6 +1422,17 @@ if mode == MODE_ISRAEL:
                                     beach_history[row["name"]].append({"date": sel_date, "wqi": row["wqi"]})
                             elif row["name"] not in beach_history and row["wqi"]:
                                 beach_history[row["name"]] = [{"date": sel_date, "wqi": row["wqi"]}]
+
+                    # Merge user zones into beach_history for chart
+                    for zname, zwqi in user_zone_wqi.items():
+                        if zwqi is not None:
+                            if zname not in beach_history:
+                                beach_history[zname] = []
+                            existing = {e["date"] for e in beach_history[zname]}
+                            if sel_date not in existing:
+                                beach_history[zname].append({"date": sel_date, "wqi": zwqi})
+                            if zname not in visible_beaches:
+                                visible_beaches.append(zname)
 
                     all_dates = sorted(set(
                         e["date"] for name in visible_beaches
