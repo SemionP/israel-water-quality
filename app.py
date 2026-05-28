@@ -839,9 +839,24 @@ if mode == MODE_ISRAEL:
                         data_source = "Sentinel-3"
                     break
 
-    # Load 7-day history in background (cached)
-    with st.spinner("Loading 7-day history..."):
-        beach_history = compute_beach_history_7d()
+    # History range selector
+    history_range = st.sidebar.radio(
+        "📅 History range:",
+        ["7 ימים", "חודש", "שנה"],
+        horizontal=True,
+        key="history_range"
+    )
+    days_map = {"7 ימים": 7, "חודש": 30, "שנה": 365}
+    history_days = days_map[history_range]
+
+    history_label = {"7 ימים": "7 ימים", "חודש": "30 יום", "שנה": "365 יום"}[history_range]
+    if history_days > 7:
+        spinner_msg = f"Loading {history_label} of S3 history — may take 1-3 minutes..."
+    else:
+        spinner_msg = "Loading history..."
+
+    with st.spinner(spinner_msg):
+        beach_history = compute_beach_history_range(history_days)
 
     if err:
         st.error(err)
@@ -986,7 +1001,7 @@ if mode == MODE_ISRAEL:
 <!DOCTYPE html><html><body style="margin:0;background:transparent;">
 <div style="padding:0.25rem 0 0.5rem;">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-    <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · 7 ימים · Sentinel-3</p>
+    <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · {history_label} · Sentinel-3</p>
     <p style="font-size:11px;color:#7fb3d3;margin:0;">{n_beaches} חופים</p>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">
@@ -1101,4 +1116,95 @@ else:
                         layer,e=get_global_wqi_layer(sel_date,nb)
                         st.session_state.g_layer=layer if not e else None
                 st.rerun()
+@st.cache_data(ttl=86400)
+def compute_beach_history_range(days_back: int):
+    """Compute WQI history for N days. S3+MODIS for <=7d, S3 only for longer."""
+    end   = datetime.utcnow()
+    start = end - timedelta(days=days_back+1)
+    wide  = ee.Geometry.Rectangle([34.0,29.0,36.0,33.5])
+    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+
+    s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+               .filterBounds(wide)
+               .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+               .sort("system:time_start",False))
+    s3_ts  = s3_coll.aggregate_array("system:time_start").getInfo()
+    s3_set = set(datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d") for ts in s3_ts)
+
+    if days_back <= 7:
+        all_days = [(end-timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_back+1)]
+        seen=set(); date_ts=[]
+        for d in all_days:
+            if d not in seen:
+                seen.add(d)
+                date_ts.append((d,"S3" if d in s3_set else "MODIS"))
+    else:
+        seen=set(); date_ts=[]
+        for ts in s3_ts:
+            d=datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d")
+            if d not in seen:
+                seen.add(d); date_ts.append((d,"S3"))
+
+    if not date_ts: return {}
+
+    def _wqi_for_date(args):
+        date_str,source=args
+        try:
+            t=ee.Date(date_str)
+            if source=="S3":
+                coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(HAIFA_BBOX)
+                      .filterDate(t.advance(-1,"day"),t.advance(1,"day")))
+                if coll.size().getInfo()==0: return date_str,None
+                img=coll.median().clip(ISRAEL_CLIP).updateMask(wm)
+                ndwi=img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
+                b10,b11,b12=img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
+                mci=b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
+                turb=img.select("Oa08_radiance")
+                raw=(ndwi.unitScale(-0.2,0.5).clamp(0,1)
+                     .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
+                     .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
+                     .divide(3).multiply(100).rename("WQI"))
+                wqi=raw.reduceNeighborhood(reducer=ee.Reducer.mean(),
+                    kernel=ee.Kernel.square(radius=1,units="pixels")).rename("WQI").updateMask(wm)
+                return date_str,wqi
+            else:
+                t2=ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(HAIFA_BBOX).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
+                a2=ee.ImageCollection("MODIS/061/MYD09GA").filterBounds(HAIFA_BBOX).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
+                qa=t2.merge(a2).sort("system:time_start",False)
+                if qa.size().getInfo()==0: return date_str,None
+                im=qa.first(); cl=im.select("state_1km").bitwiseAnd(0b11).eq(0)
+                im=im.updateMask(cl).updateMask(wm)
+                b1,b2,b4=im.select("sur_refl_b01"),im.select("sur_refl_b02"),im.select("sur_refl_b04")
+                wqi=(b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3,0.3).clamp(0,1)
+                     .add(b4.divide(b1.add(1e-6)).unitScale(0.8,2.5).clamp(0,1))
+                     .add(ee.Image(1).subtract(b1.unitScale(0,1500)).clamp(0,1))
+                     .divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm))
+                return date_str,wqi
+        except: return date_str,None
+
+    def _sample(args):
+        beach,date_str,wqi=args
+        if wqi is None: return beach["name"],date_str,None
+        try:
+            v=wqi.reduceRegion(reducer=ee.Reducer.mean(),
+              geometry=ee.Geometry.Point([beach["lon"],beach["lat"]]).buffer(450),
+              scale=300,bestEffort=True).getInfo()
+            wv=v.get("WQI")
+            return beach["name"],date_str,round(wv,1) if wv else None
+        except: return beach["name"],date_str,None
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        wqi_images=dict(ex.map(_wqi_for_date,date_ts))
+    tasks=[(b,d,wqi_images.get(d)) for b in BEACHES for d,_ in date_ts]
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        results=list(ex.map(_sample,tasks))
+
+    history={b["name"]:[] for b in BEACHES}
+    for bn,ds,wv in results:
+        history[bn].append({"date":ds,"wqi":wv})
+    for n in history:
+        history[n]=sorted(history[n],key=lambda x:x["date"])
+    return history
+
+
 
