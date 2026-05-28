@@ -784,11 +784,11 @@ if mode == MODE_ISRAEL:
         elif wqi_layer is not None:
             src_icon = "🛰️" if sel_src == "S3" else "📡"
             st.caption(f"{src_icon} Latest data: **{sel_date}** · Source: **{data_source}** · Age: **{img_age_hours:.0f}h**")
-            col_map, col_info = st.columns([2.8, 2.2])
+            col_map, col_info = st.columns([3.2, 1.8])
             with col_map:
                 map_data_wqi = st_folium(
                     _build_map(),
-                    use_container_width=True, height=680,
+                    use_container_width=True, height=620,
                     key="israel_map_wqi",
                     returned_objects=["bounds"]
                 )
