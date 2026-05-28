@@ -707,8 +707,9 @@ if mode == MODE_ISRAEL:
         sel_date = (datetime.utcnow()-timedelta(days=1)).strftime('%Y-%m-%d')
         sel_src  = "S3"
 
-    # ── Tab selector ──────────────────────────────────────────────────────────
-    tab_wqi, tab_medi = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment"])
+    # Single MEDI Platform view
+    tab_wqi = st.container()
+    tab_medi = tab_wqi
 
     with st.spinner("Computing WQI..."):
         if sel_src == "MODIS":
@@ -760,8 +761,8 @@ if mode == MODE_ISRAEL:
         m.add_child(OnMapWaterLegend())
         return m
 
-    # ── Tab 1: Water Quality Index ─────────────────────────────────────────────
-    with tab_wqi:
+    # ── Water Quality Index ──────────────────────────────────────────────────────
+    if True:
         if err:
             st.error(err)
         elif wqi_layer is not None:
@@ -917,8 +918,8 @@ if mode == MODE_ISRAEL:
                     st.caption("Zoom in to see beach comparison")
 
 
-    # ── Tab 2: MEDI Risk Assessment ───────────────────────────────────────────
-    with tab_medi:
+    # ── MEDI Risk Assessment ────────────────────────────────────────────────────
+    if True:
         sub_coast, sub_ports, sub_compare = st.tabs([
             "🏖️ Israel Coast", "🚢 Port MEDI", "⚖️ Port Comparison"
         ])
