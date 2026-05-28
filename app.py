@@ -324,12 +324,19 @@ def get_sst(lat, lon):
     except: return None
 
 @st.cache_data(ttl=14400)
-def get_available_s3_dates(days_back=30):
-    end=datetime.utcnow(); start=end-timedelta(days=days_back)
-    coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(HAIFA_BBOX)
-          .filterDate(start.strftime('%Y-%m-%d'),end.strftime('%Y-%m-%d')))
-    dl=coll.aggregate_array("system:time_start").getInfo()
-    return sorted(list(set([datetime.utcfromtimestamp(d/1000).strftime("%Y-%m-%d") for d in dl])),reverse=True)
+def get_available_s3_dates(days_back=60):
+    end   = datetime.utcnow()
+    start = end - timedelta(days=days_back)
+    # Use wider bbox to catch all S3 passes over Israel
+    wide_bbox = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
+    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+            .filterBounds(wide_bbox)
+            .filterDate(start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')))
+    dl = coll.aggregate_array("system:time_start").getInfo()
+    dates = sorted(list(set([
+        datetime.utcfromtimestamp(d/1000).strftime("%Y-%m-%d") for d in dl
+    ])), reverse=True)
+    return dates
 
 @st.cache_data(ttl=10800)
 def get_modis_sst_anomaly(target_date_str):
@@ -381,7 +388,7 @@ def process_israel_wqi(target_date_str):
     wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
     t=ee.Date(target_date_str)
     coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(HAIFA_BBOX)
-          .filterDate(t.advance(-1,'day'),t.advance(1,'day')))
+          .filterDate(t.advance(-2,'day'),t.advance(1,'day')))
     if coll.size().getInfo()==0: return None,None,"No Sentinel-3 data for this date.",None
     # Get actual image acquisition time
     img_first = coll.sort("system:time_start", False).first()
