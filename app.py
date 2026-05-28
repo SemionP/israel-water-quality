@@ -905,20 +905,15 @@ if mode == MODE_ISRAEL:
         s2_layer,  s2_df,  s2_err,  s2_age,  _        = process_israel_s2(sel_date)
         mod_layer, mod_df, mod_err, mod_age, mod_src   = process_modis_wqi(sel_date)
 
-        # Score each: freshness × quality_weight
-        # S2=1.5 (10m res), S3=1.2 (300m, marine-tuned), MODIS=1.0 (250m)
-        def _score(err, layer, age, weight):
-            if err or layer is None or age is None: return -1
-            return weight / (1 + age/24)  # decay with age
-
-        scores = {
-            "S3":    (_score(s3_err,  s3_layer,  s3_age,  1.2), s3_layer,  s3_df,  s3_age,  "Sentinel-3"),
-            "S2":    (_score(s2_err,  s2_layer,  s2_age,  1.5), s2_layer,  s2_df,  s2_age,  "Sentinel-2"),
-            "MODIS": (_score(mod_err, mod_layer, mod_age, 1.0), mod_layer, mod_df, mod_age, mod_src),
-        }
-
-        best_src = max(scores, key=lambda k: scores[k][0])
-        best_score, wqi_layer, df, img_age_hours, data_source = scores[best_src]
+        # Always pick the freshest satellite — no quality weights
+        candidates = [
+            (s3_age  if (not s3_err  and s3_layer  is not None and s3_age  is not None) else 9999, s3_layer,  s3_df,  s3_age,  "Sentinel-3"),
+            (s2_age  if (not s2_err  and s2_layer  is not None and s2_age  is not None) else 9999, s2_layer,  s2_df,  s2_age,  "Sentinel-2"),
+            (mod_age if (not mod_err and mod_layer is not None and mod_age is not None) else 9999, mod_layer, mod_df, mod_age, mod_src),
+        ]
+        # Sort by age ascending — freshest first
+        candidates.sort(key=lambda x: x[0])
+        _, wqi_layer, df, img_age_hours, data_source = candidates[0]
         img_age_hours = img_age_hours if img_age_hours else 99
         err = None
 
