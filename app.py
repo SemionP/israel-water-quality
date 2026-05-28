@@ -258,6 +258,70 @@ PORTS = {
     },
 }
 
+
+# =============================================================================
+# Maritime Zone Polygons — Offshore areas per city (sea only)
+# Each polygon: ~3-5km offshore, covers city coastal stretch
+# =============================================================================
+MARITIME_ZONES = {
+    "Nahariya":  ee.Geometry.Polygon([[
+        [34.88, 33.00], [34.95, 33.00], [34.95, 33.05], [34.88, 33.05]
+    ]]),
+    "Acre":      ee.Geometry.Polygon([[
+        [34.90, 32.90], [34.97, 32.90], [34.97, 32.95], [34.90, 32.95]
+    ]]),
+    "Krayot":    ee.Geometry.Polygon([[
+        [34.92, 32.83], [34.98, 32.83], [34.98, 32.89], [34.92, 32.89]
+    ]]),
+    "Haifa":     ee.Geometry.Polygon([[
+        [34.88, 32.78], [34.97, 32.78], [34.97, 32.84], [34.88, 32.84]
+    ]]),
+    "Atlit":     ee.Geometry.Polygon([[
+        [34.88, 32.67], [34.95, 32.67], [34.95, 32.72], [34.88, 32.72]
+    ]]),
+    "Caesarea":  ee.Geometry.Polygon([[
+        [34.85, 32.47], [34.93, 32.47], [34.93, 32.53], [34.85, 32.53]
+    ]]),
+    "Hadera":    ee.Geometry.Polygon([[
+        [34.84, 32.42], [34.92, 32.42], [34.92, 32.47], [34.84, 32.47]
+    ]]),
+    "Netanya":   ee.Geometry.Polygon([[
+        [34.82, 32.28], [34.90, 32.28], [34.90, 32.35], [34.82, 32.35]
+    ]]),
+    "Herzliya":  ee.Geometry.Polygon([[
+        [34.77, 32.14], [34.85, 32.14], [34.85, 32.20], [34.77, 32.20]
+    ]]),
+    "Tel Aviv":  ee.Geometry.Polygon([[
+        [34.73, 32.04], [34.81, 32.04], [34.81, 32.12], [34.73, 32.12]
+    ]]),
+    "Palmahim":  ee.Geometry.Polygon([[
+        [34.68, 31.90], [34.76, 31.90], [34.76, 31.96], [34.68, 31.96]
+    ]]),
+    "Ashdod":    ee.Geometry.Polygon([[
+        [34.60, 31.77], [34.68, 31.77], [34.68, 31.84], [34.60, 31.84]
+    ]]),
+    "Ashkelon":  ee.Geometry.Polygon([[
+        [34.52, 31.63], [34.60, 31.63], [34.60, 31.69], [34.52, 31.69]
+    ]]),
+}
+
+# Representative point for each city (for map marker)
+CITY_POINTS = {
+    "Nahariya": {"lat": 33.020, "lon": 34.915},
+    "Acre":     {"lat": 32.924, "lon": 34.935},
+    "Krayot":   {"lat": 32.860, "lon": 34.950},
+    "Haifa":    {"lat": 32.810, "lon": 34.925},
+    "Atlit":    {"lat": 32.690, "lon": 34.915},
+    "Caesarea": {"lat": 32.500, "lon": 34.890},
+    "Hadera":   {"lat": 32.445, "lon": 34.880},
+    "Netanya":  {"lat": 32.315, "lon": 34.860},
+    "Herzliya": {"lat": 32.170, "lon": 34.810},
+    "Tel Aviv": {"lat": 32.080, "lon": 34.770},
+    "Palmahim": {"lat": 31.930, "lon": 34.720},
+    "Ashdod":   {"lat": 31.805, "lon": 34.640},
+    "Ashkelon": {"lat": 31.660, "lon": 34.560},
+}
+
 # =============================================================================
 # Map Components
 # =============================================================================
@@ -796,6 +860,71 @@ medi_profile = "Beach Safety"  # default
 
 
 
+@st.cache_data(ttl=7200)
+def compute_city_wqi(target_date_str, source="S3"):
+    """
+    Compute WQI for each city's maritime zone polygon.
+    Returns dict: {city_name: wqi_value}
+    """
+    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
+    t  = ee.Date(target_date_str)
+
+    def _get_wqi_image():
+        if source == "S2":
+            coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                    .filterBounds(HAIFA_BBOX)
+                    .filterDate(t.advance(-5,"day"),t.advance(1,"day"))
+                    .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",30))
+                    .sort("system:time_start",False))
+            if coll.size().getInfo() == 0: return None
+            img   = coll.first().updateMask(wm)
+            b3,b4,b5,b8,b8a = (img.select("B3").divide(10000),img.select("B4").divide(10000),
+                                img.select("B5").divide(10000),img.select("B8").divide(10000),
+                                img.select("B8A").divide(10000))
+            return (b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
+                    .add(b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1))
+                    .add(ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1))
+                    .divide(3).multiply(100).rename("WQI").updateMask(wm))
+        else:
+            coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                    .filterBounds(HAIFA_BBOX)
+                    .filterDate(t.advance(-2,"day"),t.advance(1,"day")))
+            if coll.size().getInfo() == 0: return None
+            img  = coll.median().clip(ISRAEL_CLIP).updateMask(wm)
+            ndwi = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
+            b10,b11,b12 = img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
+            mci  = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
+            turb = img.select("Oa08_radiance")
+            raw  = (ndwi.unitScale(-0.2,0.5).clamp(0,1)
+                    .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
+                    .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
+                    .divide(3).multiply(100).rename("WQI"))
+            return raw.reduceNeighborhood(
+                reducer=ee.Reducer.mean(),
+                kernel=ee.Kernel.square(radius=1,units="pixels")
+            ).rename("WQI").updateMask(wm)
+
+    wqi_img = _get_wqi_image()
+    if wqi_img is None:
+        return {city: None for city in MARITIME_ZONES}
+
+    results = {}
+    for city, polygon in MARITIME_ZONES.items():
+        try:
+            val = wqi_img.reduceRegion(
+                reducer  = ee.Reducer.mean(),
+                geometry = polygon,
+                scale    = 300,
+                bestEffort=True
+            ).getInfo()
+            wv = val.get("WQI")
+            results[city] = round(float(wv), 1) if wv else None
+        except:
+            results[city] = None
+
+    return results
+
+
 @st.cache_data(ttl=86400)
 def compute_beach_history_range(days_back: int):
     """Compute WQI history for N days. S3+MODIS for <=7d, S3 only for longer."""
@@ -964,6 +1093,13 @@ if mode == MODE_ISRAEL:
     elif wqi_layer is not None:
         atm = get_atm(32.4, 34.85)
 
+    # Compute city WQI
+    with st.spinner("Computing city maritime WQI..."):
+        city_wqi = compute_city_wqi(
+            sel_date,
+            source="S2" if data_source=="Sentinel-2" else "S3"
+        )
+
     # Shared map builder
     def _build_map(selected_beach=None):
         m = folium.Map(location=[32.4, 34.85], zoom_start=8)
@@ -1001,6 +1137,38 @@ if mode == MODE_ISRAEL:
 <div style="position:absolute;top:18px;left:-32px;white-space:nowrap;font-family:Arial;font-size:11px;font-weight:700;color:white;text-shadow:0 1px 4px rgba(0,0,0,0.95);">{r["name"]}</div>''',
                     icon_size=(20,20),icon_anchor=(10,10))
             ).add_to(m)
+        # Draw maritime zone polygons
+        for city, polygon in MARITIME_ZONES.items():
+            wv = city_wqi.get(city) if city_wqi else None
+            cm_city = "#1ecb7b" if wv and wv>=70 else "#f0a500" if wv and wv>=50 else "#e03c3c" if wv else "#888888"
+            wv_str  = f"{wv:.1f}" if wv else "N/A"
+            # Draw polygon
+            coords = polygon.getInfo()["coordinates"][0]
+            folium.Polygon(
+                locations=[[p[1],p[0]] for p in coords],
+                color=cm_city,
+                fill=True,
+                fill_color=cm_city,
+                fill_opacity=0.15,
+                weight=2,
+                opacity=0.8,
+                tooltip=f"🏙️ {city} | WQI: {wv_str}",
+                popup=folium.Popup(
+                    f"<b>{city}</b><br>WQI: <span style='color:{cm_city};font-weight:bold;'>{wv_str}</span><br><small>Maritime zone avg</small>",
+                    max_width=160
+                )
+            ).add_to(m)
+            # City label at center
+            pt = CITY_POINTS.get(city, {})
+            if pt:
+                folium.Marker(
+                    location=[pt["lat"], pt["lon"]],
+                    icon=folium.DivIcon(
+                        html=f'''<div style="background:{cm_city};border:2px solid white;border-radius:50%;width:12px;height:12px;box-shadow:0 0 6px {cm_city}88;"></div>
+<div style="position:absolute;top:14px;left:-20px;white-space:nowrap;font-family:Arial;font-size:10px;font-weight:700;color:white;text-shadow:0 1px 3px rgba(0,0,0,0.9);">{city} {wv_str}</div>''',
+                        icon_size=(12,12), icon_anchor=(6,6))
+                ).add_to(m)
+
         m.add_child(OnMapWaterLegend())
         return m
 
@@ -1061,7 +1229,27 @@ if mode == MODE_ISRAEL:
                     returned_objects=["bounds"]
                 )
 
+            # ── City WQI Summary ──────────────────────────────────────────────────
             with col_info:
+                if city_wqi:
+                    valid_cities = {k:v for k,v in city_wqi.items() if v is not None}
+                    if valid_cities:
+                        best_city  = max(valid_cities, key=valid_cities.get)
+                        worst_city = min(valid_cities, key=valid_cities.get)
+                        st.markdown(f"""
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;">
+  <div style="background:rgba(30,203,123,0.08);border:1px solid rgba(30,203,123,0.3);border-radius:6px;padding:8px 10px;">
+    <p style="font-size:10px;color:#7fb3d3;margin:0 0 2px;">הכי נקי</p>
+    <p style="font-size:13px;font-weight:600;margin:0;color:#1ecb7b;">{best_city}</p>
+    <p style="font-size:11px;color:#7fb3d3;margin:0;">{valid_cities[best_city]:.1f} / 100</p>
+  </div>
+  <div style="background:rgba(224,60,60,0.08);border:1px solid rgba(224,60,60,0.3);border-radius:6px;padding:8px 10px;">
+    <p style="font-size:10px;color:#7fb3d3;margin:0 0 2px;">דורש תשומת לב</p>
+    <p style="font-size:13px;font-weight:600;margin:0;color:#e03c3c;">{worst_city}</p>
+    <p style="font-size:11px;color:#7fb3d3;margin:0;">{valid_cities[worst_city]:.1f} / 100</p>
+  </div>
+</div>
+""", unsafe_allow_html=True)
                 # Detect which beaches are visible in current map bounds
                 bounds = map_data_wqi.get("bounds") if map_data_wqi else None
                 if bounds and bounds.get("_southWest") and bounds.get("_northEast"):
