@@ -896,9 +896,13 @@ if mode == MODE_ISRAEL:
 
     # ── Tab 2: MEDI Risk Assessment ───────────────────────────────────────────
     with tab_medi:
-        if err:
+        sub_coast, sub_ports, sub_compare = st.tabs([
+            "🏖️ Israel Coast", "🚢 Port MEDI", "⚖️ Port Comparison"
+        ])
+        with sub_coast:
+          if err:
             st.error(err)
-        elif wqi_layer is not None:
+          elif wqi_layer is not None:
             # Profile selector inside the tab
             col_prof, _ = st.columns([2, 3])
             with col_prof:
