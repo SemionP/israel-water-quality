@@ -938,24 +938,9 @@ if mode == MODE_ISRAEL:
                         data_source = "Sentinel-3"
                     break
 
-    # History range selector
-    history_range = st.sidebar.radio(
-        "📅 History range:",
-        ["7 ימים", "חודש", "שנה"],
-        horizontal=True,
-        key="history_range"
-    )
-    days_map = {"7 ימים": 7, "חודש": 30, "שנה": 365}
-    history_days = days_map[history_range]
-
-    history_label = {"7 ימים": "7 ימים", "חודש": "30 יום", "שנה": "365 יום"}[history_range]
-    if history_days > 7:
-        spinner_msg = f"Loading {history_label} of S3 history — may take 1-3 minutes..."
-    else:
-        spinner_msg = "Loading history..."
-
-    with st.spinner(spinner_msg):
-        beach_history = compute_beach_history_range(history_days)
+    # History range will be shown above map
+    if "history_range" not in st.session_state:
+        st.session_state.history_range = "7 ימים"
 
     if err:
         st.error(err)
@@ -999,7 +984,17 @@ if mode == MODE_ISRAEL:
         elif wqi_layer is not None:
             acq_dt  = datetime.utcnow() - timedelta(hours=img_age_hours)
             acq_str = acq_dt.strftime("%Y-%m-%d %H:%M UTC")
-            st.caption(f"תאריך עדכון: **{acq_str}** · {data_source} · {img_age_hours:.0f}h ago")
+            top_l, top_r = st.columns([2, 1])
+            with top_l:
+                st.caption(f"תאריך עדכון: **{acq_str}** · {data_source} · {img_age_hours:.0f}h ago")
+            with top_r:
+                history_range = st.radio("טווח:", ["7 ימים","חודש","שנה"],
+                    horizontal=True, key="history_range", label_visibility="collapsed")
+            days_map = {"7 ימים":7,"חודש":30,"שנה":365}
+            history_days  = days_map[history_range]
+            history_label = {"7 ימים":"7 ימים","חודש":"30 יום","שנה":"365 יום"}[history_range]
+            with st.spinner(f"Loading {history_label}..."):
+                beach_history = compute_beach_history_range(history_days)
             col_map, col_info = st.columns([1, 1])
             with col_map:
                 map_data_wqi = st_folium(
