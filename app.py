@@ -584,7 +584,7 @@ def compute_beach_history_7d():
 
     # Compute WQI images for all dates (up to 4 in parallel)
     with ThreadPoolExecutor(max_workers=4) as ex:
-        wqi_images = dict(ex.map(lambda d: _wqi_for_date(d[0]), date_ts))
+        wqi_images = dict(ex.map(_wqi_for_date, date_ts))
 
     # Sample all beaches × all dates
     tasks = [(b, d, wqi_images.get(d)) for b in BEACHES for d, _ in date_ts]
