@@ -393,12 +393,15 @@ def process_modis_wqi(target_date_str):
     wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
     t  = ee.Date(target_date_str)
     # Merge Terra (MOD) + Aqua (MYD) for better daily coverage
+    now_m = datetime.utcnow()
+    end_m = ee.Date(now_m.strftime("%Y-%m-%d")).advance(1,"day")
+    start_m = ee.Date((now_m - timedelta(days=3)).strftime("%Y-%m-%d"))
     terra = (ee.ImageCollection("MODIS/061/MOD09GA")
              .filterBounds(HAIFA_BBOX)
-             .filterDate(t.advance(-3,"day"), t.advance(1,"day")))
+             .filterDate(start_m, end_m))
     aqua  = (ee.ImageCollection("MODIS/061/MYD09GA")
              .filterBounds(HAIFA_BBOX)
-             .filterDate(t.advance(-3,"day"), t.advance(1,"day")))
+             .filterDate(start_m, end_m))
     coll  = terra.merge(aqua).sort("system:time_start", False)
 
     if coll.size().getInfo() == 0:
@@ -445,12 +448,14 @@ def process_modis_wqi(target_date_str):
 
 @st.cache_data(ttl=21600)
 def process_israel_s2(target_date_str):
-    """Sentinel-2 MSI SR — 10m WQI for Israel coast."""
-    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
-    t   = ee.Date(target_date_str)
+    """Sentinel-2 MSI SR — 10m WQI for Israel coast. Always uses latest available."""
+    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    now  = datetime.utcnow()
+    end  = ee.Date(now.strftime("%Y-%m-%d")).advance(1,"day")
+    start= ee.Date((now - timedelta(days=10)).strftime("%Y-%m-%d"))
     coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
             .filterBounds(HAIFA_BBOX)
-            .filterDate(t.advance(-5,"day"), t.advance(1,"day"))
+            .filterDate(start, end)
             .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
             .sort("system:time_start", False))
     if coll.size().getInfo() == 0:
@@ -878,8 +883,9 @@ if mode == MODE_ISRAEL:
         if err:
             st.error(err)
         elif wqi_layer is not None:
-            src_icon = "🛰️" if sel_src == "S3" else "📡"
-            st.caption(f"{src_icon} Latest data: **{sel_date}** · Source: **{data_source}** · Age: **{img_age_hours:.0f}h**")
+            acq_dt  = datetime.utcnow() - timedelta(hours=img_age_hours)
+            acq_str = acq_dt.strftime("%Y-%m-%d %H:%M UTC")
+            st.caption(f"תאריך עדכון: **{acq_str}** · {data_source} · {img_age_hours:.0f}h ago")
             col_map, col_info = st.columns([3.2, 1.8])
             with col_map:
                 map_data_wqi = st_folium(
