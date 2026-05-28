@@ -886,11 +886,11 @@ if mode == MODE_ISRAEL:
             acq_dt  = datetime.utcnow() - timedelta(hours=img_age_hours)
             acq_str = acq_dt.strftime("%Y-%m-%d %H:%M UTC")
             st.caption(f"תאריך עדכון: **{acq_str}** · {data_source} · {img_age_hours:.0f}h ago")
-            col_map, col_info = st.columns([3.2, 1.8])
+            col_map, col_info = st.columns([1, 1])
             with col_map:
                 map_data_wqi = st_folium(
                     _build_map(),
-                    use_container_width=True, height=620,
+                    use_container_width=True, height=580,
                     key="israel_map_wqi",
                     returned_objects=["bounds"]
                 )
@@ -937,9 +937,11 @@ if mode == MODE_ISRAEL:
                     def _get_current(name):
                         if df is not None and not df.empty:
                             row = df[df["name"]==name]
-                            if not row.empty and row["wqi"].iloc[0]:
-                                return row["wqi"].iloc[0]
-                        hist_vals = [e["wqi"] for e in beach_history.get(name,[]) if e["wqi"]]
+                            if not row.empty:
+                                v = row["wqi"].iloc[0]
+                                if v is not None and str(v) != "nan":
+                                    return float(v)
+                        hist_vals = [e["wqi"] for e in beach_history.get(name,[]) if e["wqi"] and str(e["wqi"]) != "nan"]
                         return hist_vals[-1] if hist_vals else None
 
                     PALETTE = ["#1D9E75","#378ADD","#7F77DD","#BA7517","#D4537E","#E24B4A","#639922","#D85A30"]
@@ -1000,10 +1002,10 @@ if mode == MODE_ISRAEL:
     </div>
   </div>
   <div style="display:flex;gap:10px;align-items:flex-start;">
-    <div style="position:relative;flex:1;height:240px;">
+    <div style="position:relative;flex:1;height:460px;">
       <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches"></canvas>
     </div>
-    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:space-around;height:240px;min-width:100px;"></div>
+    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:space-around;height:460px;min-width:110px;"></div>
   </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -1022,12 +1024,16 @@ if mode == MODE_ISRAEL:
     options:{{responsive:true,maintainAspectRatio:false,
       plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{label:c=>`${{c.dataset.label}}: ${{c.parsed.y}}`}}}}}},
       scales:{{
-        x:{{ticks:{{color:tc,font:{{size:10}}}},grid:{{color:gc}}}},
-        y:{{min:1,max:100,
-          ticks:{{color:tc,font:{{size:10}},stepSize:33,
-            callback:v=>v<=1?'מזוהם':v>=67?'נקי':v>=34?'בינוני':''}},
+        x:{{
+          ticks:{{color:tc,font:{{size:11}},maxRotation:45,autoSkip:false}},
           grid:{{color:gc}},
-          title:{{display:true,text:'איכות פני המים',color:tc,font:{{size:10}}}}
+          title:{{display:true,text:'תאריך',color:tc,font:{{size:12}}}}
+        }},
+        y:{{min:1,max:100,
+          ticks:{{color:tc,font:{{size:11}},
+            callback:v=>v===1?'1 מזוהם':v===25?'25':v===50?'50':v===75?'75':v===100?'100 נקי':''}},
+          grid:{{color:gc}},
+          title:{{display:true,text:'איכות המים (WQI)',color:tc,font:{{size:12,weight:'bold'}}}}
         }}
       }}
     }}
@@ -1044,7 +1050,7 @@ if mode == MODE_ISRAEL:
 }})();
 </script></body></html>
 """
-                    components.html(chart_html, height=420, scrolling=False)
+                    components.html(chart_html, height=580, scrolling=False)
                 else:
                     st.caption("Zoom in to see beach comparison")
 
