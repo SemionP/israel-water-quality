@@ -514,6 +514,7 @@ def compute_beach_history_7d():
         s3_dates.add(datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d"))
 
     # All dates = S3 + every day in range (MODIS fallback)
+    days_back = 8
     all_day_dates = [(end - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_back)]
     seen_dates = set()
     date_ts = []
