@@ -715,9 +715,13 @@ if mode == MODE_ISRAEL:
     def _build_map(selected_beach=None):
         m = folium.Map(location=[32.4, 34.85], zoom_start=8)
         vis = {'min':40,'max':85,'palette':['#FF0000','#FFFF00','#00FF00']}
-        mid = ee.Image(wqi_layer).getMapId(vis)
-        folium.TileLayer(tiles=mid['tile_fetcher'].url_format,attr='GEE S3',
-                         name="WQI",overlay=True,control=False,opacity=0.85).add_to(m)
+        try:
+            mid = ee.Image(wqi_layer).getMapId(vis)
+            folium.TileLayer(tiles=mid['tile_fetcher'].url_format,
+                             attr=f'GEE {data_source}',
+                             name="WQI",overlay=True,control=False,opacity=0.85).add_to(m)
+        except Exception:
+            pass  # map shows base tiles only if GEE layer fails
         for _,r in df.iterrows():
             sc = r.get('wqi')
             cm = "#1ecb7b" if sc and sc>65 else "#f0a500" if sc and sc>45 else "#e03c3c"
