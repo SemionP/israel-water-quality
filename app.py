@@ -737,7 +737,6 @@ if mode == MODE_ISRAEL:
                     icon_size=(20,20),icon_anchor=(10,10))
             ).add_to(m)
         m.add_child(OnMapWaterLegend())
-        m.add_child(OnMapAtmosphereControl(atm))
         return m
 
     # ── Tab 1: Water Quality Index ─────────────────────────────────────────────
@@ -775,57 +774,125 @@ if mode == MODE_ISRAEL:
 
                 # Build comparison chart for visible beaches
                 if beach_history and visible_beaches:
-                    st.markdown("#### 📈 7-Day WQI Comparison")
-                    st.caption(f"Showing {len(visible_beaches)} beaches in current view")
+                    import json as _json
 
-                    # Build multi-column DataFrame
-                    chart_rows = {}
+                    all_dates = sorted(set(
+                        e["date"] for name in visible_beaches
+                        for e in beach_history.get(name, [])
+                    ))
+
+                    def _get_current(name):
+                        if df is not None and not df.empty:
+                            row = df[df["name"]==name]
+                            if not row.empty and row["wqi"].iloc[0]:
+                                return row["wqi"].iloc[0]
+                        hist_vals = [e["wqi"] for e in beach_history.get(name,[]) if e["wqi"]]
+                        return hist_vals[-1] if hist_vals else None
+
+                    PALETTE = ["#1D9E75","#378ADD","#7F77DD","#BA7517","#D4537E","#E24B4A","#639922","#D85A30"]
+                    beach_colors = {name: PALETTE[i % len(PALETTE)] for i,name in enumerate(visible_beaches)}
+                    current_vals = {n: _get_current(n) for n in visible_beaches}
+                    valid_vals   = {n:v for n,v in current_vals.items() if v}
+                    best  = max(valid_vals, key=valid_vals.get) if valid_vals else None
+                    worst = min(valid_vals, key=valid_vals.get) if valid_vals else None
+
+                    datasets = []
                     for name in visible_beaches:
-                        hist = beach_history.get(name, [])
-                        for entry in hist:
-                            d = entry["date"]
-                            if d not in chart_rows:
-                                chart_rows[d] = {}
-                            if entry["wqi"] is not None:
-                                chart_rows[d][name] = entry["wqi"]
+                        hist_map = {e["date"]:e["wqi"] for e in beach_history.get(name,[])}
+                        data = [hist_map.get(d) for d in all_dates]
+                        datasets.append({
+                            "label": name,
+                            "data": data,
+                            "borderColor": beach_colors[name],
+                            "borderDash": [5,3] if (valid_vals.get(name,100) or 100) < 30 else [],
+                        })
 
-                    if chart_rows:
-                        chart_df = pd.DataFrame(chart_rows).T.sort_index()
-                        chart_df.index = pd.to_datetime(chart_df.index).strftime("%b %d")
-                        # Shorten names for chart
-                        chart_df.columns = [n.replace(" Center","").replace(" North","N") for n in chart_df.columns]
-                        st.line_chart(chart_df, height=320, use_container_width=True)
+                    legend_items = []
+                    for name in visible_beaches:
+                        v   = current_vals.get(name)
+                        col = "#1ecb7b" if v and v>=70 else "#f0a500" if v and v>=55 else "#e03c3c" if v else "#888"
+                        legend_items.append({
+                            "name": name,
+                            "color": beach_colors[name],
+                            "wqi": round(v,1) if v else "---",
+                            "wqiColor": col,
+                        })
 
-                        # Summary table — use df or last history value
-                        st.markdown("---")
-                        st.caption("Latest values")
-                        def _st2(s):
-                            try: v=float(s)
-                            except: return "❓"
-                            return "🟢" if v>=70 else "🟡" if v>=55 else "🔴"
-                        rows = []
-                        for name in visible_beaches:
-                            # Try df first, fallback to last history value
-                            wqi_val = None
-                            if df is not None and not df.empty:
-                                row = df[df["name"]==name]
-                                if not row.empty:
-                                    wqi_val = row["wqi"].iloc[0]
-                            if wqi_val is None and name in beach_history:
-                                hist_vals = [e["wqi"] for e in beach_history[name] if e["wqi"]]
-                                if hist_vals:
-                                    wqi_val = hist_vals[-1]
-                            rows.append({
-                                "●": _st2(wqi_val),
-                                "Beach": name,
-                                "WQI": round(wqi_val,1) if wqi_val else "—"
-                            })
-                        if rows:
-                            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-                    else:
-                        st.caption("Loading history...")
+                    chart_json  = _json.dumps(datasets)
+                    labels_json = _json.dumps([d[5:] for d in all_dates])
+                    legend_json = _json.dumps(legend_items)
+                    best_name   = best or "---"
+                    best_val    = round(valid_vals[best],1) if best else "---"
+                    worst_name  = worst or "---"
+                    worst_val   = round(valid_vals[worst],1) if worst else "---"
+                    n_beaches   = len(visible_beaches)
+
+                    st.markdown(f"""
+<div style="padding:0.25rem 0 0.5rem;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+    <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · 7 ימים · Sentinel-3</p>
+    <p style="font-size:11px;color:#7fb3d3;margin:0;">{n_beaches} חופים</p>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">
+    <div style="background:rgba(30,203,123,0.08);border:1px solid rgba(30,203,123,0.25);border-radius:6px;padding:8px 10px;">
+      <p style="font-size:10px;color:#7fb3d3;margin:0 0 1px;">הכי נקי</p>
+      <p style="font-size:13px;font-weight:600;margin:0;color:#1ecb7b;">{best_name}</p>
+      <p style="font-size:11px;color:#7fb3d3;margin:0;">{best_val}</p>
+    </div>
+    <div style="background:rgba(224,60,60,0.08);border:1px solid rgba(224,60,60,0.25);border-radius:6px;padding:8px 10px;">
+      <p style="font-size:10px;color:#7fb3d3;margin:0 0 1px;">דורש תשומת לב</p>
+      <p style="font-size:13px;font-weight:600;margin:0;color:#e03c3c;">{worst_name}</p>
+      <p style="font-size:11px;color:#7fb3d3;margin:0;">{worst_val}</p>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;align-items:flex-start;">
+    <div style="position:relative;flex:1;height:240px;">
+      <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches"></canvas>
+    </div>
+    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:space-around;height:240px;min-width:100px;"></div>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+(function(){{
+  var ds={chart_json};
+  var lb={labels_json};
+  var lg={legend_json};
+  var dk=matchMedia('(prefers-color-scheme:dark)').matches;
+  var gc=dk?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.06)';
+  var tc=dk?'rgba(255,255,255,0.4)':'rgba(0,0,0,0.4)';
+  ds=ds.map(d=>({{...d,backgroundColor:'transparent',tension:0.35,pointRadius:3,
+    pointBackgroundColor:d.borderColor,borderWidth:2,spanGaps:true}}));
+  new Chart(document.getElementById('beachTrend'),{{
+    type:'line',data:{{labels:lb,datasets:ds}},
+    options:{{responsive:true,maintainAspectRatio:false,
+      plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{label:c=>`${{c.dataset.label}}: ${{c.parsed.y}}`}}}}}},
+      scales:{{
+        x:{{ticks:{{color:tc,font:{{size:10}}}},grid:{{color:gc}}}},
+        y:{{min:1,max:100,
+          ticks:{{color:tc,font:{{size:10}},stepSize:33,
+            callback:v=>v<=1?'מזוהם':v>=67?'נקי':v>=34?'בינוני':''}},
+          grid:{{color:gc}},
+          title:{{display:true,text:'איכות פני המים',color:tc,font:{{size:10}}}}
+        }}
+      }}
+    }}
+  }});
+  var el=document.getElementById('beachLegend');
+  lg.forEach(function(item){{
+    var r=document.createElement('div');
+    r.style.cssText='display:flex;align-items:center;gap:5px;';
+    r.innerHTML=`<span style="width:16px;height:2px;background:${{item.color}};flex-shrink:0;border-radius:1px;"></span>
+      <span style="font-size:10px;color:#7fb3d3;flex:1;">${{item.name}}</span>
+      <span style="font-size:11px;font-weight:600;color:${{item.wqiColor}};">${{item.wqi}}</span>`;
+    el.appendChild(r);
+  }});
+}})();
+</script>
+""", unsafe_allow_html=True)
                 else:
                     st.caption("Zoom in to see beach comparison")
+
 
     # ── Tab 2: MEDI Risk Assessment ───────────────────────────────────────────
     with tab_medi:
