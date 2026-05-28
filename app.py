@@ -491,15 +491,15 @@ def process_israel_wqi(target_date_str):
     with ThreadPoolExecutor(max_workers=4) as ex: pts=list(ex.map(_pt,BEACHES))
     return wqi, pd.DataFrame(pts), None, round(age_hours, 1)
 
-@st.cache_data(ttl=10800)
+@st.cache_data(ttl=14400)
 def compute_beach_history_7d():
     """
-    Compute WQI for each beach for each available S3 date in last 7 days.
+    Compute WQI for each beach for each available date in last 14 days.
     Returns dict: {beach_name: [{date, wqi}, ...]}
     All dates computed in parallel per-beach via ThreadPoolExecutor.
     """
     end   = datetime.utcnow()
-    start = end - timedelta(days=8)
+    start = end - timedelta(days=15)
     wide  = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
     wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
 
@@ -514,7 +514,7 @@ def compute_beach_history_7d():
         s3_dates.add(datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d"))
 
     # All dates = S3 + every day in range (MODIS fallback)
-    days_back = 8
+    days_back = 15
     all_day_dates = [(end - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_back)]
     seen_dates = set()
     date_ts = []
@@ -796,8 +796,19 @@ if mode == MODE_ISRAEL:
                     visible_beaches = [b["name"] for b in BEACHES]
 
                 # Build comparison chart for visible beaches
-                if beach_history and visible_beaches:
+                if visible_beaches:
                     import json as _json
+
+                    # Add current df as latest data point if history missing
+                    if df is not None and not df.empty:
+                        for _, row in df.iterrows():
+                            if row["name"] in beach_history and row["wqi"]:
+                                # Add if not already present
+                                existing_dates = {e["date"] for e in beach_history[row["name"]]}
+                                if sel_date not in existing_dates:
+                                    beach_history[row["name"]].append({"date": sel_date, "wqi": row["wqi"]})
+                            elif row["name"] not in beach_history and row["wqi"]:
+                                beach_history[row["name"]] = [{"date": sel_date, "wqi": row["wqi"]}]
 
                     all_dates = sorted(set(
                         e["date"] for name in visible_beaches
