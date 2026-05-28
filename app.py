@@ -791,23 +791,37 @@ if mode == MODE_ISRAEL:
 
                     if chart_rows:
                         chart_df = pd.DataFrame(chart_rows).T.sort_index()
-                        chart_df.index = pd.to_datetime(chart_df.index)
+                        chart_df.index = pd.to_datetime(chart_df.index).strftime("%b %d")
                         # Shorten names for chart
                         chart_df.columns = [n.replace(" Center","").replace(" North","N") for n in chart_df.columns]
                         st.line_chart(chart_df, height=320, use_container_width=True)
 
-                        # Summary table below chart
+                        # Summary table — use df or last history value
                         st.markdown("---")
-                        st.caption("Current values")
-                        if df is not None and not df.empty:
-                            vis_df = df[df["name"].isin(visible_beaches)][["name","wqi"]].copy()
-                            def _st2(s):
-                                try: v=float(s)
-                                except: return "❓"
-                                return "🟢" if v>=70 else "🟡" if v>=55 else "🔴"
-                            vis_df["●"] = vis_df["wqi"].apply(_st2)
-                            vis_df = vis_df.rename(columns={"name":"Beach","wqi":"WQI"})
-                            st.dataframe(vis_df[["●","Beach","WQI"]], use_container_width=True, hide_index=True)
+                        st.caption("Latest values")
+                        def _st2(s):
+                            try: v=float(s)
+                            except: return "❓"
+                            return "🟢" if v>=70 else "🟡" if v>=55 else "🔴"
+                        rows = []
+                        for name in visible_beaches:
+                            # Try df first, fallback to last history value
+                            wqi_val = None
+                            if df is not None and not df.empty:
+                                row = df[df["name"]==name]
+                                if not row.empty:
+                                    wqi_val = row["wqi"].iloc[0]
+                            if wqi_val is None and name in beach_history:
+                                hist_vals = [e["wqi"] for e in beach_history[name] if e["wqi"]]
+                                if hist_vals:
+                                    wqi_val = hist_vals[-1]
+                            rows.append({
+                                "●": _st2(wqi_val),
+                                "Beach": name,
+                                "WQI": round(wqi_val,1) if wqi_val else "—"
+                            })
+                        if rows:
+                            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
                     else:
                         st.caption("Loading history...")
                 else:
