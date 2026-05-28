@@ -503,47 +503,67 @@ def compute_beach_history_7d():
     wide  = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
     wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
 
-    # Get available S3 dates
-    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-            .filterBounds(wide)
-            .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-            .sort("system:time_start", False))
-    ts_list = coll.aggregate_array("system:time_start").getInfo()
-    if not ts_list:
-        return {}
+    # Get S3 dates
+    s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+               .filterBounds(wide)
+               .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+               .sort("system:time_start", False))
+    s3_ts_list = s3_coll.aggregate_array("system:time_start").getInfo()
+    s3_dates = set()
+    for ts in s3_ts_list:
+        s3_dates.add(datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d"))
 
-    # Deduplicate dates (keep one per calendar day)
+    # All dates = S3 + every day in range (MODIS fallback)
+    all_day_dates = [(end - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_back)]
     seen_dates = set()
     date_ts = []
-    for ts in ts_list:
-        d = datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d")
+    for d in all_day_dates:
         if d not in seen_dates:
             seen_dates.add(d)
-            date_ts.append((d, ts))
+            date_ts.append((d, "S3" if d in s3_dates else "MODIS"))
 
-    def _wqi_for_date(date_str):
-        """Compute WQI image for one date."""
+    if not date_ts:
+        return {}
+
+    def _wqi_for_date(args):
+        """Compute WQI image for one date — S3 preferred, MODIS fallback."""
+        date_str, source = args
         try:
-            t   = ee.Date(date_str)
-            img = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                   .filterBounds(HAIFA_BBOX)
-                   .filterDate(t.advance(-1,"day"), t.advance(1,"day"))
-                   .median().clip(ISRAEL_CLIP).updateMask(wm))
-            ndwi = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
-            b10,b11,b12 = (img.select("Oa10_radiance"),
-                           img.select("Oa11_radiance"),
-                           img.select("Oa12_radiance"))
-            mci  = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
-            turb = img.select("Oa08_radiance")
-            raw  = (ndwi.unitScale(-0.2,0.5).clamp(0,1)
-                    .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
-                    .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
-                    .divide(3).multiply(100).rename("WQI"))
-            wqi  = raw.reduceNeighborhood(
-                reducer=ee.Reducer.mean(),
-                kernel=ee.Kernel.square(radius=1, units="pixels")
-            ).rename("WQI").updateMask(wm)
-            return date_str, wqi
+            t = ee.Date(date_str)
+            if source == "S3":
+                coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                        .filterBounds(HAIFA_BBOX)
+                        .filterDate(t.advance(-1,"day"), t.advance(1,"day")))
+                if coll.size().getInfo() == 0:
+                    source = "MODIS"
+                else:
+                    img  = coll.median().clip(ISRAEL_CLIP).updateMask(wm)
+                    ndwi = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
+                    b10,b11,b12 = img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
+                    mci  = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
+                    turb = img.select("Oa08_radiance")
+                    raw  = (ndwi.unitScale(-0.2,0.5).clamp(0,1)
+                            .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
+                            .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
+                            .divide(3).multiply(100).rename("WQI"))
+                    wqi  = raw.reduceNeighborhood(
+                        reducer=ee.Reducer.mean(),
+                        kernel=ee.Kernel.square(radius=1,units="pixels")
+                    ).rename("WQI").updateMask(wm)
+                    return date_str, wqi
+            if source == "MODIS":
+                qa    = ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(HAIFA_BBOX).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
+                if qa.size().getInfo() == 0:
+                    return date_str, None
+                img_m = qa.sort("system:time_start",False).first()
+                clear = img_m.select("state_1km").bitwiseAnd(0b11).eq(0)
+                img_m = img_m.updateMask(clear).updateMask(wm)
+                b1,b2,b4 = img_m.select("sur_refl_b01"),img_m.select("sur_refl_b02"),img_m.select("sur_refl_b04")
+                ndwi_n = b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3,0.3).clamp(0,1)
+                chl_n  = b4.divide(b1.add(1e-6)).unitScale(0.8,2.5).clamp(0,1)
+                turb_n = ee.Image(1).subtract(b1.unitScale(0,1500)).clamp(0,1)
+                wqi    = ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm)
+                return date_str, wqi
         except:
             return date_str, None
 
@@ -752,23 +772,25 @@ if mode == MODE_ISRAEL:
                     _build_map(),
                     use_container_width=True, height=680,
                     key="israel_map_wqi",
-                    returned_objects=["bounds", "zoom"]
+                    returned_objects=["bounds"]
                 )
 
             with col_info:
                 # Detect which beaches are visible in current map bounds
                 bounds = map_data_wqi.get("bounds") if map_data_wqi else None
-                if bounds:
-                    sw = bounds.get("_southWest", {})
-                    ne = bounds.get("_northEast", {})
+                if bounds and bounds.get("_southWest") and bounds.get("_northEast"):
+                    sw = bounds["_southWest"]
+                    ne = bounds["_northEast"]
                     lat_min = sw.get("lat", 29.0)
                     lat_max = ne.get("lat", 34.0)
                     lon_min = sw.get("lng", 34.0)
                     lon_max = ne.get("lng", 36.0)
-                    visible_beaches = [
+                    filtered = [
                         b["name"] for b in BEACHES
                         if lat_min <= b["lat"] <= lat_max and lon_min <= b["lon"] <= lon_max
                     ]
+                    # Show all if filter returns too few
+                    visible_beaches = filtered if len(filtered) >= 2 else [b["name"] for b in BEACHES]
                 else:
                     visible_beaches = [b["name"] for b in BEACHES]
 
