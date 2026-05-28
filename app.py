@@ -345,7 +345,7 @@ def get_modis_sst_anomaly(target_date_str):
     anomaly = today SST - 30-day mean SST
     Returns: ee.Image with band 'SST_anomaly' (degrees C) + scalar mean anomaly
     """
-    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
     t   = ee.Date(target_date_str)
 
     # Today SST (LST_Day_1km in Kelvin × 0.02 → Celsius)
@@ -390,7 +390,7 @@ def process_modis_wqi(target_date_str):
     Used as fallback when S3 not available, or as supplement.
     Returns: (wqi_layer, df_beaches, error, age_hours, source_label)
     """
-    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
     t  = ee.Date(target_date_str)
     # Merge Terra (MOD) + Aqua (MYD) for better daily coverage
     now_m = datetime.utcnow()
@@ -449,7 +449,7 @@ def process_modis_wqi(target_date_str):
 @st.cache_data(ttl=21600)
 def process_israel_s2(target_date_str):
     """Sentinel-2 MSI SR — 10m WQI for Israel coast. Always uses latest available."""
-    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
     now  = datetime.utcnow()
     end  = ee.Date(now.strftime("%Y-%m-%d")).advance(1,"day")
     start= ee.Date((now - timedelta(days=10)).strftime("%Y-%m-%d"))
@@ -522,7 +522,7 @@ def get_available_dates_combined(days_back=7):
 
 @st.cache_data(ttl=7200)
 def process_israel_wqi(target_date_str):
-    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
     t=ee.Date(target_date_str)
     coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(HAIFA_BBOX)
           .filterDate(t.advance(-2,'day'),t.advance(1,'day')))
@@ -558,7 +558,7 @@ def compute_beach_history_7d():
     end   = datetime.utcnow()
     start = end - timedelta(days=15)
     wide  = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
-    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
 
     # Get S3 dates
     s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
@@ -608,7 +608,7 @@ def compute_beach_history_7d():
                            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",30))
                            .sort("system:time_start",False))
                     if s2c.size().getInfo() == 0: return date_str, None
-                    im2 = s2c.first().updateMask(ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25))
+                    im2 = s2c.first().updateMask(ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60))
                     b3,b4,b5,b8,b8a=(im2.select("B3").divide(10000),im2.select("B4").divide(10000),
                                      im2.select("B5").divide(10000),im2.select("B8").divide(10000),im2.select("B8A").divide(10000))
                     ndwi_n=b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
@@ -696,7 +696,7 @@ def process_port_medi(port_key, target_date_str):
     """Compute WQI + SST anomaly for a specific port zone."""
     port = PORTS[port_key]
     bbox = port["bbox"]
-    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
     t    = ee.Date(target_date_str)
 
     # S3 WQI
@@ -747,7 +747,7 @@ def process_port_medi(port_key, target_date_str):
 def get_global_wqi_layer(target_date_str, bbox_rect):
     lon_min,lat_min,lon_max,lat_max=bbox_rect
     bbox=ee.Geometry.Rectangle([lon_min,lat_min,lon_max,lat_max])
-    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
     t=ee.Date(target_date_str)
     coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(bbox)
           .filterDate(t.advance(-1,'day'),t.advance(1,'day')))
@@ -793,7 +793,7 @@ def compute_beach_history_range(days_back: int):
     end   = datetime.utcnow()
     start = end - timedelta(days=days_back+1)
     wide  = ee.Geometry.Rectangle([34.0,29.0,36.0,33.5])
-    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(60)
 
     s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
                .filterBounds(wide)
@@ -947,7 +947,7 @@ if mode == MODE_ISRAEL:
     # Shared map builder
     def _build_map(selected_beach=None):
         m = folium.Map(location=[32.4, 34.85], zoom_start=8)
-        vis = {'min':40,'max':85,'palette':['#FF0000','#FFFF00','#00FF00']}
+        vis = {'min':30,'max':90,'palette':['#08306b','#08519c','#2171b5','#4292c6','#74c476','#41ab5d','#238b45','#006d2c']}
         try:
             mid = ee.Image(wqi_layer).getMapId(vis)
             folium.TileLayer(tiles=mid['tile_fetcher'].url_format,
