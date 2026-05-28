@@ -384,6 +384,92 @@ def get_modis_sst_anomaly(target_date_str):
 
 
 @st.cache_data(ttl=7200)
+def process_modis_wqi(target_date_str):
+    """
+    MODIS MOD09GA — daily 250-500m WQI for Israel coast.
+    Used as fallback when S3 not available, or as supplement.
+    Returns: (wqi_layer, df_beaches, error, age_hours, source_label)
+    """
+    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    t  = ee.Date(target_date_str)
+    coll = (ee.ImageCollection("MODIS/061/MOD09GA")
+            .filterBounds(HAIFA_BBOX)
+            .filterDate(t.advance(-1,"day"), t.advance(1,"day")))
+    if coll.size().getInfo() == 0:
+        return None, None, "No MODIS data for this date.", None, "MODIS"
+
+    img_first   = coll.sort("system:time_start", False).first()
+    img_time_ms = img_first.get("system:time_start").getInfo()
+    img_dt      = datetime.utcfromtimestamp(img_time_ms / 1000)
+    age_hours   = (datetime.utcnow() - img_dt).total_seconds() / 3600
+
+    # Cloud mask: bits 0-1 of state_1km == 0 (clear)
+    qa    = img_first.select("state_1km")
+    clear = qa.bitwiseAnd(0b11).eq(0)
+    img   = img_first.updateMask(clear).updateMask(wm)
+
+    b1 = img.select("sur_refl_b01")  # 645nm red
+    b2 = img.select("sur_refl_b02")  # 859nm NIR
+    b4 = img.select("sur_refl_b04")  # 545nm green
+
+    ndwi_n = b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3, 0.3).clamp(0, 1)
+    chl_n  = b4.divide(b1.add(1e-6)).unitScale(0.8, 2.5).clamp(0, 1)
+    turb_n = ee.Image(1).subtract(b1.unitScale(0, 1500)).clamp(0, 1)
+
+    raw = ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).rename("WQI")
+    wqi = raw.clip(ISRAEL_CLIP).updateMask(wm)
+
+    def _pt(pt):
+        try:
+            v  = wqi.reduceRegion(
+                reducer=ee.Reducer.mean(),
+                geometry=ee.Geometry.Point([pt["lon"], pt["lat"]]).buffer(500),
+                scale=500, bestEffort=True).getInfo()
+            wv = v.get("WQI")
+            return {**pt, "wqi": round(wv, 1) if wv else None}
+        except:
+            return {**pt, "wqi": None}
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        pts = list(ex.map(_pt, BEACHES))
+
+    return wqi, pd.DataFrame(pts), None, round(age_hours, 1), "MODIS"
+
+
+@st.cache_data(ttl=3600)
+def get_available_dates_combined(days_back=10):
+    """Returns list of dicts: {date, source} for S3 and MODIS."""
+    end   = datetime.utcnow()
+    start = end - timedelta(days=days_back)
+    wide  = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
+    date_fmt = "%Y-%m-%d"
+
+    # S3 dates
+    s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+               .filterBounds(wide)
+               .filterDate(start.strftime(date_fmt), end.strftime(date_fmt)))
+    s3_ts = s3_coll.aggregate_array("system:time_start").getInfo()
+    s3_dates = set(datetime.utcfromtimestamp(d/1000).strftime(date_fmt) for d in s3_ts)
+
+    # MODIS dates (daily — generate last 10 days)
+    modis_coll = (ee.ImageCollection("MODIS/061/MOD09GA")
+                  .filterBounds(wide)
+                  .filterDate(start.strftime(date_fmt), end.strftime(date_fmt)))
+    mod_ts = modis_coll.aggregate_array("system:time_start").getInfo()
+    mod_dates = set(datetime.utcfromtimestamp(d/1000).strftime(date_fmt) for d in mod_ts)
+
+    # Combine — prefer S3 where available
+    all_dates = sorted(s3_dates | mod_dates, reverse=True)
+    result = []
+    for d in all_dates:
+        if d in s3_dates:
+            result.append({"date": d, "source": "S3", "label": f"🛰️ {d} · S3"})
+        else:
+            result.append({"date": d, "source": "MODIS", "label": f"📡 {d} · MODIS"})
+    return result
+
+
+@st.cache_data(ttl=7200)
 def process_israel_wqi(target_date_str):
     wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
     t=ee.Date(target_date_str)
@@ -506,17 +592,31 @@ medi_profile = "Beach Safety"  # default
 if mode == MODE_ISRAEL:
     # Date selector
     with st.spinner("Loading available dates..."):
-        dates = get_available_s3_dates()
-    if dates:
-        sel_date = st.sidebar.selectbox("Select acquisition date:", [f"🟢 {d}" for d in dates]).replace("🟢 ","")
+        date_options = get_available_dates_combined()
+    if date_options:
+        labels   = [d["label"] for d in date_options]
+        sel_label= st.sidebar.selectbox("Select acquisition date:", labels)
+        sel_entry= next(d for d in date_options if d["label"]==sel_label)
+        sel_date = sel_entry["date"]
+        sel_src  = sel_entry["source"]
     else:
         sel_date = (datetime.utcnow()-timedelta(days=1)).strftime('%Y-%m-%d')
+        sel_src  = "S3"
 
     # ── Tab selector ──────────────────────────────────────────────────────────
     tab_wqi, tab_medi, tab_ports, tab_compare = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment", "🚢 Port MEDI", "⚖️ Port Comparison"])
 
-    with st.spinner("Computing WQI from Sentinel-3..."):
-        wqi_layer, df, err, img_age_hours = process_israel_wqi(sel_date)
+    with st.spinner("Computing WQI..."):
+        if sel_src == "MODIS":
+            wqi_layer, df, err, img_age_hours, data_source = process_modis_wqi(sel_date)
+        else:
+            wqi_layer, df, err, img_age_hours = process_israel_wqi(sel_date)
+            data_source = "Sentinel-3"
+            # Fallback to MODIS if S3 fails
+            if err:
+                wqi_layer, df, err2, img_age_hours, data_source = process_modis_wqi(sel_date)
+                if not err2:
+                    err = None
 
     if err:
         st.error(err)
