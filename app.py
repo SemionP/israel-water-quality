@@ -687,7 +687,7 @@ if mode == MODE_ISRAEL:
         sel_src  = "S3"
 
     # ── Tab selector ──────────────────────────────────────────────────────────
-    tab_wqi, tab_medi, tab_ports, tab_compare = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment", "🚢 Port MEDI", "⚖️ Port Comparison"])
+    tab_wqi, tab_medi = st.tabs(["🌊 Water Quality Index", "⬡ MEDI Risk Assessment"])
 
     with st.spinner("Computing WQI..."):
         if sel_src == "MODIS":
