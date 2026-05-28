@@ -747,39 +747,71 @@ if mode == MODE_ISRAEL:
         elif wqi_layer is not None:
             src_icon = "🛰️" if sel_src == "S3" else "📡"
             st.caption(f"{src_icon} Latest data: **{sel_date}** · Source: **{data_source}** · Age: **{img_age_hours:.0f}h**")
-            col_map, col_info = st.columns([3.0, 1.0])
+            col_map, col_info = st.columns([2.8, 2.2])
             with col_map:
-                st_folium(_build_map(), use_container_width=True, height=680, key="israel_map_wqi", returned_objects=[])
-            with col_info:
-                st.markdown("#### 🏖️ Station Status")
-                if df is not None and not df.empty:
-                    def _st(s):
-                        try: v=float(s)
-                        except: return "❓ N/A"
-                        return "🟢 Clean" if v>=70 else "🟡 Moderate" if v>=55 else "🔴 Polluted"
-                    df_d = df[["name","wqi"]].copy()
-                    df_d["Status"] = df_d["wqi"].apply(_st)
-                    df_d = df_d.rename(columns={"name":"Station","wqi":"WQI"})
-                    st.dataframe(df_d[["Station","WQI","Status"]], use_container_width=True, hide_index=True)
+                map_data_wqi = st_folium(
+                    _build_map(),
+                    use_container_width=True, height=680,
+                    key="israel_map_wqi",
+                    returned_objects=["bounds", "zoom"]
+                )
 
-                # 7-day trend for selected beach
-                clicked_beach = st.session_state.get("selected_beach")
-                if clicked_beach and beach_history and clicked_beach in beach_history:
-                    hist = beach_history[clicked_beach]
-                    hist_df = pd.DataFrame(hist).dropna(subset=["wqi"])
-                    if not hist_df.empty:
-                        st.markdown(f"#### 📈 {clicked_beach}")
-                        st.caption("WQI — last 7 days")
-                        hist_df["date"] = pd.to_datetime(hist_df["date"])
-                        hist_df = hist_df.set_index("date")
-                        st.line_chart(hist_df["wqi"], height=180, use_container_width=True)
-                        # Trend indicator
-                        if len(hist_df) >= 2:
-                            delta = hist_df["wqi"].iloc[-1] - hist_df["wqi"].iloc[0]
-                            ti = "📈" if delta > 2 else "📉" if delta < -2 else "➡️"
-                            st.caption(f"{ti} {delta:+.1f} pts over {len(hist_df)} passes")
-                elif not clicked_beach:
-                    st.caption("👆 Click a beach to see 7-day trend")
+            with col_info:
+                # Detect which beaches are visible in current map bounds
+                bounds = map_data_wqi.get("bounds") if map_data_wqi else None
+                if bounds:
+                    sw = bounds.get("_southWest", {})
+                    ne = bounds.get("_northEast", {})
+                    lat_min = sw.get("lat", 29.0)
+                    lat_max = ne.get("lat", 34.0)
+                    lon_min = sw.get("lng", 34.0)
+                    lon_max = ne.get("lng", 36.0)
+                    visible_beaches = [
+                        b["name"] for b in BEACHES
+                        if lat_min <= b["lat"] <= lat_max and lon_min <= b["lon"] <= lon_max
+                    ]
+                else:
+                    visible_beaches = [b["name"] for b in BEACHES]
+
+                # Build comparison chart for visible beaches
+                if beach_history and visible_beaches:
+                    st.markdown("#### 📈 7-Day WQI Comparison")
+                    st.caption(f"Showing {len(visible_beaches)} beaches in current view")
+
+                    # Build multi-column DataFrame
+                    chart_rows = {}
+                    for name in visible_beaches:
+                        hist = beach_history.get(name, [])
+                        for entry in hist:
+                            d = entry["date"]
+                            if d not in chart_rows:
+                                chart_rows[d] = {}
+                            if entry["wqi"] is not None:
+                                chart_rows[d][name] = entry["wqi"]
+
+                    if chart_rows:
+                        chart_df = pd.DataFrame(chart_rows).T.sort_index()
+                        chart_df.index = pd.to_datetime(chart_df.index)
+                        # Shorten names for chart
+                        chart_df.columns = [n.replace(" Center","").replace(" North","N") for n in chart_df.columns]
+                        st.line_chart(chart_df, height=320, use_container_width=True)
+
+                        # Summary table below chart
+                        st.markdown("---")
+                        st.caption("Current values")
+                        if df is not None and not df.empty:
+                            vis_df = df[df["name"].isin(visible_beaches)][["name","wqi"]].copy()
+                            def _st2(s):
+                                try: v=float(s)
+                                except: return "❓"
+                                return "🟢" if v>=70 else "🟡" if v>=55 else "🔴"
+                            vis_df["●"] = vis_df["wqi"].apply(_st2)
+                            vis_df = vis_df.rename(columns={"name":"Beach","wqi":"WQI"})
+                            st.dataframe(vis_df[["●","Beach","WQI"]], use_container_width=True, hide_index=True)
+                    else:
+                        st.caption("Loading history...")
+                else:
+                    st.caption("Zoom in to see beach comparison")
 
     # ── Tab 2: MEDI Risk Assessment ───────────────────────────────────────────
     with tab_medi:
