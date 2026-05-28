@@ -665,10 +665,9 @@ def haversine_km(lat1,lon1,lat2,lon2):
 # =============================================================================
 # UI
 # =============================================================================
-st.sidebar.markdown("### 🔧 Mission Parameters")
 MODE_ISRAEL = "🏖️ Israel Coast"
 MODE_GLOBAL = "🌍 Global"
-mode = st.sidebar.selectbox("Select monitoring zone:", [MODE_ISRAEL, MODE_GLOBAL])
+mode = st.sidebar.selectbox("📡 Monitoring zone:", [MODE_ISRAEL, MODE_GLOBAL])
 
 # Risk profile shown in MEDI tab only — initialized here for session state
 medi_profile = "Beach Safety"  # default
@@ -676,14 +675,13 @@ medi_profile = "Beach Safety"  # default
 # ── Israel Coast ──────────────────────────────────────────────────────────────
 if mode == MODE_ISRAEL:
     # Date selector
-    with st.spinner("Loading available dates..."):
+    # Auto-select latest available date
+    with st.spinner("Finding latest satellite data..."):
         date_options = get_available_dates_combined()
     if date_options:
-        labels   = [d["label"] for d in date_options]
-        sel_label= st.sidebar.selectbox("Select acquisition date:", labels)
-        sel_entry= next(d for d in date_options if d["label"]==sel_label)
-        sel_date = sel_entry["date"]
-        sel_src  = sel_entry["source"]
+        sel_entry = date_options[0]  # always latest
+        sel_date  = sel_entry["date"]
+        sel_src   = sel_entry["source"]
     else:
         sel_date = (datetime.utcnow()-timedelta(days=1)).strftime('%Y-%m-%d')
         sel_src  = "S3"
@@ -747,6 +745,8 @@ if mode == MODE_ISRAEL:
         if err:
             st.error(err)
         elif wqi_layer is not None:
+            src_icon = "🛰️" if sel_src == "S3" else "📡"
+            st.caption(f"{src_icon} Latest data: **{sel_date}** · Source: **{data_source}** · Age: **{img_age_hours:.0f}h**")
             col_map, col_info = st.columns([3.0, 1.0])
             with col_map:
                 st_folium(_build_map(), use_container_width=True, height=680, key="israel_map_wqi", returned_objects=[])
