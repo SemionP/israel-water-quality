@@ -914,15 +914,26 @@ if mode == MODE_ISRAEL:
         s2_layer,  s2_df,  s2_err,  s2_age,  _        = process_israel_s2(sel_date)
         mod_layer, mod_df, mod_err, mod_age, mod_src   = process_modis_wqi(sel_date)
 
-        # Always pick the freshest satellite — no quality weights
-        candidates = [
-            (s3_age  if (not s3_err  and s3_layer  is not None and s3_age  is not None) else 9999, s3_layer,  s3_df,  s3_age,  "Sentinel-3"),
-            (s2_age  if (not s2_err  and s2_layer  is not None and s2_age  is not None) else 9999, s2_layer,  s2_df,  s2_age,  "Sentinel-2"),
-            (mod_age if (not mod_err and mod_layer is not None and mod_age is not None) else 9999, mod_layer, mod_df, mod_age, mod_src),
-        ]
-        # Sort by age ascending — freshest first
-        candidates.sort(key=lambda x: x[0])
-        _, wqi_layer, df, img_age_hours, data_source = candidates[0]
+        # Build available images list (sorted by age, freshest first)
+        all_candidates = []
+        if not s3_err  and s3_layer  is not None and s3_age  is not None:
+            all_candidates.append((s3_age,  s3_layer,  s3_df,  s3_age,  "S3",    "Sentinel-3"))
+        if not s2_err  and s2_layer  is not None and s2_age  is not None:
+            all_candidates.append((s2_age,  s2_layer,  s2_df,  s2_age,  "S2",    "Sentinel-2"))
+        if not mod_err and mod_layer is not None and mod_age is not None:
+            all_candidates.append((mod_age, mod_layer, mod_df, mod_age, "MOD",   mod_src))
+        all_candidates.sort(key=lambda x: x[0])
+
+        # Navigator state
+        if "img_idx" not in st.session_state or st.session_state.get("img_total") != len(all_candidates):
+            st.session_state.img_idx   = 0
+            st.session_state.img_total = len(all_candidates)
+
+        idx = st.session_state.img_idx
+        if idx >= len(all_candidates): idx = 0
+
+        if all_candidates:
+            _, wqi_layer, df, img_age_hours, _, data_source = all_candidates[idx]
         img_age_hours = img_age_hours if img_age_hours else 99
         err = None
 
@@ -992,10 +1003,37 @@ if mode == MODE_ISRAEL:
             acq_str = acq_dt.strftime("%Y-%m-%d %H:%M UTC")
             top_l, top_r = st.columns([2, 1])
             with top_l:
-                s3_info  = f"S3:{s3_age:.0f}h"  if (not s3_err  and s3_layer)  else "S3:N/A"
-                s2_info  = f"S2:{s2_age:.0f}h"  if (not s2_err  and s2_layer)  else "S2:N/A"
-                mod_info = f"MOD:{mod_age:.0f}h" if (not mod_err and mod_layer) else "MOD:N/A"
-                st.caption(f"תאריך עדכון: **{acq_str}** · **{data_source}** · {img_age_hours:.0f}h ago · [{s3_info} | {s2_info} | {mod_info}]")
+                # Navigator arrows
+                nav_cols = st.columns([1, 6, 1])
+                with nav_cols[0]:
+                    if st.button("◀", key="nav_prev", use_container_width=True):
+                        n = len(all_candidates)
+                        st.session_state.img_idx = (st.session_state.img_idx + 1) % n if n > 0 else 0
+                        st.rerun()
+                with nav_cols[1]:
+                    # Timeline dots
+                    if all_candidates:
+                        dots_html = '<div style="display:flex;align-items:center;gap:4px;padding:4px 0;">'
+                        src_colors = {"S3":"#00c8c8","S2":"#1ecb7b","MOD":"#f0a500"}
+                        for i,(age,_,_,_,short,_) in enumerate(all_candidates):
+                            dt_s = (datetime.utcnow()-timedelta(hours=age)).strftime("%m-%d %H:%M")
+                            is_sel = (i == st.session_state.img_idx)
+                            col_s = src_colors.get(short,"#888")
+                            size  = "14px" if is_sel else "10px"
+                            border= f"3px solid white" if is_sel else "2px solid transparent"
+                            dots_html += f'<div title="{short} · {dt_s}" style="width:{size};height:{size};border-radius:50%;background:{col_s};border:{border};flex-shrink:0;cursor:pointer;"></div>'
+                            if i < len(all_candidates)-1:
+                                dots_html += '<div style="flex:1;height:2px;background:rgba(255,255,255,0.2);"></div>'
+                        dots_html += '</div>'
+                        # Show current selection info
+                        cur = all_candidates[st.session_state.img_idx]
+                        cur_dt = (datetime.utcnow()-timedelta(hours=cur[0])).strftime("%b %d %H:%M UTC")
+                        st.markdown(f'<div style="font-size:11px;color:#7fb3d3;margin-bottom:2px;">{dots_html}<b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</div>', unsafe_allow_html=True)
+                with nav_cols[2]:
+                    if st.button("▶", key="nav_next", use_container_width=True):
+                        n = len(all_candidates)
+                        st.session_state.img_idx = (st.session_state.img_idx - 1) % n if n > 0 else 0
+                        st.rerun()
             with top_r:
                 history_range = st.radio("טווח:", ["7 ימים","חודש","שנה"],
                     horizontal=True, key="history_range", label_visibility="collapsed")
