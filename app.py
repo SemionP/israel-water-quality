@@ -995,11 +995,11 @@ if mode == MODE_ISRAEL:
             history_label = {"7 ימים":"7 ימים","חודש":"30 יום","שנה":"365 יום"}[history_range]
             with st.spinner(f"Loading {history_label}..."):
                 beach_history = compute_beach_history_range(history_days)
-            col_map, col_info = st.columns([1, 1])
+            col_map, col_info = st.columns([1, 1], gap="small")
             with col_map:
                 map_data_wqi = st_folium(
                     _build_map(),
-                    use_container_width=True, height=580,
+                    use_container_width=True, height=650,
                     key="israel_map_wqi",
                     returned_objects=["bounds"]
                 )
@@ -1111,10 +1111,10 @@ if mode == MODE_ISRAEL:
     </div>
   </div>
   <div style="display:flex;gap:10px;align-items:flex-start;">
-    <div style="position:relative;flex:1;min-height:400px;height:calc(100vh - 180px);">
+    <div style="position:relative;flex:1;min-height:500px;height:calc(100vh - 130px);">
       <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches"></canvas>
     </div>
-    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:space-around;min-height:400px;height:calc(100vh - 180px);min-width:110px;"></div>
+    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:space-around;min-height:500px;height:calc(100vh - 130px);min-width:110px;"></div>
   </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -1165,7 +1165,7 @@ if mode == MODE_ISRAEL:
 }})();
 </script></body></html>
 """
-                    components.html(chart_html, height=600, scrolling=False)
+                    components.html(chart_html, height=650, scrolling=False)
                 else:
                     st.caption("Zoom in to see beach comparison")
 
