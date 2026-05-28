@@ -711,15 +711,32 @@ if mode == MODE_ISRAEL:
     # MEDI Platform — single view
 
     with st.spinner("Computing WQI..."):
-        if sel_src == "MODIS":
-            wqi_layer, df, err, img_age_hours, data_source = process_modis_wqi(sel_date)
-        else:
-            wqi_layer, df, err, img_age_hours = process_israel_wqi(sel_date)
-            data_source = "Sentinel-3"
-            if err:
-                wqi_layer, df, err2, img_age_hours, data_source = process_modis_wqi(sel_date)
-                if not err2:
-                    err = None
+        # Always try S3 first for beach point data
+        wqi_layer, df, err, img_age_hours = process_israel_wqi(sel_date)
+        data_source = "Sentinel-3"
+        if err or wqi_layer is None:
+            # Fallback to MODIS for map layer
+            wqi_layer_m, df_m, err_m, img_age_hours_m, data_source_m = process_modis_wqi(sel_date)
+            if not err_m:
+                wqi_layer  = wqi_layer_m
+                data_source= data_source_m
+                img_age_hours = img_age_hours_m
+                err = None
+                # Use MODIS df only if S3 df also empty
+                if (df is None or df.empty) and df_m is not None and not df_m.empty:
+                    df = df_m
+        # Final fallback: try latest available S3 regardless of date
+        if df is None or df.empty:
+            for fallback_days in [3, 5, 7, 10]:
+                fb_date = (datetime.utcnow() - timedelta(days=fallback_days)).strftime('%Y-%m-%d')
+                fb_layer, fb_df, fb_err, fb_age = process_israel_wqi(fb_date)
+                if not fb_err and fb_df is not None and not fb_df.empty:
+                    df = fb_df
+                    if wqi_layer is None:
+                        wqi_layer = fb_layer
+                        img_age_hours = fb_age
+                        data_source = "Sentinel-3"
+                    break
 
     # Load 7-day history in background (cached)
     with st.spinner("Loading 7-day history..."):
