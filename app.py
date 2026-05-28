@@ -442,6 +442,52 @@ def process_modis_wqi(target_date_str):
     return wqi, pd.DataFrame(pts), None, round(age_hours, 1), "MODIS"
 
 
+
+@st.cache_data(ttl=21600)
+def process_israel_s2(target_date_str):
+    """Sentinel-2 MSI SR — 10m WQI for Israel coast."""
+    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+    t   = ee.Date(target_date_str)
+    coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+            .filterBounds(HAIFA_BBOX)
+            .filterDate(t.advance(-5,"day"), t.advance(1,"day"))
+            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+            .sort("system:time_start", False))
+    if coll.size().getInfo() == 0:
+        return None, None, "No Sentinel-2 data.", None, "Sentinel-2"
+    img_first   = coll.first()
+    img_time_ms = img_first.get("system:time_start").getInfo()
+    img_dt      = datetime.utcfromtimestamp(img_time_ms/1000)
+    age_hours   = (datetime.utcnow()-img_dt).total_seconds()/3600
+    water = img_first.select("SCL").eq(6)
+    img   = img_first.updateMask(water).updateMask(wm)
+    b3,b4,b5,b8,b8a = (img.select("B3").divide(10000), img.select("B4").divide(10000),
+                        img.select("B5").divide(10000), img.select("B8").divide(10000),
+                        img.select("B8A").divide(10000))
+    ndwi_n = b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
+    chl_n  = b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1)
+    turb_n = ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1)
+    wqi    = ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).clip(ISRAEL_CLIP).updateMask(wm).rename("WQI")
+    def _pt(pt):
+        try:
+            v  = wqi.reduceRegion(reducer=ee.Reducer.mean(),
+                geometry=ee.Geometry.Point([pt["lon"],pt["lat"]]).buffer(300),
+                scale=10,bestEffort=True).getInfo()
+            wv = v.get("WQI")
+            return {**pt,"wqi":round(wv,1) if wv else None}
+        except: return {**pt,"wqi":None}
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        pts = list(ex.map(_pt,BEACHES))
+    return wqi, pd.DataFrame(pts), None, round(age_hours,1), "Sentinel-2"
+
+
+
+
+
+
+
+
+
 @st.cache_data(ttl=21600)
 def get_available_dates_combined(days_back=7):
     """Returns list of dicts: {date, source} — S3 dates + daily MODIS fallback."""
@@ -1035,45 +1081,5 @@ else:
                     with st.spinner("Loading WQI layer..."):
                         layer,e=get_global_wqi_layer(sel_date,nb)
                         st.session_state.g_layer=layer if not e else None
-                st.rerun()@st.cache_data(ttl=21600)
-def process_israel_s2(target_date_str):
-    """Sentinel-2 MSI SR — 10m WQI for Israel coast."""
-    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
-    t   = ee.Date(target_date_str)
-    coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-            .filterBounds(HAIFA_BBOX)
-            .filterDate(t.advance(-5,"day"), t.advance(1,"day"))
-            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
-            .sort("system:time_start", False))
-    if coll.size().getInfo() == 0:
-        return None, None, "No Sentinel-2 data.", None, "Sentinel-2"
-    img_first   = coll.first()
-    img_time_ms = img_first.get("system:time_start").getInfo()
-    img_dt      = datetime.utcfromtimestamp(img_time_ms/1000)
-    age_hours   = (datetime.utcnow()-img_dt).total_seconds()/3600
-    water = img_first.select("SCL").eq(6)
-    img   = img_first.updateMask(water).updateMask(wm)
-    b3,b4,b5,b8,b8a = (img.select("B3").divide(10000), img.select("B4").divide(10000),
-                        img.select("B5").divide(10000), img.select("B8").divide(10000),
-                        img.select("B8A").divide(10000))
-    ndwi_n = b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
-    chl_n  = b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1)
-    turb_n = ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1)
-    wqi    = ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).clip(ISRAEL_CLIP).updateMask(wm).rename("WQI")
-    def _pt(pt):
-        try:
-            v  = wqi.reduceRegion(reducer=ee.Reducer.mean(),
-                geometry=ee.Geometry.Point([pt["lon"],pt["lat"]]).buffer(300),
-                scale=10,bestEffort=True).getInfo()
-            wv = v.get("WQI")
-            return {**pt,"wqi":round(wv,1) if wv else None}
-        except: return {**pt,"wqi":None}
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        pts = list(ex.map(_pt,BEACHES))
-    return wqi, pd.DataFrame(pts), None, round(age_hours,1), "Sentinel-2"
-
-
-
-
-
+                st.rerun()
 
