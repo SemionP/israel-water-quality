@@ -394,7 +394,7 @@ def process_modis_wqi(target_date_str):
     t  = ee.Date(target_date_str)
     coll = (ee.ImageCollection("MODIS/061/MOD09GA")
             .filterBounds(HAIFA_BBOX)
-            .filterDate(t.advance(-1,"day"), t.advance(1,"day")))
+            .filterDate(t.advance(-3,"day"), t.advance(1,"day")))
     if coll.size().getInfo() == 0:
         return None, None, "No MODIS data for this date.", None, "MODIS"
 
@@ -490,6 +490,97 @@ def process_israel_wqi(target_date_str):
         except: return {**pt,"wqi":None}
     with ThreadPoolExecutor(max_workers=4) as ex: pts=list(ex.map(_pt,BEACHES))
     return wqi, pd.DataFrame(pts), None, round(age_hours, 1)
+
+@st.cache_data(ttl=10800)
+def compute_beach_history_7d():
+    """
+    Compute WQI for each beach for each available S3 date in last 7 days.
+    Returns dict: {beach_name: [{date, wqi}, ...]}
+    All dates computed in parallel per-beach via ThreadPoolExecutor.
+    """
+    end   = datetime.utcnow()
+    start = end - timedelta(days=8)
+    wide  = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
+    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
+
+    # Get available S3 dates
+    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+            .filterBounds(wide)
+            .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+            .sort("system:time_start", False))
+    ts_list = coll.aggregate_array("system:time_start").getInfo()
+    if not ts_list:
+        return {}
+
+    # Deduplicate dates (keep one per calendar day)
+    seen_dates = set()
+    date_ts = []
+    for ts in ts_list:
+        d = datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d")
+        if d not in seen_dates:
+            seen_dates.add(d)
+            date_ts.append((d, ts))
+
+    def _wqi_for_date(date_str):
+        """Compute WQI image for one date."""
+        try:
+            t   = ee.Date(date_str)
+            img = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                   .filterBounds(HAIFA_BBOX)
+                   .filterDate(t.advance(-1,"day"), t.advance(1,"day"))
+                   .median().clip(ISRAEL_CLIP).updateMask(wm))
+            ndwi = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
+            b10,b11,b12 = (img.select("Oa10_radiance"),
+                           img.select("Oa11_radiance"),
+                           img.select("Oa12_radiance"))
+            mci  = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
+            turb = img.select("Oa08_radiance")
+            raw  = (ndwi.unitScale(-0.2,0.5).clamp(0,1)
+                    .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
+                    .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
+                    .divide(3).multiply(100).rename("WQI"))
+            wqi  = raw.reduceNeighborhood(
+                reducer=ee.Reducer.mean(),
+                kernel=ee.Kernel.square(radius=1, units="pixels")
+            ).rename("WQI").updateMask(wm)
+            return date_str, wqi
+        except:
+            return date_str, None
+
+    def _sample_beach_on_wqi(args):
+        beach, date_str, wqi = args
+        if wqi is None:
+            return beach["name"], date_str, None
+        try:
+            v  = wqi.reduceRegion(
+                reducer=ee.Reducer.mean(),
+                geometry=ee.Geometry.Point([beach["lon"], beach["lat"]]).buffer(450),
+                scale=300, bestEffort=True).getInfo()
+            wv = v.get("WQI")
+            return beach["name"], date_str, round(wv, 1) if wv else None
+        except:
+            return beach["name"], date_str, None
+
+    # Compute WQI images for all dates (up to 4 in parallel)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        wqi_images = dict(ex.map(lambda d: _wqi_for_date(d[0]), date_ts))
+
+    # Sample all beaches × all dates
+    tasks = [(b, d, wqi_images.get(d)) for b in BEACHES for d, _ in date_ts]
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        results = list(ex.map(_sample_beach_on_wqi, tasks))
+
+    # Organize into dict
+    history = {b["name"]: [] for b in BEACHES}
+    for beach_name, date_str, wqi_val in results:
+        history[beach_name].append({"date": date_str, "wqi": wqi_val})
+
+    # Sort by date
+    for name in history:
+        history[name] = sorted(history[name], key=lambda x: x["date"])
+
+    return history
+
 
 @st.cache_data(ttl=7200)
 def process_port_medi(port_key, target_date_str):
@@ -606,11 +697,14 @@ if mode == MODE_ISRAEL:
         else:
             wqi_layer, df, err, img_age_hours = process_israel_wqi(sel_date)
             data_source = "Sentinel-3"
-            # Fallback to MODIS if S3 fails
             if err:
                 wqi_layer, df, err2, img_age_hours, data_source = process_modis_wqi(sel_date)
                 if not err2:
                     err = None
+
+    # Load 7-day history in background (cached)
+    with st.spinner("Loading 7-day history..."):
+        beach_history = compute_beach_history_7d()
 
     if err:
         st.error(err)
@@ -663,6 +757,25 @@ if mode == MODE_ISRAEL:
                     df_d["Status"] = df_d["wqi"].apply(_st)
                     df_d = df_d.rename(columns={"name":"Station","wqi":"WQI"})
                     st.dataframe(df_d[["Station","WQI","Status"]], use_container_width=True, hide_index=True)
+
+                # 7-day trend for selected beach
+                clicked_beach = st.session_state.get("selected_beach")
+                if clicked_beach and beach_history and clicked_beach in beach_history:
+                    hist = beach_history[clicked_beach]
+                    hist_df = pd.DataFrame(hist).dropna(subset=["wqi"])
+                    if not hist_df.empty:
+                        st.markdown(f"#### 📈 {clicked_beach}")
+                        st.caption("WQI — last 7 days")
+                        hist_df["date"] = pd.to_datetime(hist_df["date"])
+                        hist_df = hist_df.set_index("date")
+                        st.line_chart(hist_df["wqi"], height=180, use_container_width=True)
+                        # Trend indicator
+                        if len(hist_df) >= 2:
+                            delta = hist_df["wqi"].iloc[-1] - hist_df["wqi"].iloc[0]
+                            ti = "📈" if delta > 2 else "📉" if delta < -2 else "➡️"
+                            st.caption(f"{ti} {delta:+.1f} pts over {len(hist_df)} passes")
+                elif not clicked_beach:
+                    st.caption("👆 Click a beach to see 7-day trend")
 
     # ── Tab 2: MEDI Risk Assessment ───────────────────────────────────────────
     with tab_medi:
