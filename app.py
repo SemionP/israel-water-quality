@@ -392,13 +392,19 @@ def process_modis_wqi(target_date_str):
     """
     wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(25)
     t  = ee.Date(target_date_str)
-    coll = (ee.ImageCollection("MODIS/061/MOD09GA")
-            .filterBounds(HAIFA_BBOX)
-            .filterDate(t.advance(-3,"day"), t.advance(1,"day")))
-    if coll.size().getInfo() == 0:
-        return None, None, "No MODIS data for this date.", None, "MODIS"
+    # Merge Terra (MOD) + Aqua (MYD) for better daily coverage
+    terra = (ee.ImageCollection("MODIS/061/MOD09GA")
+             .filterBounds(HAIFA_BBOX)
+             .filterDate(t.advance(-3,"day"), t.advance(1,"day")))
+    aqua  = (ee.ImageCollection("MODIS/061/MYD09GA")
+             .filterBounds(HAIFA_BBOX)
+             .filterDate(t.advance(-3,"day"), t.advance(1,"day")))
+    coll  = terra.merge(aqua).sort("system:time_start", False)
 
-    img_first   = coll.sort("system:time_start", False).first()
+    if coll.size().getInfo() == 0:
+        return None, None, "No MODIS data for this date.", None, "MODIS Terra+Aqua"
+
+    img_first   = coll.first()
     img_time_ms = img_first.get("system:time_start").getInfo()
     img_dt      = datetime.utcfromtimestamp(img_time_ms / 1000)
     age_hours   = (datetime.utcnow() - img_dt).total_seconds() / 3600
@@ -553,10 +559,12 @@ def compute_beach_history_7d():
                     ).rename("WQI").updateMask(wm)
                     return date_str, wqi
             if source == "MODIS":
-                qa    = ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(HAIFA_BBOX).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
+                terra_h = ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(HAIFA_BBOX).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
+                aqua_h  = ee.ImageCollection("MODIS/061/MYD09GA").filterBounds(HAIFA_BBOX).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
+                qa      = terra_h.merge(aqua_h).sort("system:time_start",False)
                 if qa.size().getInfo() == 0:
                     return date_str, None
-                img_m = qa.sort("system:time_start",False).first()
+                img_m = qa.first()
                 clear = img_m.select("state_1km").bitwiseAnd(0b11).eq(0)
                 img_m = img_m.updateMask(clear).updateMask(wm)
                 b1,b2,b4 = img_m.select("sur_refl_b01"),img_m.select("sur_refl_b02"),img_m.select("sur_refl_b04")
