@@ -1014,9 +1014,8 @@ if mode == MODE_ISRAEL:
   var ds={chart_json};
   var lb={labels_json};
   var lg={legend_json};
-  var dk=matchMedia('(prefers-color-scheme:dark)').matches;
-  var gc=dk?'rgba(255,255,255,0.06)':'rgba(0,0,0,0.06)';
-  var tc=dk?'rgba(255,255,255,0.4)':'rgba(0,0,0,0.4)';
+  var gc='rgba(255,255,255,0.08)';
+  var tc='#aaaaaa';
   ds=ds.map(d=>({{...d,backgroundColor:'transparent',tension:0.35,pointRadius:3,
     pointBackgroundColor:d.borderColor,borderWidth:2,spanGaps:true}}));
   new Chart(document.getElementById('beachTrend'),{{
@@ -1025,15 +1024,22 @@ if mode == MODE_ISRAEL:
       plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{label:c=>`${{c.dataset.label}}: ${{c.parsed.y}}`}}}}}},
       scales:{{
         x:{{
-          ticks:{{color:tc,font:{{size:11}},maxRotation:45,autoSkip:false}},
-          grid:{{color:gc}},
-          title:{{display:true,text:'תאריך',color:tc,font:{{size:12}}}}
+          ticks:{{color:'#aaaaaa',font:{{size:11}},maxRotation:45,autoSkip:false}},
+          grid:{{color:'rgba(255,255,255,0.08)'}},
+          title:{{display:true,text:'תאריך',color:'#cccccc',font:{{size:12,weight:'bold'}}}}
         }},
         y:{{min:1,max:100,
-          ticks:{{color:tc,font:{{size:11}},
-            callback:v=>v===1?'1 מזוהם':v===25?'25':v===50?'50':v===75?'75':v===100?'100 נקי':''}},
-          grid:{{color:gc}},
-          title:{{display:true,text:'איכות המים (WQI)',color:tc,font:{{size:12,weight:'bold'}}}}
+          ticks:{{color:'#aaaaaa',font:{{size:11}},
+            callback:function(v){{
+              if(v===1) return 'מזוהם 1';
+              if(v===25) return '25';
+              if(v===50) return '50';
+              if(v===75) return '75';
+              if(v===100) return 'נקי 100';
+              return '';
+            }}}},
+          grid:{{color:'rgba(255,255,255,0.08)'}},
+          title:{{display:true,text:'איכות המים (WQI)',color:'#cccccc',font:{{size:12,weight:'bold'}}}}
         }}
       }}
     }}
