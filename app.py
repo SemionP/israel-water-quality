@@ -1288,20 +1288,21 @@ if mode == MODE_ISRAEL:
                     bd = "2px solid white" if i == st.session_state.img_idx else "none"
                     dots_html += f'<span style="display:inline-block;width:{sz};height:{sz};border-radius:50%;background:{col_s};border:{bd};margin:0 2px;vertical-align:middle;"></span>'
 
-                nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1,1,6,1,1])
-                with nav_col1:
-                    if st.button("◀", key="nav_prev"):
+                nav_l, nav_center, nav_r = st.columns([1, 10, 1])
+                with nav_l:
+                    if st.button("◀", key="nav_prev", use_container_width=True):
                         n = len(all_candidates)
                         st.session_state.img_idx = (st.session_state.img_idx+1)%n
                         st.rerun()
-                with nav_col2:
-                    st.markdown(f'<div style="padding:6px 0;">{dots_html}</div>', unsafe_allow_html=True)
-                with nav_col3:
-                    st.markdown(f'<div style="font-size:11px;color:#7fb3d3;padding:6px 0;"><b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</div>', unsafe_allow_html=True)
-                with nav_col4:
-                    pass
-                with nav_col5:
-                    if st.button("▶", key="nav_next"):
+                with nav_center:
+                    st.markdown(
+                        f'<div style="text-align:center;font-size:11px;color:#7fb3d3;padding:5px 0;">' +
+                        dots_html +
+                        f' <b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</div>',
+                        unsafe_allow_html=True
+                    )
+                with nav_r:
+                    if st.button("▶", key="nav_next", use_container_width=True):
                         n = len(all_candidates)
                         st.session_state.img_idx = (st.session_state.img_idx-1)%n
                         st.rerun()
