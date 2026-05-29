@@ -1281,26 +1281,18 @@ if mode == MODE_ISRAEL:
         ).add_to(m)
 
         # Add basemap tile layers with LayerControl
-        cur_bm = BASEMAPS.get(st.session_state.basemap, BASEMAPS["Dark"])
         for bm_name, bm_data in BASEMAPS.items():
             is_base = (bm_name == st.session_state.basemap)
-            if bm_data["tile"].startswith("http"):
-                folium.TileLayer(
-                    tiles=bm_data["tile"],
-                    attr=bm_data["attr"],
-                    name=bm_name,
-                    overlay=False,
-                    control=True,
-                    show=is_base,
-                ).add_to(m)
-            else:
-                folium.TileLayer(
-                    tiles=bm_data["tile"],
-                    name=bm_name,
-                    overlay=False,
-                    control=True,
-                    show=is_base,
-                ).add_to(m)
+            tile_url = bm_data["tile"]
+            tile_attr = bm_data["attr"]
+            folium.TileLayer(
+                tiles=tile_url,
+                attr=tile_attr,
+                name=bm_name,
+                overlay=False,
+                control=True,
+                show=is_base,
+            ).add_to(m)
         folium.LayerControl(position="topleft", collapsed=True).add_to(m)
         vis = {'min':30,'max':90,'palette':['#d73027','#f46d43','#fdae61','#fee090','#e0f3f8','#abd9e9','#74add1','#4575b4']}
         try:
