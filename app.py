@@ -1327,8 +1327,6 @@ if mode == MODE_ISRAEL:
                     key="israel_map_wqi",
                     returned_objects=["bounds","last_active_drawing"]
                 )
-
-            # ── City WQI Summary ──────────────────────────────────────────────────
             with col_info:
                 # ── Zone Manager ──────────────────────────────────────────────
                 st.markdown("#### 📍 Custom Zones")
@@ -1391,6 +1389,7 @@ if mode == MODE_ISRAEL:
 </div>
 """, unsafe_allow_html=True)
                 # Detect which beaches are visible in current map bounds
+                # Use city names from maritime zones (not beach points)
                 bounds = map_data_wqi.get("bounds") if map_data_wqi else None
                 if bounds and bounds.get("_southWest") and bounds.get("_northEast"):
                     sw = bounds["_southWest"]
@@ -1400,13 +1399,12 @@ if mode == MODE_ISRAEL:
                     lon_min = sw.get("lng", 34.0)
                     lon_max = ne.get("lng", 36.0)
                     filtered = [
-                        b["name"] for b in BEACHES
-                        if lat_min <= b["lat"] <= lat_max and lon_min <= b["lon"] <= lon_max
+                        city for city, pt in CITY_POINTS.items()
+                        if lat_min <= pt["lat"] <= lat_max and lon_min <= pt["lon"] <= lon_max
                     ]
-                    # Show all if filter returns too few
-                    visible_beaches = filtered if len(filtered) >= 2 else [b["name"] for b in BEACHES]
+                    visible_beaches = filtered if len(filtered) >= 2 else list(CITY_POINTS.keys())
                 else:
-                    visible_beaches = [b["name"] for b in BEACHES]
+                    visible_beaches = list(CITY_POINTS.keys())
 
                 # Build comparison chart for visible beaches
                 if visible_beaches:
@@ -1422,6 +1420,15 @@ if mode == MODE_ISRAEL:
                                     beach_history[row["name"]].append({"date": sel_date, "wqi": row["wqi"]})
                             elif row["name"] not in beach_history and row["wqi"]:
                                 beach_history[row["name"]] = [{"date": sel_date, "wqi": row["wqi"]}]
+
+                    # Merge city_wqi into beach_history for chart
+                    for city_name, cwqi in (city_wqi or {}).items():
+                        if cwqi is not None:
+                            if city_name not in beach_history:
+                                beach_history[city_name] = []
+                            existing = {e["date"] for e in beach_history[city_name]}
+                            if sel_date not in existing:
+                                beach_history[city_name].append({"date": sel_date, "wqi": cwqi})
 
                     # Merge user zones into beach_history for chart
                     for zname, zwqi in user_zone_wqi.items():
@@ -1440,12 +1447,13 @@ if mode == MODE_ISRAEL:
                     ))
 
                     def _get_current(name):
-                        if df is not None and not df.empty:
-                            row = df[df["name"]==name]
-                            if not row.empty:
-                                v = row["wqi"].iloc[0]
-                                if v is not None and str(v) != "nan":
-                                    return float(v)
+                        # City maritime zone WQI takes priority
+                        if city_wqi and name in city_wqi and city_wqi[name] is not None:
+                            return float(city_wqi[name])
+                        # User zone
+                        if user_zone_wqi and name in user_zone_wqi and user_zone_wqi[name] is not None:
+                            return float(user_zone_wqi[name])
+                        # History fallback
                         hist_vals = [e["wqi"] for e in beach_history.get(name,[]) if e["wqi"] and str(e["wqi"]) != "nan"]
                         return hist_vals[-1] if hist_vals else None
 
