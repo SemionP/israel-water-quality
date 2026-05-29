@@ -1132,13 +1132,13 @@ def compute_beach_history_range(days_back: int):
 
 
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=3600)
 def compute_zone_history_range(zones_json: str, days_back: int):
     """
     Compute WQI history for user-defined polygon zones over N days.
-    Uses S3 + S2 + MODIS (all three) so every available satellite pass is captured.
+    Uses S3 + S2 + MODIS. Stores source (S3/S2/MODIS) per data point for tooltip.
     zones_json: JSON string of {name: {coords: [...]}} to make it cache-friendly.
-    Returns dict: {zone_name: [{date, wqi}, ...]}
+    Returns dict: {zone_name: [{date, wqi, source}, ...]}
     """
     import json as _j
     zones = _j.loads(zones_json)
@@ -1151,13 +1151,17 @@ def compute_zone_history_range(zones_json: str, days_back: int):
     wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     fmt   = "%Y-%m-%d"
 
-    # ── Discover all available dates from all three sensors ──────────────────
+    # ── Discover available dates per sensor ──────────────────────────────────
     s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
                .filterBounds(wide)
                .filterDate(start.strftime(fmt), end.strftime(fmt))
                .sort("system:time_start", False))
     s3_ts  = s3_coll.aggregate_array("system:time_start").getInfo()
-    s3_set = set(datetime.utcfromtimestamp(ts/1000).strftime(fmt) for ts in s3_ts)
+    # Keep individual timestamps so we can build one image per exact day
+    s3_dates = {}  # date_str -> list of timestamps
+    for ts in s3_ts:
+        d = datetime.utcfromtimestamp(ts/1000).strftime(fmt)
+        s3_dates.setdefault(d, []).append(ts)
 
     s2_coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
                .filterBounds(wide)
@@ -1165,17 +1169,20 @@ def compute_zone_history_range(zones_json: str, days_back: int):
                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
                .sort("system:time_start", False))
     s2_ts  = s2_coll.aggregate_array("system:time_start").getInfo()
-    s2_set = set(datetime.utcfromtimestamp(ts/1000).strftime(fmt) for ts in s2_ts)
+    s2_dates = {}
+    for ts in s2_ts:
+        d = datetime.utcfromtimestamp(ts/1000).strftime(fmt)
+        s2_dates.setdefault(d, []).append(ts)
 
-    # Build date list: every calendar day in window, best sensor priority S3>S2>MODIS
-    all_days = [(end - timedelta(days=i)).strftime(fmt) for i in range(days_back+1)]
+    # Every calendar day in window: S3 > S2 > MODIS priority
+    all_days = [(end - timedelta(days=i)).strftime(fmt) for i in range(days_back + 1)]
     seen = set(); date_ts = []
     for d in all_days:
         if d not in seen:
             seen.add(d)
-            if d in s3_set:
+            if d in s3_dates:
                 date_ts.append((d, "S3"))
-            elif d in s2_set:
+            elif d in s2_dates:
                 date_ts.append((d, "S2"))
             else:
                 date_ts.append((d, "MODIS"))
@@ -1188,11 +1195,19 @@ def compute_zone_history_range(zones_json: str, days_back: int):
         try:
             t = ee.Date(date_str)
             if source == "S3":
-                # Use wide bbox + ±2 day window to catch all passes over Israel
+                # Filter to the exact calendar day only (not ±2) to avoid merging adjacent days
+                day_start = t
+                day_end   = t.advance(1, "day")
                 coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
                         .filterBounds(wide)
-                        .filterDate(t.advance(-2,"day"), t.advance(1,"day")))
-                if coll.size().getInfo() == 0: return date_str, None
+                        .filterDate(day_start, day_end))
+                if coll.size().getInfo() == 0:
+                    # Fallback: try ±1 day in case of UTC boundary shift
+                    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                            .filterBounds(wide)
+                            .filterDate(t.advance(-1,"day"), t.advance(2,"day")))
+                    if coll.size().getInfo() == 0:
+                        return date_str, source, None
                 img  = coll.median().clip(ISRAEL_CLIP).updateMask(wm)
                 ndwi = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
                 b10,b11,b12 = img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
@@ -1206,14 +1221,15 @@ def compute_zone_history_range(zones_json: str, days_back: int):
                     reducer=ee.Reducer.mean(),
                     kernel=ee.Kernel.square(radius=1, units="pixels")
                 ).rename("WQI").updateMask(wm)
-                return date_str, wqi
+                return date_str, source, wqi
             elif source == "S2":
                 coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
                         .filterBounds(wide)
-                        .filterDate(t.advance(-5,"day"), t.advance(1,"day"))
+                        .filterDate(t, t.advance(1,"day"))
                         .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
                         .sort("system:time_start", False))
-                if coll.size().getInfo() == 0: return date_str, None
+                if coll.size().getInfo() == 0:
+                    return date_str, source, None
                 img   = coll.first().updateMask(wm)
                 b3,b4,b5,b8,b8a = (img.select("B3").divide(10000), img.select("B4").divide(10000),
                                     img.select("B5").divide(10000), img.select("B8").divide(10000),
@@ -1222,12 +1238,13 @@ def compute_zone_history_range(zones_json: str, days_back: int):
                        .add(b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1))
                        .add(ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1))
                        .divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm))
-                return date_str, wqi
+                return date_str, source, wqi
             else:  # MODIS
-                t2 = ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(wide).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
-                a2 = ee.ImageCollection("MODIS/061/MYD09GA").filterBounds(wide).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
+                t2 = ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(wide).filterDate(t, t.advance(1,"day"))
+                a2 = ee.ImageCollection("MODIS/061/MYD09GA").filterBounds(wide).filterDate(t, t.advance(1,"day"))
                 qa = t2.merge(a2).sort("system:time_start", False)
-                if qa.size().getInfo() == 0: return date_str, None
+                if qa.size().getInfo() == 0:
+                    return date_str, source, None
                 im = qa.first(); cl = im.select("state_1km").bitwiseAnd(0b11).eq(0)
                 im = im.updateMask(cl).updateMask(wm)
                 b1,b2,b4 = im.select("sur_refl_b01"),im.select("sur_refl_b02"),im.select("sur_refl_b04")
@@ -1235,17 +1252,18 @@ def compute_zone_history_range(zones_json: str, days_back: int):
                        .add(b4.divide(b1.add(1e-6)).unitScale(0.8,2.5).clamp(0,1))
                        .add(ee.Image(1).subtract(b1.unitScale(0,1500)).clamp(0,1))
                        .divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm))
-                return date_str, wqi
+                return date_str, source, wqi
         except:
-            return date_str, None
+            return date_str, source, None
 
     with ThreadPoolExecutor(max_workers=4) as ex:
-        wqi_images = dict(ex.map(_wqi_for_date, date_ts))
+        raw_results = list(ex.map(_wqi_for_date, date_ts))
 
+    # Sample each zone polygon on each date's WQI image
     history = {name: [] for name in zones}
-    for date_str, wqi_img in wqi_images.items():
+    for date_str, source, wqi_img in raw_results:
         if wqi_img is None:
-            continue  # skip dates with no data — don't pollute chart with None gaps
+            continue
         for zname, zdata in zones.items():
             try:
                 poly = ee.Geometry.Polygon([zdata["coords"]])
@@ -1255,9 +1273,13 @@ def compute_zone_history_range(zones_json: str, days_back: int):
                 ).getInfo()
                 wv = val.get("WQI")
                 if wv is not None:
-                    history[zname].append({"date": date_str, "wqi": round(float(wv),1)})
+                    history[zname].append({
+                        "date": date_str,
+                        "wqi": round(float(wv), 1),
+                        "source": source   # ← stored for tooltip
+                    })
             except:
-                pass  # silently skip failed reductions
+                pass
 
     for name in history:
         history[name] = sorted(history[name], key=lambda x: x["date"])
@@ -1477,9 +1499,10 @@ if mode == MODE_ISRAEL:
                         st.session_state.img_idx = (st.session_state.img_idx-1)%n
                         st.rerun()
 
-            # Load history only if monitoring points are defined
+            # Load history — always initialize, points + zones both contribute
             history_days  = 30
             history_label = "30 ימים"
+            beach_history = {}
             if st.session_state.monitor_points:
                 with st.spinner("Loading history..."):
                     beach_history = compute_beach_history_range(history_days)
@@ -1492,8 +1515,6 @@ if mode == MODE_ISRAEL:
                         existing = {e["date"] for e in beach_history[pt_name]}
                         if sel_date not in existing:
                             beach_history[pt_name].append({"date": sel_date, "wqi": wv})
-            else:
-                beach_history = {}
             col_map, col_info = st.columns([1, 1], gap="small")
             with col_map:
                 map_data_wqi = st_folium(
@@ -1524,23 +1545,11 @@ if mode == MODE_ISRAEL:
                             st.session_state.pending_point = {"lat": round(coords[1],5), "lon": round(coords[0],5)}
                             st.rerun()
 
-                # Detect which beaches are visible in current map bounds
-                # Use city names from maritime zones (not beach points)
-                bounds = map_data_wqi.get("bounds") if map_data_wqi else None
-                if bounds and bounds.get("_southWest") and bounds.get("_northEast"):
-                    sw = bounds["_southWest"]
-                    ne = bounds["_northEast"]
-                    lat_min = sw.get("lat", 29.0)
-                    lat_max = ne.get("lat", 34.0)
-                    lon_min = sw.get("lng", 34.0)
-                    lon_max = ne.get("lng", 36.0)
-                    filtered = [
-                        city for city, pt in CITY_POINTS.items()
-                        if lat_min <= pt["lat"] <= lat_max and lon_min <= pt["lon"] <= lon_max
-                    ]
-                    visible_beaches = list(st.session_state.monitor_points.keys())
-                else:
-                    visible_beaches = list(st.session_state.monitor_points.keys())
+                # Build visible_beaches: monitoring points + all user zones
+                visible_beaches = list(st.session_state.monitor_points.keys())
+                for zname in user_zone_history:
+                    if zname not in visible_beaches:
+                        visible_beaches.append(zname)
 
                 # Build comparison chart for visible beaches
                 if visible_beaches:
@@ -1603,11 +1612,14 @@ if mode == MODE_ISRAEL:
 
                     datasets = []
                     for name in visible_beaches:
-                        hist_map = {e["date"]:e["wqi"] for e in beach_history.get(name,[])}
-                        data = [hist_map.get(d) for d in all_dates]
+                        hist_map = {e["date"]: e for e in beach_history.get(name,[])}
+                        data = [hist_map[d]["wqi"] if d in hist_map else None for d in all_dates]
+                        # source per data point (None for missing)
+                        src_map = [hist_map[d].get("source","") if d in hist_map else "" for d in all_dates]
                         datasets.append({
                             "label": name,
                             "data": data,
+                            "sources": src_map,
                             "borderColor": beach_colors[name],
                             "borderDash": [5,3] if (valid_vals.get(name,100) or 100) < 30 else [],
                         })
@@ -1701,7 +1713,13 @@ if mode == MODE_ISRAEL:
   new Chart(document.getElementById('beachTrend'),{{
     type:'line',data:{{labels:lb,datasets:ds}},
     options:{{responsive:true,maintainAspectRatio:false,
-      plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{label:c=>`${{c.dataset.label}}: ${{c.parsed.y}}`}}}}}},
+      plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{
+        label:function(c){{
+          var src=c.dataset.sources?c.dataset.sources[c.dataIndex]:'';
+          var srcLabel=src?(' · '+src):'';
+          return c.dataset.label+': '+c.parsed.y+srcLabel;
+        }}
+      }}}}}},
       scales:{{
         x:{{
           ticks:{{color:'#cccccc',font:{{size:13,weight:'bold'}},maxRotation:45,autoSkip:false}},
