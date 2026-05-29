@@ -309,34 +309,26 @@ def _gdrive_file_id(token) -> str | None:
 
 def load_zones() -> dict:
     import json as _j, urllib.request, urllib.parse
-    _dbg = []
     try:
         token = _gdrive_token()
         if not token:
-            _dbg.append("no token")
-            st.session_state["_load_dbg"] = " | ".join(_dbg)
             return {}
-        # Search for the file BY NAME in the folder (works for SA-owned files)
         q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
         url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode(
-            {"q": q, "fields": "files(id,name,ownedByMe)", "pageSize": "5",
+            {"q": q, "fields": "files(id,name)", "pageSize": "5",
              "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
         res = _j.loads(urllib.request.urlopen(req, timeout=10).read())
         files = res.get("files", [])
-        _dbg.append(f"found {len(files)} file(s)")
         if files:
             fid = files[0]["id"]
             req2 = urllib.request.Request(
                 f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true",
                 headers={"Authorization": f"Bearer {token}"})
             raw = urllib.request.urlopen(req2, timeout=10).read().decode()
-            _dbg.append(f"read {len(raw)}B")
-            st.session_state["_load_dbg"] = " | ".join(_dbg)
             return _j.loads(raw)
-    except Exception as e:
-        _dbg.append(f"err: {type(e).__name__}: {str(e)[:120]}")
-    st.session_state["_load_dbg"] = " | ".join(_dbg)
+    except:
+        pass
     # fallbacks
     try:
         raw = st.secrets.get("saved_zones", None)
@@ -351,7 +343,6 @@ def load_zones() -> dict:
 def save_zones(zones: dict):
     import json as _j, urllib.request, urllib.error
     data = _j.dumps(zones, ensure_ascii=False).encode()
-    _dbg = []
     # Always save to /tmp
     try:
         with open("/tmp/medi_zones.json","w") as f: f.write(data.decode())
@@ -361,11 +352,8 @@ def save_zones(zones: dict):
     try:
         token = _gdrive_token()
         if not token:
-            _dbg.append("no token")
-            st.session_state["_save_dbg"] = " | ".join(_dbg)
             return
         import urllib.parse
-        # Find the existing file (must be owned by you and shared with SA)
         q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
         url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode(
             {"q": q, "fields": "files(id)", "pageSize": "5",
@@ -374,26 +362,15 @@ def save_zones(zones: dict):
         res = _j.loads(urllib.request.urlopen(req, timeout=10).read())
         files = res.get("files", [])
         if not files:
-            _dbg.append("no file to update — upload medi_zones.json to Drive folder first")
-            st.session_state["_save_dbg"] = " | ".join(_dbg)
             return
         fid = files[0]["id"]
-        # Simple media update (PATCH) — replaces file content only
         url2 = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
         req2 = urllib.request.Request(url2, data=data, method="PATCH", headers={
             "Authorization": f"Bearer {token}",
             "Content-Type":  "application/json"})
-        resp = urllib.request.urlopen(req2, timeout=15)
-        _dbg.append(f"updated OK ({len(data)}B)")
-    except urllib.error.HTTPError as he:
-        try:
-            err_body = he.read().decode()[:200]
-        except:
-            err_body = "?"
-        _dbg.append(f"HTTP {he.code}: {err_body}")
-    except Exception as e:
-        _dbg.append(f"save err: {type(e).__name__}: {str(e)[:120]}")
-    st.session_state["_save_dbg"] = " | ".join(_dbg)
+        urllib.request.urlopen(req2, timeout=15)
+    except:
+        pass
 
 def load_zones_from_all() -> dict: return load_zones()
 def load_points() -> dict: return {}
@@ -1451,15 +1428,7 @@ def compute_zone_history_range(zones_json: str, days_back: int):
 
 # Session state initialization
 if "user_zones" not in st.session_state:
-    zones = load_zones_from_all()
-    st.session_state.user_zones = zones
-    # Debug: test token
-    try:
-        tok = _gdrive_token()
-        tok_status = "token OK" if tok else "token FAILED"
-    except Exception as e:
-        tok_status = f"token ERROR: {e}"
-    st.session_state["_zones_debug"] = f"{tok_status} | Loaded {len(zones)} zones: {list(zones.keys())}"
+    st.session_state.user_zones = load_zones_from_all()
 if "monitor_points" not in st.session_state:
     st.session_state.monitor_points = load_points()
 if "pending_point" not in st.session_state:
@@ -1940,16 +1909,6 @@ if mode == MODE_ISRAEL:
                 # ── Monitoring Areas (unified: points + polygons) ─────────────
                 pending_zone = st.session_state.get("pending_zone")
                 with st.expander("📍 Monitoring Areas", expanded=bool(pending_zone)):
-                    if st.session_state.get("_zones_debug"):
-                        st.caption(f"🔍 {st.session_state['_zones_debug']}")
-                    if st.session_state.get("_load_dbg"):
-                        st.caption(f"📥 {st.session_state['_load_dbg']}")
-                    if st.session_state.get("_save_dbg"):
-                        st.caption(f"💾 {st.session_state['_save_dbg']}")
-                    if st.session_state.user_zones:
-                        if st.button("☁️ Force save to Drive", use_container_width=True, key="force_save"):
-                            save_zones(st.session_state.user_zones)
-                            st.rerun()
                     if pending_zone:
                         if pending_zone["type"] == "polygon":
                             st.info(f"🟦 New polygon: {len(pending_zone['coords'])} vertices")
