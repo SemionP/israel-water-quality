@@ -1244,9 +1244,38 @@ if mode == MODE_ISRAEL:
 
 
 
+    # Basemap selector
+    BASEMAPS = {
+        "🗺️ Street":       "OpenStreetMap",
+        "🌑 Dark":          "CartoDB dark_matter",
+        "☁️ Light":         "CartoDB positron",
+        "🛰️ Satellite":     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "🌊 Ocean":         "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
+    }
+    if "basemap" not in st.session_state:
+        st.session_state.basemap = "🌑 Dark"
+
+    bm_cols = st.columns(len(BASEMAPS))
+    for i, (bm_name, _) in enumerate(BASEMAPS.items()):
+        with bm_cols[i]:
+            active = st.session_state.basemap == bm_name
+            if st.button(bm_name, key=f"bm_{i}",
+                         use_container_width=True,
+                         type="primary" if active else "secondary"):
+                st.session_state.basemap = bm_name
+                st.rerun()
+
     # Shared map builder
     def _build_map(selected_beach=None):
-        m = folium.Map(location=[32.4, 34.85], zoom_start=8)
+        bm = st.session_state.get("basemap", "🌑 Dark")
+        bm_tile = BASEMAPS.get(bm, "CartoDB dark_matter")
+        if bm_tile.startswith("http"):
+            m = folium.Map(location=[32.4, 34.85], zoom_start=8,
+                          tiles=bm_tile,
+                          attr="Esri")
+        else:
+            m = folium.Map(location=[32.4, 34.85], zoom_start=8,
+                          tiles=bm_tile)
         # Add draw plugin
         Draw(
             export=False,
