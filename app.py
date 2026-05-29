@@ -357,7 +357,7 @@ def save_zones(zones: dict):
         with open("/tmp/medi_zones.json","w") as f: f.write(data.decode())
     except:
         pass
-    # Save to Google Drive
+    # Save to Google Drive — SA can only UPDATE files you own, not create new ones
     try:
         token = _gdrive_token()
         if not token:
@@ -365,32 +365,26 @@ def save_zones(zones: dict):
             st.session_state["_save_dbg"] = " | ".join(_dbg)
             return
         import urllib.parse
+        # Find the existing file (must be owned by you and shared with SA)
         q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
         url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode(
-            {"q": q, "fields": "files(id)", "pageSize": "5"})
+            {"q": q, "fields": "files(id)", "pageSize": "5",
+             "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
         res = _j.loads(urllib.request.urlopen(req, timeout=10).read())
         files = res.get("files", [])
-        fid = files[0]["id"] if files else None
-
-        bnd  = b"MEDIboundary42"
-        def part(ct, body):
-            return b"--" + bnd + b"\r\nContent-Type: " + ct + b"\r\n\r\n" + body + b"\r\n"
-        if fid:
-            meta   = _j.dumps({"name": GDRIVE_FILENAME}).encode()
-            url2   = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=multipart"
-            method = "PATCH"
-        else:
-            meta   = _j.dumps({"name": GDRIVE_FILENAME, "parents": [GDRIVE_FOLDER]}).encode()
-            url2   = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
-            method = "POST"
-        body = part(b"application/json", meta) + part(b"application/json", data) + b"--" + bnd + b"--"
-        req2 = urllib.request.Request(url2, data=body, method=method, headers={
+        if not files:
+            _dbg.append("no file to update — upload medi_zones.json to Drive folder first")
+            st.session_state["_save_dbg"] = " | ".join(_dbg)
+            return
+        fid = files[0]["id"]
+        # Simple media update (PATCH) — replaces file content only
+        url2 = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
+        req2 = urllib.request.Request(url2, data=data, method="PATCH", headers={
             "Authorization": f"Bearer {token}",
-            "Content-Type":  "multipart/related; boundary=MEDIboundary42"})
+            "Content-Type":  "application/json"})
         resp = urllib.request.urlopen(req2, timeout=15)
-        result = _j.loads(resp.read())
-        _dbg.append(f"saved OK id={result.get('id','?')[:12]} ({method})")
+        _dbg.append(f"updated OK ({len(data)}B)")
     except urllib.error.HTTPError as he:
         try:
             err_body = he.read().decode()[:200]
