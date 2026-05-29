@@ -211,40 +211,73 @@ def init_gee():
 init_gee()
 
 # =============================================================================
-# Persistent Zone Storage
+# Persistent Zone Storage — uses st.secrets["zones"] if available, else /tmp
 # =============================================================================
 ZONES_KEY = "medi-zones-v1"
 
 def load_zones() -> dict:
+    import json as _j
+    # 1. Try secrets (persists across restarts on Streamlit Cloud)
     try:
-        import json as _j
+        raw = st.secrets.get("saved_zones", None)
+        if raw:
+            return _j.loads(raw)
+    except:
+        pass
+    # 2. Fallback: /tmp (survives only within same server session)
+    try:
         return _j.loads(open("/tmp/medi_zones.json").read())
     except:
         return {}
 
 def save_zones(zones: dict):
     import json as _j
+    # Always write to /tmp so it survives within session
     try:
         with open("/tmp/medi_zones.json","w") as f:
             f.write(_j.dumps(zones))
     except:
         pass
-
-def load_points() -> dict:
-    """Load user-defined monitoring points."""
+    # Also write to a persistent app-level file if writable
     try:
-        import json as _j
-        return _j.loads(open("/tmp/medi_points.json").read())
-    except:
-        return {}
-
-def save_points(points: dict):
-    import json as _j
-    try:
-        with open("/tmp/medi_points.json","w") as f:
-            f.write(_j.dumps(points))
+        import os
+        persist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".medi_zones.json")
+        with open(persist_path, "w") as f:
+            f.write(_j.dumps(zones))
     except:
         pass
+
+def load_zones_from_all() -> dict:
+    """Load from all sources, merge: persistent file > /tmp > secrets."""
+    import json as _j
+    result = {}
+    # secrets baseline
+    try:
+        raw = st.secrets.get("saved_zones", None)
+        if raw:
+            result.update(_j.loads(raw))
+    except:
+        pass
+    # /tmp override
+    try:
+        result.update(_j.loads(open("/tmp/medi_zones.json").read()))
+    except:
+        pass
+    # persistent file override (survives redeploys if committed)
+    try:
+        import os
+        persist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".medi_zones.json")
+        result.update(_j.loads(open(persist_path).read()))
+    except:
+        pass
+    return result
+
+def load_points() -> dict:
+    return {}  # points now unified under zones
+
+def save_points(points: dict):
+    pass  # points now unified under zones
+
 
 
 # =============================================================================
@@ -1294,7 +1327,7 @@ def compute_zone_history_range(zones_json: str, days_back: int):
 
 # Session state initialization
 if "user_zones" not in st.session_state:
-    st.session_state.user_zones = load_zones()
+    st.session_state.user_zones = load_zones_from_all()
 if "monitor_points" not in st.session_state:
     st.session_state.monitor_points = load_points()
 if "pending_point" not in st.session_state:
@@ -1818,8 +1851,38 @@ if mode == MODE_ISRAEL:
                                     save_zones(st.session_state.user_zones)
                                     compute_zone_history_range.clear()
                                     st.rerun()
+
+                        # ── Export ──────────────────────────────────────────
+                        import json as _jex
+                        zones_export = _jex.dumps(st.session_state.user_zones, indent=2, ensure_ascii=False)
+                        st.download_button(
+                            label="⬇️ Export zones",
+                            data=zones_export,
+                            file_name="medi_zones.json",
+                            mime="application/json",
+                            use_container_width=True,
+                            key="export_zones"
+                        )
                     else:
                         st.caption("Click on the map or draw a shape to add a monitoring area")
+
+                    # ── Import ──────────────────────────────────────────────
+                    st.markdown("<hr style='margin:6px 0;border-color:rgba(0,200,200,0.15)'>", unsafe_allow_html=True)
+                    uploaded_zones = st.file_uploader("⬆️ Import zones", type="json", key="import_zones",
+                                                       label_visibility="collapsed")
+                    if uploaded_zones:
+                        try:
+                            import json as _jim
+                            imported = _jim.loads(uploaded_zones.read())
+                            st.session_state.user_zones.update(imported)
+                            save_zones(st.session_state.user_zones)
+                            compute_zone_history_range.clear()
+                            st.success(f"✅ Imported {len(imported)} zones")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Import failed: {e}")
+                    else:
+                        st.caption("⬆️ Import zones from a previously exported JSON file")
 
 
 
