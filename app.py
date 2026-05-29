@@ -216,6 +216,7 @@ init_gee()
 ZONES_KEY       = "medi-zones-v1"
 GDRIVE_FILENAME = "medi_zones.json"
 GDRIVE_FOLDER   = "1VU11P0UCzeMiVsn0k1RiIHuEu8bBLUFH"
+GDRIVE_FILE_ID  = "1KTI_oRHIrvRJNtfZYrWMkhNi2D-34Y9v"  # hardcoded for fast startup load
 
 @st.cache_resource
 def _gdrive_token():
@@ -261,7 +262,18 @@ def _gdrive_file_id(token) -> str | None:
 
 def load_zones() -> dict:
     import json as _j, urllib.request
-    # 1. Google Drive
+    # 1. Google Drive — try hardcoded file ID first (fastest)
+    try:
+        token = _gdrive_token()
+        if token:
+            fid = GDRIVE_FILE_ID
+            req = urllib.request.Request(
+                f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media",
+                headers={"Authorization":f"Bearer {token}"})
+            return _j.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+    except:
+        pass
+    # 2. Google Drive — search by name (fallback if file was recreated)
     try:
         token = _gdrive_token()
         if token:
@@ -273,13 +285,13 @@ def load_zones() -> dict:
                 return _j.loads(urllib.request.urlopen(req, timeout=10).read().decode())
     except:
         pass
-    # 2. secrets fallback
+    # 3. secrets fallback
     try:
         raw = st.secrets.get("saved_zones", None)
         if raw: return _j.loads(raw)
     except:
         pass
-    # 3. /tmp fallback
+    # 4. /tmp fallback
     try:
         return _j.loads(open("/tmp/medi_zones.json").read())
     except:
@@ -293,24 +305,17 @@ def save_zones(zones: dict):
         with open("/tmp/medi_zones.json","w") as f: f.write(data.decode())
     except:
         pass
-    # Save to Google Drive
+    # Save to Google Drive — always update the known file
     try:
         token = _gdrive_token()
         if not token: return
-        fid = _gdrive_file_id(token)
-        bnd = b"MEDIboundary42"
+        bnd  = b"MEDIboundary42"
+        meta = _j.dumps({"name": GDRIVE_FILENAME}).encode()
         def part(ct, body):
             return b"--" + bnd + b"\r\nContent-Type: " + ct + b"\r\n\r\n" + body + b"\r\n"
-        if fid:
-            url    = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=multipart"
-            method = "PATCH"
-            meta   = _j.dumps({"name": GDRIVE_FILENAME}).encode()
-        else:
-            url    = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
-            method = "POST"
-            meta   = _j.dumps({"name": GDRIVE_FILENAME, "parents": [GDRIVE_FOLDER]}).encode()
         body = part(b"application/json", meta) + part(b"application/json", data) + b"--" + bnd + b"--"
-        req  = urllib.request.Request(url, data=body, method=method, headers={
+        url  = f"https://www.googleapis.com/upload/drive/v3/files/{GDRIVE_FILE_ID}?uploadType=multipart"
+        req  = urllib.request.Request(url, data=body, method="PATCH", headers={
             "Authorization": f"Bearer {token}",
             "Content-Type":  "multipart/related; boundary=MEDIboundary42"})
         urllib.request.urlopen(req, timeout=15)
