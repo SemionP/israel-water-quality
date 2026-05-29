@@ -1058,8 +1058,11 @@ def compute_beach_history_range(days_back: int):
             t=ee.Date(date_str)
             if source=="S3":
                 coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(wide)
-                      .filterDate(t.advance(-2,"day"),t.advance(1,"day")))
-                if coll.size().getInfo()==0: return date_str,None
+                      .filterDate(t,t.advance(1,"day")))
+                if coll.size().getInfo()==0:
+                    coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(wide)
+                          .filterDate(t.advance(-1,"day"),t.advance(2,"day")))
+                    if coll.size().getInfo()==0: return date_str,source,None
                 img=coll.median().clip(ISRAEL_CLIP).updateMask(wm)
                 ndwi=img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
                 b10,b11,b12=img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
@@ -1071,13 +1074,13 @@ def compute_beach_history_range(days_back: int):
                      .divide(3).multiply(100).rename("WQI"))
                 wqi=raw.reduceNeighborhood(reducer=ee.Reducer.mean(),
                     kernel=ee.Kernel.square(radius=1,units="pixels")).rename("WQI").updateMask(wm)
-                return date_str,wqi
+                return date_str,source,wqi
             elif source=="S2":
                 coll=(ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(wide)
-                      .filterDate(t.advance(-5,"day"),t.advance(1,"day"))
+                      .filterDate(t,t.advance(1,"day"))
                       .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",40))
                       .sort("system:time_start",False))
-                if coll.size().getInfo()==0: return date_str,None
+                if coll.size().getInfo()==0: return date_str,source,None
                 img=coll.first().updateMask(wm)
                 b3,b4,b5,b8,b8a=(img.select("B3").divide(10000),img.select("B4").divide(10000),
                                   img.select("B5").divide(10000),img.select("B8").divide(10000),
@@ -1086,12 +1089,12 @@ def compute_beach_history_range(days_back: int):
                      .add(b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1))
                      .add(ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1))
                      .divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm))
-                return date_str,wqi
+                return date_str,source,wqi
             else:
-                t2=ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(wide).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
-                a2=ee.ImageCollection("MODIS/061/MYD09GA").filterBounds(wide).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
+                t2=ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(wide).filterDate(t,t.advance(1,"day"))
+                a2=ee.ImageCollection("MODIS/061/MYD09GA").filterBounds(wide).filterDate(t,t.advance(1,"day"))
                 qa=t2.merge(a2).sort("system:time_start",False)
-                if qa.size().getInfo()==0: return date_str,None
+                if qa.size().getInfo()==0: return date_str,source,None
                 im=qa.first(); cl=im.select("state_1km").bitwiseAnd(0b11).eq(0)
                 im=im.updateMask(cl).updateMask(wm)
                 b1,b2,b4=im.select("sur_refl_b01"),im.select("sur_refl_b02"),im.select("sur_refl_b04")
@@ -1099,29 +1102,31 @@ def compute_beach_history_range(days_back: int):
                      .add(b4.divide(b1.add(1e-6)).unitScale(0.8,2.5).clamp(0,1))
                      .add(ee.Image(1).subtract(b1.unitScale(0,1500)).clamp(0,1))
                      .divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm))
-                return date_str,wqi
-        except: return date_str,None
+                return date_str,source,wqi
+        except: return date_str,source,None
 
     def _sample(args):
-        beach,date_str,wqi=args
-        if wqi is None: return beach["name"],date_str,None
+        beach,date_str,source,wqi=args
+        if wqi is None: return beach["name"],date_str,source,None
         try:
             v=wqi.reduceRegion(reducer=ee.Reducer.mean(),
               geometry=ee.Geometry.Point([beach["lon"],beach["lat"]]).buffer(450),
               scale=300,bestEffort=True).getInfo()
             wv=v.get("WQI")
-            return beach["name"],date_str,round(wv,1) if wv else None
-        except: return beach["name"],date_str,None
+            return beach["name"],date_str,source,round(wv,1) if wv else None
+        except: return beach["name"],date_str,source,None
 
     with ThreadPoolExecutor(max_workers=4) as ex:
-        wqi_images=dict(ex.map(_wqi_for_date,date_ts))
-    tasks=[(b,d,wqi_images.get(d)) for b in BEACHES for d,_ in date_ts]
+        wqi_images=list(ex.map(_wqi_for_date,date_ts))  # list of (date,source,img)
+    img_map={(d,s):img for d,s,img in wqi_images}
+    tasks=[(b,d,s,img_map.get((d,s))) for b in BEACHES for d,s in date_ts]
     with ThreadPoolExecutor(max_workers=6) as ex:
         results=list(ex.map(_sample,tasks))
 
     history={b["name"]:[] for b in BEACHES}
-    for bn,ds,wv in results:
-        history[bn].append({"date":ds,"wqi":wv})
+    for bn,ds,src,wv in results:
+        if wv is not None:
+            history[bn].append({"date":ds,"wqi":wv,"source":src})
     for n in history:
         history[n]=sorted(history[n],key=lambda x:x["date"])
     return history
@@ -1729,9 +1734,16 @@ if mode == MODE_ISRAEL:
       }}}}}},
       scales:{{
         x:{{
-          ticks:{{color:'#cccccc',font:{{size:13,weight:'bold'}},maxRotation:45,autoSkip:false}},
+          ticks:{{
+            color:'#cccccc',
+            font:{{size:11,weight:'bold'}},
+            maxRotation:45,
+            autoSkip:true,
+            maxTicksLimit:15,
+            callback:function(val,index){{ return this.getLabelForValue(val); }}
+          }},
           grid:{{color:'rgba(255,255,255,0.08)'}},
-          title:{{display:true,text:'תאריך',color:'#cccccc',font:{{size:12,weight:'bold'}}}}
+          title:{{display:false}}
         }},
         y:{{min:1,max:100,
           ticks:{{color:'#cccccc',font:{{size:13,weight:'bold'}},
