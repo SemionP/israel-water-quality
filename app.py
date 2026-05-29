@@ -1554,13 +1554,23 @@ if mode == MODE_ISRAEL:
                             st.session_state.pending_point = {"lat": round(coords[1],5), "lon": round(coords[0],5)}
                             st.rerun()
 
-                # Build visible_beaches: monitoring points + all user zones
+                # Build visible_beaches: monitoring points + all user zones (always, before chart block)
                 visible_beaches = list(st.session_state.monitor_points.keys())
                 for zname in user_zone_history:
                     if zname not in visible_beaches:
                         visible_beaches.append(zname)
 
-                # Build comparison chart for visible beaches
+                # Pre-merge zone history into beach_history so all_dates is correct
+                for zname, zhistory in user_zone_history.items():
+                    if zname not in beach_history:
+                        beach_history[zname] = []
+                    existing = {e["date"] for e in beach_history[zname]}
+                    for entry in zhistory:
+                        if entry["date"] not in existing and entry["wqi"] is not None:
+                            beach_history[zname].append(entry)
+                            existing.add(entry["date"])
+
+                # Build comparison chart
                 if visible_beaches:
                     import json as _json
 
@@ -1568,12 +1578,11 @@ if mode == MODE_ISRAEL:
                     if df is not None and not df.empty:
                         for _, row in df.iterrows():
                             if row["name"] in beach_history and row["wqi"]:
-                                # Add if not already present
                                 existing_dates = {e["date"] for e in beach_history[row["name"]]}
                                 if sel_date not in existing_dates:
-                                    beach_history[row["name"]].append({"date": sel_date, "wqi": row["wqi"]})
+                                    beach_history[row["name"]].append({"date": sel_date, "wqi": row["wqi"], "source": data_source[:2]})
                             elif row["name"] not in beach_history and row["wqi"]:
-                                beach_history[row["name"]] = [{"date": sel_date, "wqi": row["wqi"]}]
+                                beach_history[row["name"]] = [{"date": sel_date, "wqi": row["wqi"], "source": data_source[:2]}]
 
                     # Merge city_wqi into beach_history for chart
                     for city_name, cwqi in (city_wqi or {}).items():
@@ -1582,19 +1591,7 @@ if mode == MODE_ISRAEL:
                                 beach_history[city_name] = []
                             existing = {e["date"] for e in beach_history[city_name]}
                             if sel_date not in existing:
-                                beach_history[city_name].append({"date": sel_date, "wqi": cwqi})
-
-                    # Merge user zones into beach_history for chart (full 30-day history)
-                    for zname, zhistory in user_zone_history.items():
-                        if zname not in beach_history:
-                            beach_history[zname] = []
-                        existing = {e["date"] for e in beach_history[zname]}
-                        for entry in zhistory:
-                            if entry["date"] not in existing and entry["wqi"] is not None:
-                                beach_history[zname].append(entry)
-                                existing.add(entry["date"])
-                        if zname not in visible_beaches and any(e["wqi"] for e in beach_history[zname]):
-                            visible_beaches.append(zname)
+                                beach_history[city_name].append({"date": sel_date, "wqi": cwqi, "source": "S3"})
 
                     all_dates = sorted(set(
                         e["date"] for name in visible_beaches
@@ -1704,7 +1701,7 @@ if mode == MODE_ISRAEL:
     </div>
   </div>
   <div style="display:flex;gap:10px;align-items:flex-start;">
-    <div style="position:relative;flex:1;min-height:600px;height:calc(100vh - 100px);">
+    <div style="position:relative;flex:1;min-height:550px;height:calc(100vh - 160px);padding-bottom:40px;">
       <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches"></canvas>
     </div>
     <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:space-around;min-height:600px;height:calc(100vh - 100px);min-width:110px;"></div>
@@ -1735,14 +1732,16 @@ if mode == MODE_ISRAEL:
       scales:{{
         x:{{
           ticks:{{
-            color:'#cccccc',
-            font:{{size:11,weight:'bold'}},
+            color:'#ffffff',
+            font:{{size:11,weight:'600'}},
             maxRotation:45,
+            minRotation:0,
             autoSkip:true,
-            maxTicksLimit:15,
-            callback:function(val,index){{ return this.getLabelForValue(val); }}
+            maxTicksLimit:10,
+            padding:4
           }},
           grid:{{color:'rgba(255,255,255,0.08)'}},
+          border:{{color:'rgba(255,255,255,0.2)'}},
           title:{{display:false}}
         }},
         y:{{min:1,max:100,
