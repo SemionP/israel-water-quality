@@ -1244,27 +1244,16 @@ if mode == MODE_ISRAEL:
 
 
 
-    # Basemap selector — hidden behind layers icon
+    # Basemap definitions
     BASEMAPS = {
-        "🗺️ Street":   "OpenStreetMap",
-        "🌑 Dark":      "CartoDB dark_matter",
-        "☁️ Light":     "CartoDB positron",
-        "🛰️ Satellite": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "🌊 Ocean":     "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
+        "Street":    {"tile": "OpenStreetMap",          "attr": "OSM"},
+        "Dark":      {"tile": "CartoDB dark_matter",    "attr": "CartoDB"},
+        "Light":     {"tile": "CartoDB positron",       "attr": "CartoDB"},
+        "Satellite": {"tile": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "attr": "Esri"},
+        "Ocean":     {"tile": "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}", "attr": "Esri"},
     }
     if "basemap" not in st.session_state:
-        st.session_state.basemap = "🌑 Dark"
-    if "bm_open" not in st.session_state:
-        st.session_state.bm_open = False
-
-    with st.expander("🗂️ Background Map", expanded=False):
-        for bm_name in BASEMAPS:
-            active = st.session_state.basemap == bm_name
-            if st.button(bm_name, key=f"bm_{bm_name}",
-                         use_container_width=True,
-                         type="primary" if active else "secondary"):
-                st.session_state.basemap = bm_name
-                st.rerun()
+        st.session_state.basemap = "Dark"
 
     # Shared map builder
     def _build_map(selected_beach=None):
@@ -1277,19 +1266,42 @@ if mode == MODE_ISRAEL:
         else:
             m = folium.Map(location=[32.4, 34.85], zoom_start=8,
                           tiles=bm_tile)
-        # Add draw plugin
+        # Add draw plugin — polygon + marker
         Draw(
             export=False,
             draw_options={
-                "polygon":   {"allowIntersection": False},
-                "rectangle": True,
-                "circle":    False,
-                "polyline":  False,
-                "marker":    False,
+                "polygon":      {"allowIntersection": False},
+                "rectangle":    True,
+                "marker":       True,
+                "circle":       False,
+                "polyline":     False,
                 "circlemarker": False,
             },
             edit_options={"edit": False}
         ).add_to(m)
+
+        # Add basemap tile layers with LayerControl
+        cur_bm = BASEMAPS.get(st.session_state.basemap, BASEMAPS["Dark"])
+        for bm_name, bm_data in BASEMAPS.items():
+            is_base = (bm_name == st.session_state.basemap)
+            if bm_data["tile"].startswith("http"):
+                folium.TileLayer(
+                    tiles=bm_data["tile"],
+                    attr=bm_data["attr"],
+                    name=bm_name,
+                    overlay=False,
+                    control=True,
+                    show=is_base,
+                ).add_to(m)
+            else:
+                folium.TileLayer(
+                    tiles=bm_data["tile"],
+                    name=bm_name,
+                    overlay=False,
+                    control=True,
+                    show=is_base,
+                ).add_to(m)
+        folium.LayerControl(position="topleft", collapsed=True).add_to(m)
         vis = {'min':30,'max':90,'palette':['#d73027','#f46d43','#fdae61','#fee090','#e0f3f8','#abd9e9','#74add1','#4575b4']}
         try:
             mid = ee.Image(wqi_layer).getMapId(vis)
@@ -1373,15 +1385,20 @@ if mode == MODE_ISRAEL:
                 if last_clicked and last_clicked.get("lat"):
                     clat = round(last_clicked["lat"], 5)
                     clon = round(last_clicked["lng"], 5)
-                    # Only set if different from last pending
                     prev = st.session_state.pending_point
                     if prev is None or prev.get("lat") != clat or prev.get("lon") != clon:
                         st.session_state.pending_point = {"lat": clat, "lon": clon}
                         st.rerun()
                 if last_drawing:
                     geom = last_drawing.get("geometry",{})
-                    if geom.get("type") in ["Polygon","Rectangle"]:
+                    gtype = geom.get("type","")
+                    if gtype in ["Polygon","Rectangle"]:
                         st.session_state["pending_polygon"] = geom["coordinates"][0]
+                    elif gtype == "Point":
+                        coords = geom.get("coordinates",[])
+                        if coords:
+                            st.session_state.pending_point = {"lat": round(coords[1],5), "lon": round(coords[0],5)}
+                            st.rerun()
 
                 # Detect which beaches are visible in current map bounds
                 # Use city names from maritime zones (not beach points)
