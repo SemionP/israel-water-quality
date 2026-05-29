@@ -874,9 +874,7 @@ def haversine_km(lat1,lon1,lat2,lon2):
 # =============================================================================
 MODE_ISRAEL = "🏖️ Israel Coast"
 MODE_GLOBAL = "🌍 Global"
-mode_col, _ = st.columns([1, 4])
-with mode_col:
-    mode = st.selectbox("📡 Zone:", [MODE_ISRAEL, MODE_GLOBAL], label_visibility="collapsed")
+mode = MODE_ISRAEL  # Default to Israel Coast
 
 # Risk profile shown in MEDI tab only — initialized here for session state
 medi_profile = "Beach Safety"  # default
@@ -1278,52 +1276,48 @@ if mode == MODE_ISRAEL:
         elif wqi_layer is not None:
             acq_dt  = datetime.utcnow() - timedelta(hours=img_age_hours)
             acq_str = acq_dt.strftime("%Y-%m-%d %H:%M UTC")
-            top_l, top_r = st.columns([2, 1])
-            with top_l:
-                # Navigator arrows
-                nav_cols = st.columns([1, 6, 1])
-                with nav_cols[0]:
-                    if st.button("◀", key="nav_prev", use_container_width=True):
+            # Compact navigator
+            src_colors = {"S3":"#00c8c8","S2":"#1ecb7b","MOD":"#f0a500"}
+            if all_candidates:
+                cur = all_candidates[st.session_state.img_idx]
+                cur_dt = (datetime.utcnow()-timedelta(hours=cur[0])).strftime("%b %d %H:%M UTC")
+                dots_html = ""
+                for i,(age,_,_,_,short,_) in enumerate(all_candidates):
+                    col_s = src_colors.get(short,"#888")
+                    sz = "10px" if i == st.session_state.img_idx else "7px"
+                    bd = "2px solid white" if i == st.session_state.img_idx else "none"
+                    dots_html += f'<span style="display:inline-block;width:{sz};height:{sz};border-radius:50%;background:{col_s};border:{bd};margin:0 3px;vertical-align:middle;"></span>'
+
+                nav_html = f"""<div style="display:flex;align-items:center;gap:8px;padding:2px 0;">
+  <button onclick="window.parent.postMessage({{type:'nav',dir:-1}},'*')" style="background:rgba(0,200,200,0.15);border:1px solid rgba(0,200,200,0.3);color:#00c8c8;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px;">◀</button>
+  {dots_html}
+  <button onclick="window.parent.postMessage({{type:'nav',dir:1}},'*')" style="background:rgba(0,200,200,0.15);border:1px solid rgba(0,200,200,0.3);color:#00c8c8;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px;">▶</button>
+  <span style="font-size:10px;color:#7fb3d3;margin-left:4px;"><b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</span>
+</div>"""
+                nav_c1, nav_c2, nav_c3 = st.columns([1, 8, 1])
+                with nav_c1:
+                    if st.button("◀", key="nav_prev"):
                         n = len(all_candidates)
-                        st.session_state.img_idx = (st.session_state.img_idx + 1) % n if n > 0 else 0
+                        st.session_state.img_idx = (st.session_state.img_idx+1)%n
                         st.rerun()
-                with nav_cols[1]:
-                    # Timeline dots
-                    if all_candidates:
-                        dots_html = '<div style="display:flex;align-items:center;gap:4px;padding:4px 0;">'
-                        src_colors = {"S3":"#00c8c8","S2":"#1ecb7b","MOD":"#f0a500"}
-                        for i,(age,_,_,_,short,_) in enumerate(all_candidates):
-                            dt_s = (datetime.utcnow()-timedelta(hours=age)).strftime("%m-%d %H:%M")
-                            is_sel = (i == st.session_state.img_idx)
-                            col_s = src_colors.get(short,"#888")
-                            size  = "14px" if is_sel else "10px"
-                            border= f"3px solid white" if is_sel else "2px solid transparent"
-                            dots_html += f'<div title="{short} · {dt_s}" style="width:{size};height:{size};border-radius:50%;background:{col_s};border:{border};flex-shrink:0;cursor:pointer;"></div>'
-                            if i < len(all_candidates)-1:
-                                dots_html += '<div style="flex:1;height:2px;background:rgba(255,255,255,0.2);"></div>'
-                        dots_html += '</div>'
-                        # Show current selection info
-                        cur = all_candidates[st.session_state.img_idx]
-                        cur_dt = (datetime.utcnow()-timedelta(hours=cur[0])).strftime("%b %d %H:%M UTC")
-                        st.markdown(f'<div style="font-size:11px;color:#7fb3d3;margin-bottom:2px;">{dots_html}<b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</div>', unsafe_allow_html=True)
-                with nav_cols[2]:
-                    if st.button("▶", key="nav_next", use_container_width=True):
+                with nav_c2:
+                    st.markdown(f'<div style="font-size:10px;color:#7fb3d3;padding:4px 0;">{dots_html} <b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</div>', unsafe_allow_html=True)
+                with nav_c3:
+                    if st.button("▶", key="nav_next"):
                         n = len(all_candidates)
-                        st.session_state.img_idx = (st.session_state.img_idx - 1) % n if n > 0 else 0
+                        st.session_state.img_idx = (st.session_state.img_idx-1)%n
                         st.rerun()
-            with top_r:
-                history_range = st.radio("טווח:", ["7 ימים","חודש","שנה"],
-                    horizontal=True, key="history_range", label_visibility="collapsed")
-            days_map = {"7 ימים":7,"חודש":30,"שנה":365}
-            history_days  = days_map[history_range]
-            history_label = {"7 ימים":"7 ימים","חודש":"30 יום","שנה":"365 יום"}[history_range]
-            with st.spinner(f"Loading {history_label}..."):
+
+            # Always use 7-day history
+            history_days  = 7
+            history_label = "7 ימים"
+            with st.spinner("Loading history..."):
                 beach_history = compute_beach_history_range(history_days)
             col_map, col_info = st.columns([1, 1], gap="small")
             with col_map:
                 map_data_wqi = st_folium(
                     _build_map(),
-                    use_container_width=True, height=650,
+                    use_container_width=True, height=740,
                     key="israel_map_wqi",
                     returned_objects=["bounds","last_active_drawing"]
                 )
@@ -1334,25 +1328,7 @@ if mode == MODE_ISRAEL:
                     geom = last_drawing.get("geometry",{})
                     if geom.get("type") in ["Polygon","Rectangle"]:
                         st.session_state["pending_polygon"] = geom["coordinates"][0]
-                if city_wqi:
-                    valid_cities = {k:v for k,v in city_wqi.items() if v is not None}
-                    if valid_cities:
-                        best_city  = max(valid_cities, key=valid_cities.get)
-                        worst_city = min(valid_cities, key=valid_cities.get)
-                        st.markdown(f"""
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px;">
-  <div style="background:rgba(30,203,123,0.08);border:1px solid rgba(30,203,123,0.3);border-radius:6px;padding:8px 10px;">
-    <p style="font-size:10px;color:#7fb3d3;margin:0 0 2px;">הכי נקי</p>
-    <p style="font-size:13px;font-weight:600;margin:0;color:#1ecb7b;">{best_city}</p>
-    <p style="font-size:11px;color:#7fb3d3;margin:0;">{valid_cities[best_city]:.1f} / 100</p>
-  </div>
-  <div style="background:rgba(224,60,60,0.08);border:1px solid rgba(224,60,60,0.3);border-radius:6px;padding:8px 10px;">
-    <p style="font-size:10px;color:#7fb3d3;margin:0 0 2px;">דורש תשומת לב</p>
-    <p style="font-size:13px;font-weight:600;margin:0;color:#e03c3c;">{worst_city}</p>
-    <p style="font-size:11px;color:#7fb3d3;margin:0;">{valid_cities[worst_city]:.1f} / 100</p>
-  </div>
-</div>
-""", unsafe_allow_html=True)
+
                 # Detect which beaches are visible in current map bounds
                 # Use city names from maritime zones (not beach points)
                 bounds = map_data_wqi.get("bounds") if map_data_wqi else None
@@ -1480,10 +1456,10 @@ if mode == MODE_ISRAEL:
     </div>
   </div>
   <div style="display:flex;gap:10px;align-items:flex-start;">
-    <div style="position:relative;flex:1;min-height:500px;height:calc(100vh - 130px);">
+    <div style="position:relative;flex:1;min-height:600px;height:calc(100vh - 100px);">
       <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches"></canvas>
     </div>
-    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:space-around;min-height:500px;height:calc(100vh - 130px);min-width:110px;"></div>
+    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:space-around;min-height:600px;height:calc(100vh - 100px);min-width:110px;"></div>
   </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -1534,7 +1510,7 @@ if mode == MODE_ISRAEL:
 }})();
 </script></body></html>
 """
-                    components.html(chart_html, height=650, scrolling=False)
+                    components.html(chart_html, height=740, scrolling=False)
                 else:
                     st.caption("Zoom in to see beach comparison")
 
