@@ -1328,47 +1328,12 @@ if mode == MODE_ISRAEL:
                     returned_objects=["bounds","last_active_drawing"]
                 )
             with col_info:
-                # ── Zone Manager ──────────────────────────────────────────────
-                st.markdown("#### 📍 Custom Zones")
+                # detect drawings for zone manager (handled below chart)
                 last_drawing = map_data_wqi.get("last_active_drawing") if map_data_wqi else None
                 if last_drawing:
                     geom = last_drawing.get("geometry",{})
                     if geom.get("type") in ["Polygon","Rectangle"]:
-                        coords = geom["coordinates"][0]
-                        st.session_state["pending_polygon"] = coords
-                        st.info("✏️ Polygon drawn — give it a name and save")
-
-                if st.session_state.get("pending_polygon"):
-                    zone_name_input = st.text_input("Zone name:", key="zone_name_inp", placeholder="e.g. Haifa Port")
-                    col_save, col_cancel = st.columns(2)
-                    with col_save:
-                        if st.button("💾 Save zone", use_container_width=True):
-                            if zone_name_input.strip():
-                                st.session_state.user_zones[zone_name_input.strip()] = {
-                                    "coords": st.session_state["pending_polygon"]
-                                }
-                                save_zones(st.session_state.user_zones)
-                                del st.session_state["pending_polygon"]
-                                st.rerun()
-                    with col_cancel:
-                        if st.button("✕ Cancel", use_container_width=True):
-                            del st.session_state["pending_polygon"]
-                            st.rerun()
-
-                if st.session_state.user_zones:
-                    for zname in list(st.session_state.user_zones.keys()):
-                        col_z, col_del = st.columns([3,1])
-                        with col_z:
-                            st.caption(f"📍 {zname}")
-                        with col_del:
-                            if st.button("🗑", key=f"del_{zname}"):
-                                del st.session_state.user_zones[zname]
-                                save_zones(st.session_state.user_zones)
-                                st.rerun()
-                else:
-                    st.caption("Draw a polygon on the map to add a zone")
-
-                st.markdown("---")
+                        st.session_state["pending_polygon"] = geom["coordinates"][0]
                 if city_wqi:
                     valid_cities = {k:v for k,v in city_wqi.items() if v is not None}
                     if valid_cities:
@@ -1572,6 +1537,36 @@ if mode == MODE_ISRAEL:
                     components.html(chart_html, height=650, scrolling=False)
                 else:
                     st.caption("Zoom in to see beach comparison")
+
+                # ── Zone Manager (below chart) ─────────────────────────────────
+                with st.expander("📍 Custom Zones", expanded=False):
+                    if st.session_state.get("pending_polygon"):
+                        zone_name_input = st.text_input("Zone name:", key="zone_name_inp", placeholder="e.g. Haifa Port")
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            if st.button("💾 Save", use_container_width=True):
+                                if zone_name_input.strip():
+                                    st.session_state.user_zones[zone_name_input.strip()] = {
+                                        "coords": st.session_state["pending_polygon"]
+                                    }
+                                    save_zones(st.session_state.user_zones)
+                                    del st.session_state["pending_polygon"]
+                                    st.rerun()
+                        with col_cancel:
+                            if st.button("✕", use_container_width=True):
+                                del st.session_state["pending_polygon"]
+                                st.rerun()
+                    if st.session_state.user_zones:
+                        for zname in list(st.session_state.user_zones.keys()):
+                            col_z, col_del = st.columns([3,1])
+                            with col_z: st.caption(f"📍 {zname}")
+                            with col_del:
+                                if st.button("🗑", key=f"del_{zname}"):
+                                    del st.session_state.user_zones[zname]
+                                    save_zones(st.session_state.user_zones)
+                                    st.rerun()
+                    else:
+                        st.caption("Draw a polygon on the map to add a zone")
 
 
 
