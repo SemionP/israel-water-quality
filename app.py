@@ -349,7 +349,7 @@ def load_zones() -> dict:
         return {}
 
 def save_zones(zones: dict):
-    import json as _j, urllib.request
+    import json as _j, urllib.request, urllib.error
     data = _j.dumps(zones, ensure_ascii=False).encode()
     _dbg = []
     # Always save to /tmp
@@ -391,6 +391,12 @@ def save_zones(zones: dict):
         resp = urllib.request.urlopen(req2, timeout=15)
         result = _j.loads(resp.read())
         _dbg.append(f"saved OK id={result.get('id','?')[:12]} ({method})")
+    except urllib.error.HTTPError as he:
+        try:
+            err_body = he.read().decode()[:200]
+        except:
+            err_body = "?"
+        _dbg.append(f"HTTP {he.code}: {err_body}")
     except Exception as e:
         _dbg.append(f"save err: {type(e).__name__}: {str(e)[:120]}")
     st.session_state["_save_dbg"] = " | ".join(_dbg)
