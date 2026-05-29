@@ -1372,22 +1372,8 @@ if mode == MODE_ISRAEL:
     elif wqi_layer is not None:
         atm = get_atm(32.4, 34.85)
 
-    # Compute WQI for all monitoring points
-    src_label = "S2" if data_source=="Sentinel-2" else "S3"
-    if st.session_state.monitor_points:
-        with st.spinner("Computing WQI for monitoring points..."):
-            for pt_name, pt_data in st.session_state.monitor_points.items():
-                wv = compute_point_wqi(
-                    pt_data["lat"], pt_data["lon"],
-                    sel_date, src_label
-                )
-                st.session_state.monitor_points[pt_name]["wqi"] = wv
-            save_points(st.session_state.monitor_points)
-        city_wqi = {n: d.get("wqi") for n,d in st.session_state.monitor_points.items()}
-    else:
-        city_wqi = {}
-
-    # city_wqi is empty until user adds monitoring points
+    # All monitoring areas now unified under user_zones
+    city_wqi = {}
 
     # Compute user-defined zone WQI (today + 30-day history)
     user_zone_wqi = {}
@@ -1504,22 +1490,10 @@ if mode == MODE_ISRAEL:
                         st.session_state.img_idx = (st.session_state.img_idx-1)%n
                         st.rerun()
 
-            # Load history — always initialize, points + zones both contribute
+            # Load history for user zones
             history_days  = 30
             history_label = "30 ימים"
             beach_history = {}
-            if st.session_state.monitor_points:
-                with st.spinner("Loading history..."):
-                    beach_history = compute_beach_history_range(history_days)
-                # Override history with current point WQI values
-                for pt_name, pt_data in st.session_state.monitor_points.items():
-                    wv = pt_data.get("wqi")
-                    if wv is not None:
-                        if pt_name not in beach_history:
-                            beach_history[pt_name] = []
-                        existing = {e["date"] for e in beach_history[pt_name]}
-                        if sel_date not in existing:
-                            beach_history[pt_name].append({"date": sel_date, "wqi": wv})
             col_map, col_info = st.columns([1, 1], gap="small")
             with col_map:
                 map_data_wqi = st_folium(
@@ -1529,36 +1503,37 @@ if mode == MODE_ISRAEL:
                     returned_objects=["bounds","last_active_drawing","last_clicked"]
                 )
             with col_info:
-                # Detect map click → new monitoring point
+                # Detect drawings → unified pending_zone (point or polygon)
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
                 last_drawing  = map_data_wqi.get("last_active_drawing") if map_data_wqi else None
-                if last_clicked and last_clicked.get("lat"):
-                    clat = round(last_clicked["lat"], 5)
-                    clon = round(last_clicked["lng"], 5)
-                    prev = st.session_state.pending_point
-                    if prev is None or prev.get("lat") != clat or prev.get("lon") != clon:
-                        st.session_state.pending_point = {"lat": clat, "lon": clon}
-                        st.rerun()
+
                 if last_drawing:
-                    geom = last_drawing.get("geometry",{})
-                    gtype = geom.get("type","")
-                    if gtype in ["Polygon","Rectangle"]:
+                    geom  = last_drawing.get("geometry", {})
+                    gtype = geom.get("type", "")
+                    if gtype in ["Polygon", "Rectangle"]:
                         coords = geom["coordinates"][0]
-                        prev = st.session_state.get("pending_polygon")
-                        if prev != coords:
-                            st.session_state["pending_polygon"] = coords
+                        prev   = st.session_state.get("pending_zone")
+                        if not prev or prev.get("coords") != coords:
+                            st.session_state["pending_zone"] = {"type": "polygon", "coords": coords}
                             st.rerun()
                     elif gtype == "Point":
-                        coords = geom.get("coordinates",[])
-                        if coords:
-                            st.session_state.pending_point = {"lat": round(coords[1],5), "lon": round(coords[0],5)}
-                            st.rerun()
+                        raw = geom.get("coordinates", [])
+                        if raw:
+                            lon, lat = round(raw[0], 5), round(raw[1], 5)
+                            prev = st.session_state.get("pending_zone")
+                            if not prev or prev.get("lat") != lat or prev.get("lon") != lon:
+                                st.session_state["pending_zone"] = {"type": "point", "lat": lat, "lon": lon}
+                                st.rerun()
+                elif last_clicked and last_clicked.get("lat"):
+                    clat = round(last_clicked["lat"], 5)
+                    clon = round(last_clicked["lng"], 5)
+                    prev = st.session_state.get("pending_zone")
+                    if not prev or prev.get("lat") != clat or prev.get("lon") != clon:
+                        st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon}
+                        st.rerun()
 
-                # Build visible_beaches: monitoring points + all user zones (always, before chart block)
-                visible_beaches = list(st.session_state.monitor_points.keys())
-                for zname in user_zone_history:
-                    if zname not in visible_beaches:
-                        visible_beaches.append(zname)
+                # All monitoring zones → visible in chart
+                visible_beaches = list(user_zone_history.keys())
 
                 # Pre-merge zone history into beach_history so all_dates is correct
                 for zname, zhistory in user_zone_history.items():
@@ -1776,32 +1751,46 @@ if mode == MODE_ISRAEL:
                 else:
                     st.caption("Zoom in to see beach comparison")
 
-                # ── Zone Manager ──────────────────────────────────────────────
-                with st.expander("🟦 Monitoring Zones", expanded=bool(st.session_state.get("pending_polygon"))):
-                    if st.session_state.get("pending_polygon"):
-                        pp = st.session_state["pending_polygon"]
-                        st.info(f"🟦 New zone: {len(pp)} vertices")
-                        zone_name_inp = st.text_input("Zone name:", key="zone_name_inp", placeholder="e.g. Haifa Anchorage")
+                # ── Monitoring Areas (unified: points + polygons) ─────────────
+                pending_zone = st.session_state.get("pending_zone")
+                with st.expander("📍 Monitoring Areas", expanded=bool(pending_zone)):
+                    if pending_zone:
+                        if pending_zone["type"] == "polygon":
+                            st.info(f"🟦 New polygon: {len(pending_zone['coords'])} vertices")
+                        else:
+                            st.info(f"📍 New point: {pending_zone['lat']:.4f}, {pending_zone['lon']:.4f}")
+                        zone_name_inp = st.text_input("Name:", key="zone_name_inp", placeholder="e.g. Haifa Anchorage")
                         zc1, zc2 = st.columns(2)
                         with zc1:
-                            if st.button("💾 Save Zone", use_container_width=True, key="save_zone"):
+                            if st.button("💾 Save", use_container_width=True, key="save_zone"):
                                 if zone_name_inp.strip():
-                                    st.session_state.user_zones[zone_name_inp.strip()] = {"coords": pp}
+                                    zn = zone_name_inp.strip()
+                                    if pending_zone["type"] == "polygon":
+                                        st.session_state.user_zones[zn] = {"coords": pending_zone["coords"], "type": "polygon"}
+                                    else:
+                                        # Convert point → small square buffer (~500m) as polygon coords
+                                        lat, lon = pending_zone["lat"], pending_zone["lon"]
+                                        d = 0.005  # ~500m in degrees
+                                        box = [[lon-d,lat-d],[lon+d,lat-d],[lon+d,lat+d],[lon-d,lat+d],[lon-d,lat-d]]
+                                        st.session_state.user_zones[zn] = {"coords": box, "type": "point", "lat": lat, "lon": lon}
                                     save_zones(st.session_state.user_zones)
-                                    st.session_state.pop("pending_polygon", None)
+                                    st.session_state.pop("pending_zone", None)
                                     compute_zone_history_range.clear()
                                     st.rerun()
                         with zc2:
                             if st.button("✕ Discard", use_container_width=True, key="cancel_zone"):
-                                st.session_state.pop("pending_polygon", None)
+                                st.session_state.pop("pending_zone", None)
                                 st.rerun()
+
                     if st.session_state.user_zones:
                         for zname in list(st.session_state.user_zones.keys()):
                             zwqi = user_zone_wqi.get(zname)
-                            zwqi_str = f"{zwqi:.1f}" if zwqi else "..."
+                            zwqi_str = f"{zwqi:.1f}" if zwqi is not None else "..."
+                            ztype = st.session_state.user_zones[zname].get("type", "polygon")
+                            icon  = "📍" if ztype == "point" else "🟦"
                             zc, zd = st.columns([3, 1])
                             with zc:
-                                st.caption(f"🟦 {zname} — WQI: {zwqi_str}")
+                                st.caption(f"{icon} {zname} — WQI: {zwqi_str}")
                             with zd:
                                 if st.button("🗑", key=f"del_zone_{zname}"):
                                     del st.session_state.user_zones[zname]
@@ -1809,45 +1798,7 @@ if mode == MODE_ISRAEL:
                                     compute_zone_history_range.clear()
                                     st.rerun()
                     else:
-                        st.caption("Draw a rectangle or polygon on the map to add a zone")
-
-
-                with st.expander("📍 Monitoring Points", expanded=bool(st.session_state.pending_point)):
-                    # New point dialog
-                    if st.session_state.pending_point:
-                        pp = st.session_state.pending_point
-                        st.info(f"📍 New point: {pp['lat']:.4f}, {pp['lon']:.4f}")
-                        pt_name_inp = st.text_input("Name:", key="pt_name_inp", placeholder="e.g. Haifa Port")
-                        cs, cc = st.columns(2)
-                        with cs:
-                            if st.button("💾 Save", use_container_width=True, key="save_pt"):
-                                if pt_name_inp.strip():
-                                    st.session_state.monitor_points[pt_name_inp.strip()] = {
-                                        "lat": pp["lat"], "lon": pp["lon"], "wqi": None
-                                    }
-                                    save_points(st.session_state.monitor_points)
-                                    st.session_state.pending_point = None
-                                    st.rerun()
-                        with cc:
-                            if st.button("✕", use_container_width=True, key="cancel_pt"):
-                                st.session_state.pending_point = None
-                                st.rerun()
-
-                    # List existing points
-                    if st.session_state.monitor_points:
-                        for pname in list(st.session_state.monitor_points.keys()):
-                            pd_data = st.session_state.monitor_points[pname]
-                            wv_str  = f"{pd_data['wqi']:.1f}" if pd_data.get("wqi") else "..."
-                            cp, cd  = st.columns([3, 1])
-                            with cp:
-                                st.caption(f"📍 {pname} — WQI: {wv_str}")
-                            with cd:
-                                if st.button("🗑", key=f"del_pt_{pname}"):
-                                    del st.session_state.monitor_points[pname]
-                                    save_points(st.session_state.monitor_points)
-                                    st.rerun()
-                    else:
-                        st.caption("Click anywhere on the sea to add a monitoring point")
+                        st.caption("Click on the map or draw a shape to add a monitoring area")
 
 
 
