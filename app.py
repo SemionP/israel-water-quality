@@ -1507,29 +1507,43 @@ if mode == MODE_ISRAEL:
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
                 last_drawing  = map_data_wqi.get("last_active_drawing") if map_data_wqi else None
 
+                # Track which drawings have already been processed (by coords hash)
+                if "saved_drawing_hashes" not in st.session_state:
+                    st.session_state.saved_drawing_hashes = set()
+
                 if last_drawing:
                     geom  = last_drawing.get("geometry", {})
                     gtype = geom.get("type", "")
                     if gtype in ["Polygon", "Rectangle"]:
                         coords = geom["coordinates"][0]
-                        prev   = st.session_state.get("pending_zone")
-                        if not prev or prev.get("coords") != coords:
-                            st.session_state["pending_zone"] = {"type": "polygon", "coords": coords}
+                        draw_hash = str(coords)
+                        pending   = st.session_state.get("pending_zone")
+                        # Only trigger if this drawing hasn't been saved yet AND isn't already pending
+                        already_pending = pending and pending.get("coords") == coords
+                        already_saved   = draw_hash in st.session_state.saved_drawing_hashes
+                        if not already_pending and not already_saved:
+                            st.session_state["pending_zone"] = {"type": "polygon", "coords": coords, "hash": draw_hash}
                             st.rerun()
                     elif gtype == "Point":
                         raw = geom.get("coordinates", [])
                         if raw:
-                            lon, lat = round(raw[0], 5), round(raw[1], 5)
-                            prev = st.session_state.get("pending_zone")
-                            if not prev or prev.get("lat") != lat or prev.get("lon") != lon:
-                                st.session_state["pending_zone"] = {"type": "point", "lat": lat, "lon": lon}
+                            lon, lat  = round(raw[0], 5), round(raw[1], 5)
+                            draw_hash = f"{lat},{lon}"
+                            pending   = st.session_state.get("pending_zone")
+                            already_pending = pending and pending.get("lat") == lat and pending.get("lon") == lon
+                            already_saved   = draw_hash in st.session_state.saved_drawing_hashes
+                            if not already_pending and not already_saved:
+                                st.session_state["pending_zone"] = {"type": "point", "lat": lat, "lon": lon, "hash": draw_hash}
                                 st.rerun()
                 elif last_clicked and last_clicked.get("lat"):
                     clat = round(last_clicked["lat"], 5)
                     clon = round(last_clicked["lng"], 5)
-                    prev = st.session_state.get("pending_zone")
-                    if not prev or prev.get("lat") != clat or prev.get("lon") != clon:
-                        st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon}
+                    draw_hash = f"{clat},{clon}"
+                    pending   = st.session_state.get("pending_zone")
+                    already_pending = pending and pending.get("lat") == clat and pending.get("lon") == clon
+                    already_saved   = draw_hash in st.session_state.saved_drawing_hashes
+                    if not already_pending and not already_saved:
+                        st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon, "hash": draw_hash}
                         st.rerun()
 
                 # All monitoring zones → visible in chart
@@ -1768,17 +1782,24 @@ if mode == MODE_ISRAEL:
                                     if pending_zone["type"] == "polygon":
                                         st.session_state.user_zones[zn] = {"coords": pending_zone["coords"], "type": "polygon"}
                                     else:
-                                        # Convert point → small square buffer (~500m) as polygon coords
                                         lat, lon = pending_zone["lat"], pending_zone["lon"]
-                                        d = 0.005  # ~500m in degrees
+                                        d = 0.005
                                         box = [[lon-d,lat-d],[lon+d,lat-d],[lon+d,lat+d],[lon-d,lat+d],[lon-d,lat-d]]
                                         st.session_state.user_zones[zn] = {"coords": box, "type": "point", "lat": lat, "lon": lon}
                                     save_zones(st.session_state.user_zones)
+                                    # Mark this drawing as processed so it won't re-trigger
+                                    h = pending_zone.get("hash")
+                                    if h:
+                                        st.session_state.saved_drawing_hashes.add(h)
                                     st.session_state.pop("pending_zone", None)
                                     compute_zone_history_range.clear()
                                     st.rerun()
                         with zc2:
                             if st.button("✕ Discard", use_container_width=True, key="cancel_zone"):
+                                # Mark as processed so it won't re-trigger either
+                                h = pending_zone.get("hash")
+                                if h:
+                                    st.session_state.saved_drawing_hashes.add(h)
                                 st.session_state.pop("pending_zone", None)
                                 st.rerun()
 
