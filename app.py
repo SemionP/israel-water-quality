@@ -1311,11 +1311,23 @@ if mode == MODE_ISRAEL:
                         st.session_state.img_idx = (st.session_state.img_idx-1)%n
                         st.rerun()
 
-            # Always use 7-day history
+            # Load history only if monitoring points are defined
             history_days  = 7
             history_label = "7 ימים"
-            with st.spinner("Loading history..."):
-                beach_history = compute_beach_history_range(history_days)
+            if st.session_state.monitor_points:
+                with st.spinner("Loading history..."):
+                    beach_history = compute_beach_history_range(history_days)
+                # Override history with current point WQI values
+                for pt_name, pt_data in st.session_state.monitor_points.items():
+                    wv = pt_data.get("wqi")
+                    if wv is not None:
+                        if pt_name not in beach_history:
+                            beach_history[pt_name] = []
+                        existing = {e["date"] for e in beach_history[pt_name]}
+                        if sel_date not in existing:
+                            beach_history[pt_name].append({"date": sel_date, "wqi": wv})
+            else:
+                beach_history = {}
             col_map, col_info = st.columns([1, 1], gap="small")
             with col_map:
                 map_data_wqi = st_folium(
@@ -1355,10 +1367,9 @@ if mode == MODE_ISRAEL:
                         city for city, pt in CITY_POINTS.items()
                         if lat_min <= pt["lat"] <= lat_max and lon_min <= pt["lon"] <= lon_max
                     ]
-                    all_pts = list(st.session_state.monitor_points.keys()) or list(CITY_POINTS.keys())
-                    visible_beaches = filtered if len(filtered) >= 2 else all_pts
+                    visible_beaches = list(st.session_state.monitor_points.keys())
                 else:
-                    visible_beaches = list(st.session_state.monitor_points.keys()) or list(CITY_POINTS.keys())
+                    visible_beaches = list(st.session_state.monitor_points.keys())
 
                 # Build comparison chart for visible beaches
                 if visible_beaches:
