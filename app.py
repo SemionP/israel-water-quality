@@ -1244,22 +1244,23 @@ if mode == MODE_ISRAEL:
 
 
 
-    # Basemap selector
+    # Basemap selector — hidden behind layers icon
     BASEMAPS = {
-        "🗺️ Street":       "OpenStreetMap",
-        "🌑 Dark":          "CartoDB dark_matter",
-        "☁️ Light":         "CartoDB positron",
-        "🛰️ Satellite":     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        "🌊 Ocean":         "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
+        "🗺️ Street":   "OpenStreetMap",
+        "🌑 Dark":      "CartoDB dark_matter",
+        "☁️ Light":     "CartoDB positron",
+        "🛰️ Satellite": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "🌊 Ocean":     "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
     }
     if "basemap" not in st.session_state:
         st.session_state.basemap = "🌑 Dark"
+    if "bm_open" not in st.session_state:
+        st.session_state.bm_open = False
 
-    bm_cols = st.columns(len(BASEMAPS))
-    for i, (bm_name, _) in enumerate(BASEMAPS.items()):
-        with bm_cols[i]:
+    with st.expander("🗂️ Background Map", expanded=False):
+        for bm_name in BASEMAPS:
             active = st.session_state.basemap == bm_name
-            if st.button(bm_name, key=f"bm_{i}",
+            if st.button(bm_name, key=f"bm_{bm_name}",
                          use_container_width=True,
                          type="primary" if active else "secondary"):
                 st.session_state.basemap = bm_name
