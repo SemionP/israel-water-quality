@@ -1207,13 +1207,7 @@ if mode == MODE_ISRAEL:
     else:
         city_wqi = {}
 
-    # Legacy city WQI for default stats (fallback if no points defined)
-    if not city_wqi:
-        with st.spinner("Computing city maritime WQI..."):
-            city_wqi = compute_city_wqi(
-                sel_date,
-                source=src_label
-            )
+    # city_wqi is empty until user adds monitoring points
 
     # Compute user-defined zone WQI
     user_zone_wqi = {}
@@ -1274,77 +1268,7 @@ if mode == MODE_ISRAEL:
                              name="WQI",overlay=True,control=False,opacity=0.85).add_to(m)
         except Exception:
             pass  # map shows base tiles only if GEE layer fails
-        for _,r in df.iterrows():
-            sc = r.get('wqi')
-            cm = "#1ecb7b" if sc and sc>65 else "#f0a500" if sc and sc>45 else "#e03c3c"
-            wqi_str = f"{sc:.1f}" if sc else "N/A"
-            is_selected = selected_beach == r["name"]
-            size = "20px" if is_selected else "14px"
-            ring = f"box-shadow:0 0 0 3px white, 0 0 0 5px {cm};" if is_selected else f"box-shadow:0 0 8px {cm}99;"
-            # Sampling zone circle (450m buffer)
-            folium.Circle(
-                location=[r["lat"], r["lon"]],
-                radius=450,
-                color=cm,
-                fill=False,
-                weight=1.5,
-                opacity=0.6,
-                tooltip=f"Sampling zone: 450m · WQI: {wqi_str}",
-            ).add_to(m)
-            folium.Marker(
-                location=[r["lat"],r["lon"]],
-                tooltip=f"🏖️ {r['name']} | WQI: {wqi_str} - Click for MEDI",
-                popup=folium.Popup(f"<b>🏖️ {r['name']}</b><br>WQI: <span style='color:{cm};font-weight:bold;'>{wqi_str}</span><br><small>Sampling zone: 450m radius</small>", max_width=200),
-                icon=folium.DivIcon(
-                    html=f'''<div style="background:{cm};border:2px solid white;border-radius:50%;width:{size};height:{size};{ring};cursor:pointer;"></div>
-<div style="position:absolute;top:18px;left:-32px;white-space:nowrap;font-family:Arial;font-size:11px;font-weight:700;color:white;text-shadow:0 1px 4px rgba(0,0,0,0.95);">{r["name"]}</div>''',
-                    icon_size=(20,20),icon_anchor=(10,10))
-            ).add_to(m)
-        # Draw user monitoring points
-        for pt_name, pt_data in st.session_state.monitor_points.items():
-            pt_lat = pt_data["lat"]
-            pt_lon = pt_data["lon"]
-            pt_wqi = pt_data.get("wqi")
-            cm_pt  = "#4575b4" if pt_wqi and pt_wqi>=70 else "#fdae61" if pt_wqi and pt_wqi>=50 else "#d73027" if pt_wqi else "#00c8c8"
-            wqi_str= f"{pt_wqi:.1f}" if pt_wqi else "..."
-            is_sel = (selected_beach == pt_name) if selected_beach else False
-            size   = "16px" if is_sel else "11px"
-            ring   = "box-shadow:0 0 0 3px white,0 0 0 5px "+cm_pt+";" if is_sel else ""
-            folium.Marker(
-                location=[pt_lat, pt_lon],
-                tooltip=f"📍 {pt_name} | WQI: {wqi_str}",
-                popup=folium.Popup(f"<b>{pt_name}</b><br>WQI: <b style='color:{cm_pt}'>{wqi_str}</b>", max_width=150),
-                icon=folium.DivIcon(
-                    html=f'''<div style="background:{cm_pt};border:2px solid white;border-radius:50%;width:{size};height:{size};{ring};cursor:pointer;"></div>
-<div style="position:absolute;top:16px;left:-24px;white-space:nowrap;font-family:Arial;font-size:10px;font-weight:700;color:white;text-shadow:0 1px 3px rgba(0,0,0,0.9);">{pt_name} {wqi_str}</div>''',
-                    icon_size=(16,16), icon_anchor=(8,8))
-            ).add_to(m)
-
-        # Draw user-defined zones
-        for zone_name, zone_data in st.session_state.user_zones.items():
-            coords = zone_data.get("coords", [])
-            if coords:
-                folium.Polygon(
-                    locations=[[p[1],p[0]] for p in coords],
-                    color="#00c8c8",
-                    fill=True,
-                    fill_color="#00c8c8",
-                    fill_opacity=0.12,
-                    weight=2,
-                    dash_array="6 4",
-                    tooltip=f"📍 {zone_name}",
-                ).add_to(m)
-                # Label at centroid
-                lats = [p[1] for p in coords]
-                lons = [p[0] for p in coords]
-                folium.Marker(
-                    location=[sum(lats)/len(lats), sum(lons)/len(lons)],
-                    icon=folium.DivIcon(
-                        html=f'''<div style="background:rgba(0,200,200,0.85);color:#020d18;font-family:Arial;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;white-space:nowrap;">{zone_name}</div>''',
-                        icon_size=(100,20), icon_anchor=(50,10))
-                ).add_to(m)
-
-        # No default city markers — user defines monitoring points
+        # No default markers
 
         m.add_child(OnMapWaterLegend())
         return m
