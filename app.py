@@ -1378,7 +1378,15 @@ def compute_zone_history_range(zones_json: str, days_back: int):
 
 # Session state initialization
 if "user_zones" not in st.session_state:
-    st.session_state.user_zones = load_zones_from_all()
+    zones = load_zones_from_all()
+    st.session_state.user_zones = zones
+    # Debug: test token
+    try:
+        tok = _gdrive_token()
+        tok_status = "token OK" if tok else "token FAILED"
+    except Exception as e:
+        tok_status = f"token ERROR: {e}"
+    st.session_state["_zones_debug"] = f"{tok_status} | Loaded {len(zones)} zones: {list(zones.keys())}"
 if "monitor_points" not in st.session_state:
     st.session_state.monitor_points = load_points()
 if "pending_point" not in st.session_state:
@@ -1859,6 +1867,8 @@ if mode == MODE_ISRAEL:
                 # ── Monitoring Areas (unified: points + polygons) ─────────────
                 pending_zone = st.session_state.get("pending_zone")
                 with st.expander("📍 Monitoring Areas", expanded=bool(pending_zone)):
+                    if st.session_state.get("_zones_debug"):
+                        st.caption(f"🔍 {st.session_state['_zones_debug']}")
                     if pending_zone:
                         if pending_zone["type"] == "polygon":
                             st.info(f"🟦 New polygon: {len(pending_zone['coords'])} vertices")
