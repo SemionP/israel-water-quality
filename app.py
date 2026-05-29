@@ -216,20 +216,33 @@ init_gee()
 ZONES_KEY = "medi-zones-v1"
 
 def load_zones() -> dict:
-    """Load user-defined zones from persistent storage."""
     try:
         import json as _j
-        raw = open("/tmp/medi_zones.json").read()
-        return _j.loads(raw)
+        return _j.loads(open("/tmp/medi_zones.json").read())
     except:
         return {}
 
 def save_zones(zones: dict):
-    """Save user-defined zones to persistent storage."""
     import json as _j
     try:
         with open("/tmp/medi_zones.json","w") as f:
             f.write(_j.dumps(zones))
+    except:
+        pass
+
+def load_points() -> dict:
+    """Load user-defined monitoring points."""
+    try:
+        import json as _j
+        return _j.loads(open("/tmp/medi_points.json").read())
+    except:
+        return {}
+
+def save_points(points: dict):
+    import json as _j
+    try:
+        with open("/tmp/medi_points.json","w") as f:
+            f.write(_j.dumps(points))
     except:
         pass
 
@@ -884,6 +897,61 @@ medi_profile = "Beach Safety"  # default
 
 
 @st.cache_data(ttl=7200)
+def compute_point_wqi(lat: float, lon: float, target_date_str: str, source: str = "S3") -> float | None:
+    """
+    WQI at nearest water pixel to (lat, lon).
+    Uses a small buffer (500m) and takes only pixels where GSW >= 30%.
+    Returns scalar WQI or None.
+    """
+    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
+    pt    = ee.Geometry.Point([lon, lat])
+    buf   = pt.buffer(500)
+    t     = ee.Date(target_date_str)
+
+    try:
+        if source == "S2":
+            coll  = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                     .filterBounds(buf)
+                     .filterDate(t.advance(-5,"day"), t.advance(1,"day"))
+                     .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+                     .sort("system:time_start", False))
+            if coll.size().getInfo() == 0: return None
+            img   = coll.first().updateMask(wm)
+            b3,b4,b5,b8,b8a = (img.select("B3").divide(10000), img.select("B4").divide(10000),
+                                img.select("B5").divide(10000), img.select("B8").divide(10000),
+                                img.select("B8A").divide(10000))
+            wqi   = (b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
+                     .add(b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1))
+                     .add(ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1))
+                     .divide(3).multiply(100).rename("WQI").updateMask(wm))
+        else:
+            coll  = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                     .filterBounds(buf)
+                     .filterDate(t.advance(-2,"day"), t.advance(1,"day")))
+            if coll.size().getInfo() == 0: return None
+            img   = coll.median().updateMask(wm)
+            ndwi  = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
+            b10,b11,b12 = img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
+            mci   = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
+            turb  = img.select("Oa08_radiance")
+            wqi   = (ndwi.unitScale(-0.2,0.5).clamp(0,1)
+                     .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
+                     .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
+                     .divide(3).multiply(100).rename("WQI").updateMask(wm))
+
+        val = wqi.reduceRegion(
+            reducer   = ee.Reducer.mean(),
+            geometry  = buf,
+            scale     = 300,
+            bestEffort= True
+        ).getInfo()
+        wv = val.get("WQI")
+        return round(float(wv), 1) if wv is not None else None
+    except:
+        return None
+
+
+@st.cache_data(ttl=7200)
 def compute_city_wqi(target_date_str, source="S3"):
     """
     Compute WQI for each city's maritime zone polygon.
@@ -1116,12 +1184,28 @@ if mode == MODE_ISRAEL:
     elif wqi_layer is not None:
         atm = get_atm(32.4, 34.85)
 
-    # Compute city WQI
-    with st.spinner("Computing city maritime WQI..."):
-        city_wqi = compute_city_wqi(
-            sel_date,
-            source="S2" if data_source=="Sentinel-2" else "S3"
-        )
+    # Compute WQI for all monitoring points
+    src_label = "S2" if data_source=="Sentinel-2" else "S3"
+    if st.session_state.monitor_points:
+        with st.spinner("Computing WQI for monitoring points..."):
+            for pt_name, pt_data in st.session_state.monitor_points.items():
+                wv = compute_point_wqi(
+                    pt_data["lat"], pt_data["lon"],
+                    sel_date, src_label
+                )
+                st.session_state.monitor_points[pt_name]["wqi"] = wv
+            save_points(st.session_state.monitor_points)
+        city_wqi = {n: d.get("wqi") for n,d in st.session_state.monitor_points.items()}
+    else:
+        city_wqi = {}
+
+    # Legacy city WQI for default stats (fallback if no points defined)
+    if not city_wqi:
+        with st.spinner("Computing city maritime WQI..."):
+            city_wqi = compute_city_wqi(
+                sel_date,
+                source=src_label
+            )
 
     # Compute user-defined zone WQI
     user_zone_wqi = {}
@@ -1156,9 +1240,13 @@ if mode == MODE_ISRAEL:
         except:
             pass
 
-    # Load persistent zones
+    # Load persistent monitoring points
     if "user_zones" not in st.session_state:
         st.session_state.user_zones = load_zones()
+    if "monitor_points" not in st.session_state:
+        st.session_state.monitor_points = load_points()
+    if "pending_point" not in st.session_state:
+        st.session_state.pending_point = None
 
     # Shared map builder
     def _build_map(selected_beach=None):
@@ -1210,6 +1298,26 @@ if mode == MODE_ISRAEL:
 <div style="position:absolute;top:18px;left:-32px;white-space:nowrap;font-family:Arial;font-size:11px;font-weight:700;color:white;text-shadow:0 1px 4px rgba(0,0,0,0.95);">{r["name"]}</div>''',
                     icon_size=(20,20),icon_anchor=(10,10))
             ).add_to(m)
+        # Draw user monitoring points
+        for pt_name, pt_data in st.session_state.monitor_points.items():
+            pt_lat = pt_data["lat"]
+            pt_lon = pt_data["lon"]
+            pt_wqi = pt_data.get("wqi")
+            cm_pt  = "#4575b4" if pt_wqi and pt_wqi>=70 else "#fdae61" if pt_wqi and pt_wqi>=50 else "#d73027" if pt_wqi else "#00c8c8"
+            wqi_str= f"{pt_wqi:.1f}" if pt_wqi else "..."
+            is_sel = (selected_beach == pt_name) if selected_beach else False
+            size   = "16px" if is_sel else "11px"
+            ring   = "box-shadow:0 0 0 3px white,0 0 0 5px "+cm_pt+";" if is_sel else ""
+            folium.Marker(
+                location=[pt_lat, pt_lon],
+                tooltip=f"📍 {pt_name} | WQI: {wqi_str}",
+                popup=folium.Popup(f"<b>{pt_name}</b><br>WQI: <b style='color:{cm_pt}'>{wqi_str}</b>", max_width=150),
+                icon=folium.DivIcon(
+                    html=f'''<div style="background:{cm_pt};border:2px solid white;border-radius:50%;width:{size};height:{size};{ring};cursor:pointer;"></div>
+<div style="position:absolute;top:16px;left:-24px;white-space:nowrap;font-family:Arial;font-size:10px;font-weight:700;color:white;text-shadow:0 1px 3px rgba(0,0,0,0.9);">{pt_name} {wqi_str}</div>''',
+                    icon_size=(16,16), icon_anchor=(8,8))
+            ).add_to(m)
+
         # Draw user-defined zones
         for zone_name, zone_data in st.session_state.user_zones.items():
             coords = zone_data.get("coords", [])
@@ -1234,37 +1342,7 @@ if mode == MODE_ISRAEL:
                         icon_size=(100,20), icon_anchor=(50,10))
                 ).add_to(m)
 
-        # Draw maritime zone polygons
-        for city, polygon in MARITIME_ZONES.items():
-            wv = city_wqi.get(city) if city_wqi else None
-            cm_city = "#1ecb7b" if wv and wv>=70 else "#f0a500" if wv and wv>=50 else "#e03c3c" if wv else "#888888"
-            wv_str  = f"{wv:.1f}" if wv else "N/A"
-            # Draw polygon
-            coords = polygon.getInfo()["coordinates"][0]
-            folium.Polygon(
-                locations=[[p[1],p[0]] for p in coords],
-                color=cm_city,
-                fill=True,
-                fill_color=cm_city,
-                fill_opacity=0.15,
-                weight=2,
-                opacity=0.8,
-                tooltip=f"🏙️ {city} | WQI: {wv_str}",
-                popup=folium.Popup(
-                    f"<b>{city}</b><br>WQI: <span style='color:{cm_city};font-weight:bold;'>{wv_str}</span><br><small>Maritime zone avg</small>",
-                    max_width=160
-                )
-            ).add_to(m)
-            # City label at center
-            pt = CITY_POINTS.get(city, {})
-            if pt:
-                folium.Marker(
-                    location=[pt["lat"], pt["lon"]],
-                    icon=folium.DivIcon(
-                        html=f'''<div style="background:{cm_city};border:2px solid white;border-radius:50%;width:12px;height:12px;box-shadow:0 0 6px {cm_city}88;"></div>
-<div style="position:absolute;top:14px;left:-20px;white-space:nowrap;font-family:Arial;font-size:10px;font-weight:700;color:white;text-shadow:0 1px 3px rgba(0,0,0,0.9);">{city} {wv_str}</div>''',
-                        icon_size=(12,12), icon_anchor=(6,6))
-                ).add_to(m)
+        # No default city markers — user defines monitoring points
 
         m.add_child(OnMapWaterLegend())
         return m
@@ -1318,11 +1396,20 @@ if mode == MODE_ISRAEL:
                     _build_map(),
                     use_container_width=True, height=740,
                     key="israel_map_wqi",
-                    returned_objects=["bounds","last_active_drawing"]
+                    returned_objects=["bounds","last_active_drawing","last_clicked"]
                 )
             with col_info:
-                # detect drawings for zone manager (handled below chart)
-                last_drawing = map_data_wqi.get("last_active_drawing") if map_data_wqi else None
+                # Detect map click → new monitoring point
+                last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
+                last_drawing  = map_data_wqi.get("last_active_drawing") if map_data_wqi else None
+                if last_clicked and last_clicked.get("lat"):
+                    clat = round(last_clicked["lat"], 5)
+                    clon = round(last_clicked["lng"], 5)
+                    # Only set if different from last pending
+                    prev = st.session_state.pending_point
+                    if prev is None or prev.get("lat") != clat or prev.get("lon") != clon:
+                        st.session_state.pending_point = {"lat": clat, "lon": clon}
+                        st.rerun()
                 if last_drawing:
                     geom = last_drawing.get("geometry",{})
                     if geom.get("type") in ["Polygon","Rectangle"]:
@@ -1342,9 +1429,10 @@ if mode == MODE_ISRAEL:
                         city for city, pt in CITY_POINTS.items()
                         if lat_min <= pt["lat"] <= lat_max and lon_min <= pt["lon"] <= lon_max
                     ]
-                    visible_beaches = filtered if len(filtered) >= 2 else list(CITY_POINTS.keys())
+                    all_pts = list(st.session_state.monitor_points.keys()) or list(CITY_POINTS.keys())
+                    visible_beaches = filtered if len(filtered) >= 2 else all_pts
                 else:
-                    visible_beaches = list(CITY_POINTS.keys())
+                    visible_beaches = list(st.session_state.monitor_points.keys()) or list(CITY_POINTS.keys())
 
                 # Build comparison chart for visible beaches
                 if visible_beaches:
@@ -1543,35 +1631,43 @@ if mode == MODE_ISRAEL:
                 else:
                     st.caption("Zoom in to see beach comparison")
 
-                # ── Zone Manager (below chart) ─────────────────────────────────
-                with st.expander("📍 Custom Zones", expanded=False):
-                    if st.session_state.get("pending_polygon"):
-                        zone_name_input = st.text_input("Zone name:", key="zone_name_inp", placeholder="e.g. Haifa Port")
-                        col_save, col_cancel = st.columns(2)
-                        with col_save:
-                            if st.button("💾 Save", use_container_width=True):
-                                if zone_name_input.strip():
-                                    st.session_state.user_zones[zone_name_input.strip()] = {
-                                        "coords": st.session_state["pending_polygon"]
+                # ── Monitoring Point Manager ──────────────────────────────────
+                with st.expander("📍 Monitoring Points", expanded=bool(st.session_state.pending_point)):
+                    # New point dialog
+                    if st.session_state.pending_point:
+                        pp = st.session_state.pending_point
+                        st.info(f"📍 New point: {pp['lat']:.4f}, {pp['lon']:.4f}")
+                        pt_name_inp = st.text_input("Name:", key="pt_name_inp", placeholder="e.g. Haifa Port")
+                        cs, cc = st.columns(2)
+                        with cs:
+                            if st.button("💾 Save", use_container_width=True, key="save_pt"):
+                                if pt_name_inp.strip():
+                                    st.session_state.monitor_points[pt_name_inp.strip()] = {
+                                        "lat": pp["lat"], "lon": pp["lon"], "wqi": None
                                     }
-                                    save_zones(st.session_state.user_zones)
-                                    del st.session_state["pending_polygon"]
+                                    save_points(st.session_state.monitor_points)
+                                    st.session_state.pending_point = None
                                     st.rerun()
-                        with col_cancel:
-                            if st.button("✕", use_container_width=True):
-                                del st.session_state["pending_polygon"]
+                        with cc:
+                            if st.button("✕", use_container_width=True, key="cancel_pt"):
+                                st.session_state.pending_point = None
                                 st.rerun()
-                    if st.session_state.user_zones:
-                        for zname in list(st.session_state.user_zones.keys()):
-                            col_z, col_del = st.columns([3,1])
-                            with col_z: st.caption(f"📍 {zname}")
-                            with col_del:
-                                if st.button("🗑", key=f"del_{zname}"):
-                                    del st.session_state.user_zones[zname]
-                                    save_zones(st.session_state.user_zones)
+
+                    # List existing points
+                    if st.session_state.monitor_points:
+                        for pname in list(st.session_state.monitor_points.keys()):
+                            pd_data = st.session_state.monitor_points[pname]
+                            wv_str  = f"{pd_data['wqi']:.1f}" if pd_data.get("wqi") else "..."
+                            cp, cd  = st.columns([3, 1])
+                            with cp:
+                                st.caption(f"📍 {pname} — WQI: {wv_str}")
+                            with cd:
+                                if st.button("🗑", key=f"del_pt_{pname}"):
+                                    del st.session_state.monitor_points[pname]
+                                    save_points(st.session_state.monitor_points)
                                     st.rerun()
                     else:
-                        st.caption("Draw a polygon on the map to add a zone")
+                        st.caption("Click anywhere on the sea to add a monitoring point")
 
 
 
