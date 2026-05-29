@@ -1112,6 +1112,14 @@ def compute_beach_history_range(days_back: int):
 
 
 
+# Session state initialization
+if "user_zones" not in st.session_state:
+    st.session_state.user_zones = load_zones()
+if "monitor_points" not in st.session_state:
+    st.session_state.monitor_points = load_points()
+if "pending_point" not in st.session_state:
+    st.session_state.pending_point = None
+
 if mode == MODE_ISRAEL:
     # Date selector
     # Auto-select latest available date
@@ -1240,13 +1248,7 @@ if mode == MODE_ISRAEL:
         except:
             pass
 
-    # Load persistent monitoring points
-    if "user_zones" not in st.session_state:
-        st.session_state.user_zones = load_zones()
-    if "monitor_points" not in st.session_state:
-        st.session_state.monitor_points = load_points()
-    if "pending_point" not in st.session_state:
-        st.session_state.pending_point = None
+
 
     # Shared map builder
     def _build_map(selected_beach=None):
