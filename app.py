@@ -357,7 +357,7 @@ class OnMapWaterLegend(MacroElement):
 var lg=L.control({position:'topright'});
 lg.onAdd=function(map){var d=L.DomUtil.create('div','info legend');
 d.style.cssText='background:rgba(2,13,24,0.92);padding:12px;border:1px solid rgba(0,200,200,0.3);border-radius:6px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;';
-d.innerHTML='<div style="font-weight:bold;margin-bottom:8px;text-align:center;color:#00c8c8;">Water Quality Index</div><div style="display:flex;align-items:center;gap:8px;"><div style="height:120px;width:14px;background:linear-gradient(to bottom,#006d2c,#41ab5d,#4292c6,#08306b);border-radius:3px;flex-shrink:0;"></div><div style="display:flex;flex-direction:column;justify-content:space-between;height:120px;font-size:11px;"><span style="color:#1ecb7b;font-weight:bold;">Clean</span><span style="color:#f0a500;font-weight:bold;">Moderate</span><span style="color:#e03c3c;font-weight:bold;">Polluted</span></div></div>';return d;};
+d.innerHTML='<div style="font-weight:bold;margin-bottom:8px;text-align:center;color:#00c8c8;">Water Quality Index</div><div style="display:flex;align-items:center;gap:8px;"><div style="height:120px;width:14px;background:linear-gradient(to bottom,#4575b4,#74add1,#fdae61,#d73027);border-radius:3px;flex-shrink:0;"></div><div style="display:flex;flex-direction:column;justify-content:space-between;height:120px;font-size:11px;"><span style="color:#1ecb7b;font-weight:bold;">Clean</span><span style="color:#f0a500;font-weight:bold;">Moderate</span><span style="color:#e03c3c;font-weight:bold;">Polluted</span></div></div>';return d;};
 lg.addTo({{this._parent.get_name()}});{% endmacro %}""")
 
 class OnMapAtmosphereControl(MacroElement):
@@ -1176,7 +1176,7 @@ if mode == MODE_ISRAEL:
             },
             edit_options={"edit": False}
         ).add_to(m)
-        vis = {'min':30,'max':90,'palette':['#08306b','#08519c','#2171b5','#4292c6','#74c476','#41ab5d','#238b45','#006d2c']}
+        vis = {'min':30,'max':90,'palette':['#d73027','#f46d43','#fdae61','#fee090','#e0f3f8','#abd9e9','#74add1','#4575b4']}
         try:
             mid = ee.Image(wqi_layer).getMapId(vis)
             folium.TileLayer(tiles=mid['tile_fetcher'].url_format,
@@ -1276,7 +1276,7 @@ if mode == MODE_ISRAEL:
         elif wqi_layer is not None:
             acq_dt  = datetime.utcnow() - timedelta(hours=img_age_hours)
             acq_str = acq_dt.strftime("%Y-%m-%d %H:%M UTC")
-            # Compact navigator
+            # Compact inline navigator
             src_colors = {"S3":"#00c8c8","S2":"#1ecb7b","MOD":"#f0a500"}
             if all_candidates:
                 cur = all_candidates[st.session_state.img_idx]
@@ -1286,23 +1286,21 @@ if mode == MODE_ISRAEL:
                     col_s = src_colors.get(short,"#888")
                     sz = "10px" if i == st.session_state.img_idx else "7px"
                     bd = "2px solid white" if i == st.session_state.img_idx else "none"
-                    dots_html += f'<span style="display:inline-block;width:{sz};height:{sz};border-radius:50%;background:{col_s};border:{bd};margin:0 3px;vertical-align:middle;"></span>'
+                    dots_html += f'<span style="display:inline-block;width:{sz};height:{sz};border-radius:50%;background:{col_s};border:{bd};margin:0 2px;vertical-align:middle;"></span>'
 
-                nav_html = f"""<div style="display:flex;align-items:center;gap:8px;padding:2px 0;">
-  <button onclick="window.parent.postMessage({{type:'nav',dir:-1}},'*')" style="background:rgba(0,200,200,0.15);border:1px solid rgba(0,200,200,0.3);color:#00c8c8;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px;">◀</button>
-  {dots_html}
-  <button onclick="window.parent.postMessage({{type:'nav',dir:1}},'*')" style="background:rgba(0,200,200,0.15);border:1px solid rgba(0,200,200,0.3);color:#00c8c8;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px;">▶</button>
-  <span style="font-size:10px;color:#7fb3d3;margin-left:4px;"><b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</span>
-</div>"""
-                nav_c1, nav_c2, nav_c3 = st.columns([1, 8, 1])
-                with nav_c1:
+                nav_col1, nav_col2, nav_col3, nav_col4, nav_col5 = st.columns([1,1,6,1,1])
+                with nav_col1:
                     if st.button("◀", key="nav_prev"):
                         n = len(all_candidates)
                         st.session_state.img_idx = (st.session_state.img_idx+1)%n
                         st.rerun()
-                with nav_c2:
-                    st.markdown(f'<div style="font-size:10px;color:#7fb3d3;padding:4px 0;">{dots_html} <b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</div>', unsafe_allow_html=True)
-                with nav_c3:
+                with nav_col2:
+                    st.markdown(f'<div style="padding:6px 0;">{dots_html}</div>', unsafe_allow_html=True)
+                with nav_col3:
+                    st.markdown(f'<div style="font-size:11px;color:#7fb3d3;padding:6px 0;"><b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</div>', unsafe_allow_html=True)
+                with nav_col4:
+                    pass
+                with nav_col5:
                     if st.button("▶", key="nav_next"):
                         n = len(all_candidates)
                         st.session_state.img_idx = (st.session_state.img_idx-1)%n
@@ -1478,12 +1476,12 @@ if mode == MODE_ISRAEL:
       plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{label:c=>`${{c.dataset.label}}: ${{c.parsed.y}}`}}}}}},
       scales:{{
         x:{{
-          ticks:{{color:'#aaaaaa',font:{{size:11}},maxRotation:45,autoSkip:false}},
+          ticks:{{color:'#cccccc',font:{{size:13,weight:'bold'}},maxRotation:45,autoSkip:false}},
           grid:{{color:'rgba(255,255,255,0.08)'}},
           title:{{display:true,text:'תאריך',color:'#cccccc',font:{{size:12,weight:'bold'}}}}
         }},
         y:{{min:1,max:100,
-          ticks:{{color:'#aaaaaa',font:{{size:11}},
+          ticks:{{color:'#cccccc',font:{{size:13,weight:'bold'}},
             callback:function(v){{
               if(v===1) return 'מזוהם 1';
               if(v===25) return '25';
