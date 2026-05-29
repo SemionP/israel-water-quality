@@ -211,72 +211,118 @@ def init_gee():
 init_gee()
 
 # =============================================================================
-# Persistent Zone Storage — uses st.secrets["zones"] if available, else /tmp
+# Persistent Zone Storage — Google Drive (primary) + /tmp fallback
 # =============================================================================
-ZONES_KEY = "medi-zones-v1"
+ZONES_KEY       = "medi-zones-v1"
+GDRIVE_FILENAME = "medi_zones.json"
+GDRIVE_FOLDER   = "1VU11P0UCzeMiVsn0k1RiIHuEu8bBLUFH"
+
+@st.cache_resource
+def _gdrive_token():
+    """Get OAuth2 access token for service account using only stdlib."""
+    try:
+        import time, json as _j, base64, urllib.request, urllib.parse
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+        creds    = dict(st.secrets["gee_credentials"])
+        sa_email = creds["client_email"]
+        priv_key = creds["private_key"]
+        now = int(time.time())
+        def b64(d): return base64.urlsafe_b64encode(d).rstrip(b"=")
+        hdr = b64(_j.dumps({"alg":"RS256","typ":"JWT"}).encode())
+        pay = b64(_j.dumps({"iss":sa_email,
+            "scope":"https://www.googleapis.com/auth/drive",
+            "aud":"https://oauth2.googleapis.com/token",
+            "iat":now,"exp":now+3600}).encode())
+        msg = hdr + b"." + pay
+        key = serialization.load_pem_private_key(priv_key.encode(), password=None)
+        sig = b64(key.sign(msg, _pad.PKCS1v15(), hashes.SHA256()))
+        jwt = (msg + b"." + sig).decode()
+        body = urllib.parse.urlencode({
+            "grant_type":"urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion":jwt}).encode()
+        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=body,
+            headers={"Content-Type":"application/x-www-form-urlencoded"})
+        return _j.loads(urllib.request.urlopen(req, timeout=10).read())["access_token"]
+    except:
+        return None
+
+def _gdrive_file_id(token) -> str | None:
+    import urllib.request, urllib.parse, json as _j
+    q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
+    url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode(
+        {"q":q,"fields":"files(id)","pageSize":"1"})
+    req = urllib.request.Request(url, headers={"Authorization":f"Bearer {token}"})
+    try:
+        res = _j.loads(urllib.request.urlopen(req, timeout=10).read())
+        return res["files"][0]["id"] if res.get("files") else None
+    except:
+        return None
 
 def load_zones() -> dict:
-    import json as _j
-    # 1. Try secrets (persists across restarts on Streamlit Cloud)
+    import json as _j, urllib.request
+    # 1. Google Drive
     try:
-        raw = st.secrets.get("saved_zones", None)
-        if raw:
-            return _j.loads(raw)
+        token = _gdrive_token()
+        if token:
+            fid = _gdrive_file_id(token)
+            if fid:
+                req = urllib.request.Request(
+                    f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media",
+                    headers={"Authorization":f"Bearer {token}"})
+                return _j.loads(urllib.request.urlopen(req, timeout=10).read().decode())
     except:
         pass
-    # 2. Fallback: /tmp (survives only within same server session)
+    # 2. secrets fallback
+    try:
+        raw = st.secrets.get("saved_zones", None)
+        if raw: return _j.loads(raw)
+    except:
+        pass
+    # 3. /tmp fallback
     try:
         return _j.loads(open("/tmp/medi_zones.json").read())
     except:
         return {}
 
 def save_zones(zones: dict):
-    import json as _j
-    # Always write to /tmp so it survives within session
+    import json as _j, urllib.request
+    data = _j.dumps(zones, ensure_ascii=False).encode()
+    # Always save to /tmp
     try:
-        with open("/tmp/medi_zones.json","w") as f:
-            f.write(_j.dumps(zones))
+        with open("/tmp/medi_zones.json","w") as f: f.write(data.decode())
     except:
         pass
-    # Also write to a persistent app-level file if writable
+    # Save to Google Drive
     try:
-        import os
-        persist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".medi_zones.json")
-        with open(persist_path, "w") as f:
-            f.write(_j.dumps(zones))
+        token = _gdrive_token()
+        if not token: return
+        fid = _gdrive_file_id(token)
+        bnd = b"MEDIboundary42"
+        def part(ct, body):
+            return b"--" + bnd + b"\r\nContent-Type: " + ct + b"\r\n\r\n" + body + b"\r\n"
+        if fid:
+            url    = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=multipart"
+            method = "PATCH"
+            meta   = _j.dumps({"name": GDRIVE_FILENAME}).encode()
+        else:
+            url    = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart"
+            method = "POST"
+            meta   = _j.dumps({"name": GDRIVE_FILENAME, "parents": [GDRIVE_FOLDER]}).encode()
+        body = part(b"application/json", meta) + part(b"application/json", data) + b"--" + bnd + b"--"
+        req  = urllib.request.Request(url, data=body, method=method, headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type":  "multipart/related; boundary=MEDIboundary42"})
+        urllib.request.urlopen(req, timeout=15)
     except:
         pass
 
-def load_zones_from_all() -> dict:
-    """Load from all sources, merge: persistent file > /tmp > secrets."""
-    import json as _j
-    result = {}
-    # secrets baseline
-    try:
-        raw = st.secrets.get("saved_zones", None)
-        if raw:
-            result.update(_j.loads(raw))
-    except:
-        pass
-    # /tmp override
-    try:
-        result.update(_j.loads(open("/tmp/medi_zones.json").read()))
-    except:
-        pass
-    # persistent file override (survives redeploys if committed)
-    try:
-        import os
-        persist_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".medi_zones.json")
-        result.update(_j.loads(open(persist_path).read()))
-    except:
-        pass
-    return result
+def load_zones_from_all() -> dict: return load_zones()
+def load_points() -> dict: return {}
+def save_points(points: dict): pass
 
-def load_points() -> dict:
-    return {}  # points now unified under zones
 
-def save_points(points: dict):
-    pass  # points now unified under zones
+
 
 
 
