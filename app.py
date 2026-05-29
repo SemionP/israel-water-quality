@@ -1538,7 +1538,11 @@ if mode == MODE_ISRAEL:
                     geom = last_drawing.get("geometry",{})
                     gtype = geom.get("type","")
                     if gtype in ["Polygon","Rectangle"]:
-                        st.session_state["pending_polygon"] = geom["coordinates"][0]
+                        coords = geom["coordinates"][0]
+                        prev = st.session_state.get("pending_polygon")
+                        if prev != coords:
+                            st.session_state["pending_polygon"] = coords
+                            st.rerun()
                     elif gtype == "Point":
                         coords = geom.get("coordinates",[])
                         if coords:
@@ -1636,7 +1640,8 @@ if mode == MODE_ISRAEL:
                         })
 
                     chart_json  = _json.dumps(datasets)
-                    labels_json = _json.dumps([d[5:] for d in all_dates])
+                    labels_json = _json.dumps(all_dates)  # full YYYY-MM-DD for tooltip
+                    labels_short_json = _json.dumps([d[5:].replace("-","/") for d in all_dates])  # MM/DD for axis
                     legend_json = _json.dumps(legend_items)
                     best_name   = best or "---"
                     best_val    = round(valid_vals[best],1) if best else "---"
@@ -1705,15 +1710,17 @@ if mode == MODE_ISRAEL:
 (function(){{
   var ds={chart_json};
   var lb={labels_json};
+  var ls={labels_short_json};
   var lg={legend_json};
   var gc='rgba(255,255,255,0.08)';
   var tc='#aaaaaa';
-  ds=ds.map(d=>({{...d,backgroundColor:'transparent',tension:0.35,pointRadius:3,
+  ds=ds.map(d=>({{...d,backgroundColor:'transparent',tension:0.35,pointRadius:4,
     pointBackgroundColor:d.borderColor,borderWidth:2,spanGaps:true}}));
   new Chart(document.getElementById('beachTrend'),{{
-    type:'line',data:{{labels:lb,datasets:ds}},
+    type:'line',data:{{labels:ls,datasets:ds}},
     options:{{responsive:true,maintainAspectRatio:false,
       plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{
+        title:function(items){{ return lb[items[0].dataIndex]; }},
         label:function(c){{
           var src=c.dataset.sources?c.dataset.sources[c.dataIndex]:'';
           var srcLabel=src?(' · '+src):'';
@@ -1758,7 +1765,42 @@ if mode == MODE_ISRAEL:
                 else:
                     st.caption("Zoom in to see beach comparison")
 
-                # ── Monitoring Point Manager ──────────────────────────────────
+                # ── Zone Manager ──────────────────────────────────────────────
+                with st.expander("🟦 Monitoring Zones", expanded=bool(st.session_state.get("pending_polygon"))):
+                    if st.session_state.get("pending_polygon"):
+                        pp = st.session_state["pending_polygon"]
+                        st.info(f"🟦 New zone: {len(pp)} vertices")
+                        zone_name_inp = st.text_input("Zone name:", key="zone_name_inp", placeholder="e.g. Haifa Anchorage")
+                        zc1, zc2 = st.columns(2)
+                        with zc1:
+                            if st.button("💾 Save Zone", use_container_width=True, key="save_zone"):
+                                if zone_name_inp.strip():
+                                    st.session_state.user_zones[zone_name_inp.strip()] = {"coords": pp}
+                                    save_zones(st.session_state.user_zones)
+                                    st.session_state.pop("pending_polygon", None)
+                                    compute_zone_history_range.clear()
+                                    st.rerun()
+                        with zc2:
+                            if st.button("✕ Discard", use_container_width=True, key="cancel_zone"):
+                                st.session_state.pop("pending_polygon", None)
+                                st.rerun()
+                    if st.session_state.user_zones:
+                        for zname in list(st.session_state.user_zones.keys()):
+                            zwqi = user_zone_wqi.get(zname)
+                            zwqi_str = f"{zwqi:.1f}" if zwqi else "..."
+                            zc, zd = st.columns([3, 1])
+                            with zc:
+                                st.caption(f"🟦 {zname} — WQI: {zwqi_str}")
+                            with zd:
+                                if st.button("🗑", key=f"del_zone_{zname}"):
+                                    del st.session_state.user_zones[zname]
+                                    save_zones(st.session_state.user_zones)
+                                    compute_zone_history_range.clear()
+                                    st.rerun()
+                    else:
+                        st.caption("Draw a rectangle or polygon on the map to add a zone")
+
+
                 with st.expander("📍 Monitoring Points", expanded=bool(st.session_state.pending_point)):
                     # New point dialog
                     if st.session_state.pending_point:
