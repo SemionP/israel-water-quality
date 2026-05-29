@@ -1257,15 +1257,14 @@ if mode == MODE_ISRAEL:
 
     # Shared map builder
     def _build_map(selected_beach=None):
-        bm = st.session_state.get("basemap", "🌑 Dark")
-        bm_tile = BASEMAPS.get(bm, "CartoDB dark_matter")
-        if bm_tile.startswith("http"):
-            m = folium.Map(location=[32.4, 34.85], zoom_start=8,
-                          tiles=bm_tile,
-                          attr="Esri")
-        else:
-            m = folium.Map(location=[32.4, 34.85], zoom_start=8,
-                          tiles=bm_tile)
+        bm      = st.session_state.get("basemap", "Dark")
+        bm_data = BASEMAPS.get(bm, BASEMAPS["Dark"])
+        m = folium.Map(
+            location=[32.4, 34.85],
+            zoom_start=8,
+            tiles=bm_data["tile"],
+            attr=bm_data["attr"]
+        )
         # Add draw plugin — polygon + marker
         Draw(
             export=False,
