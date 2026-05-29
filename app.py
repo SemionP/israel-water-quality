@@ -178,6 +178,53 @@ p,div,span,label{font-family:'Exo 2',sans-serif!important;color:var(--text-prima
 ::-webkit-scrollbar{width:6px;height:6px;}
 ::-webkit-scrollbar-track{background:var(--ocean-deep);}
 ::-webkit-scrollbar-thumb{background:var(--teal-dim);border-radius:3px;}
+/* Buttons — ensure readable text on dark background */
+[data-testid="stButton"] button,
+[data-testid="baseButton-secondary"],
+[data-testid="stDownloadButton"] button{
+  background:var(--ocean-surface)!important;
+  color:var(--teal-bright)!important;
+  border:1px solid rgba(0,200,200,0.4)!important;
+  border-radius:4px!important;
+  font-family:'Rajdhani',sans-serif!important;
+  font-weight:600!important;
+  letter-spacing:0.04em!important;
+}
+[data-testid="stButton"] button:hover,
+[data-testid="stDownloadButton"] button:hover{
+  background:rgba(0,200,200,0.15)!important;
+  border-color:var(--teal-bright)!important;
+  color:#ffffff!important;
+}
+[data-testid="stButton"] button *,
+[data-testid="stDownloadButton"] button *{color:inherit!important;}
+/* File uploader */
+[data-testid="stFileUploader"]{
+  background:var(--ocean-mid)!important;
+  border:1px dashed rgba(0,200,200,0.3)!important;
+  border-radius:4px!important;
+  padding:8px!important;
+}
+[data-testid="stFileUploader"] *{color:var(--text-primary)!important;}
+[data-testid="stFileUploader"] button{
+  background:var(--ocean-surface)!important;
+  color:var(--teal-bright)!important;
+  border:1px solid rgba(0,200,200,0.4)!important;
+}
+/* Text input */
+[data-testid="stTextInput"] input{
+  background:var(--ocean-surface)!important;
+  color:var(--text-primary)!important;
+  border:1px solid rgba(0,200,200,0.3)!important;
+}
+/* Expander */
+[data-testid="stExpander"]{
+  background:rgba(4,30,51,0.6)!important;
+  border:1px solid rgba(0,200,200,0.2)!important;
+  border-radius:6px!important;
+}
+[data-testid="stExpander"] summary{color:var(--teal-bright)!important;font-family:'Rajdhani',sans-serif!important;font-weight:600!important;}
+[data-testid="stExpander"] summary *{color:var(--teal-bright)!important;}
 </style>
 """, unsafe_allow_html=True)
 
