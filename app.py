@@ -1,5 +1,5 @@
 """
-app.py — MEDI Platform (Clean Version)
+app.py - MEDI Platform (Clean Version)
 Israel Coast + Global S3 WQI only
 """
 
@@ -115,7 +115,7 @@ def generate_medi_explanation(result: MEDIResult, api_key: str) -> MEDIResult:
     prompt = f"""You are an expert maritime environmental analyst for the MEDI Platform.
 Context:
 - Monitoring zone: {result.zone or "coastal area"}
-- Risk profile: {result.profile} — {profile_desc}
+- Risk profile: {result.profile} - {profile_desc}
 - Current risk score: {result.risk_score}/100 ({result.risk_level})
 - Trend: {trend_str}
 - Active risk drivers: {drivers_str}
@@ -146,7 +146,7 @@ RECOMMENDATION: <text>"""
 # =============================================================================
 # Page config & Styling
 # =============================================================================
-st.set_page_config(page_title="MEDI Platform — Maritime Environmental Decision Intelligence", page_icon="🌊", layout="wide")
+st.set_page_config(page_title="MEDI Platform - Maritime Environmental Decision Intelligence", page_icon="🌊", layout="wide")
 
 st.markdown("""
 <style>
@@ -161,8 +161,8 @@ html,body,[data-testid="stAppViewContainer"]{background-color:var(--ocean-deep)!
 [data-testid="stSidebar"] *{color:var(--text-primary)!important;}
 h1,h2,h3{font-family:'Rajdhani',sans-serif!important;letter-spacing:0.06em;color:var(--teal-bright)!important;}
 p,div,span,label{font-family:'Exo 2',sans-serif!important;color:var(--text-primary)!important;}
-.medi-header{display:flex;align-items:center;gap:18px;padding:18px 28px;background:linear-gradient(90deg,rgba(0,200,200,0.08) 0%,transparent 100%);border-left:3px solid var(--teal-bright);border-bottom:1px solid rgba(0,200,200,0.15);margin-bottom:24px;}
-.logo-text{font-family:'Rajdhani',sans-serif;font-size:2rem;font-weight:700;color:var(--teal-bright);letter-spacing:0.1em;line-height:1;}
+.medi-header{display:flex;align-items:center;gap:18px;padding:6px 16px;background:linear-gradient(90deg,rgba(0,200,200,0.06) 0%,transparent 100%);border-left:2px solid var(--teal-bright);border-bottom:1px solid rgba(0,200,200,0.1);margin-bottom:4px;}
+.logo-text{font-family:'Rajdhani',sans-serif;font-size:1.2rem;font-weight:700;color:var(--teal-bright);letter-spacing:0.1em;line-height:1;}
 .logo-sub{font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:var(--teal-dim);letter-spacing:0.18em;text-transform:uppercase;margin-top:3px;}
 .status-badge{margin-left:auto;font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:var(--green-safe);border:1px solid var(--green-safe);padding:4px 10px;border-radius:2px;animation:pulse-badge 2.5s ease-in-out infinite;}
 @keyframes pulse-badge{0%,100%{opacity:1;}50%{opacity:0.5;}}
@@ -257,7 +257,7 @@ BEACHES = [
 ]
 
 # =============================================================================
-# Port Zones — for MEDI Port Analysis
+# Port Zones - for MEDI Port Analysis
 # =============================================================================
 PORTS = {
     "🚢 Haifa Port": {
@@ -278,14 +278,14 @@ PORTS = {
         "lat": 29.5510, "lon": 34.9480,
         "bbox": ee.Geometry.Rectangle([34.91, 29.51, 34.99, 29.59]),
         "radius_km": 3,
-        "description": "Red Sea port — coral reef proximity",
+        "description": "Red Sea port - coral reef proximity",
         "atm_coords": (29.55, 34.95),
     },
 }
 
 
 # =============================================================================
-# Maritime Zone Polygons — Offshore areas per city (sea only)
+# Maritime Zone Polygons - Offshore areas per city (sea only)
 # Each polygon: ~3-5km offshore, covers city coastal stretch
 # =============================================================================
 MARITIME_ZONES = {
@@ -365,8 +365,8 @@ class OnMapAtmosphereControl(MacroElement):
         super().__init__()
         ws=atm.get("wind_speed"); wd=atm.get("wind_dir_deg"); tc=atm.get("temp_c"); pr=atm.get("precip_mm"); rh=atm.get("humidity")
         ar=int(wd) if wd else 0
-        ws_s=f"{ws:.1f} m/s" if ws else "—"; tc_s=f"{tc:.1f}°C" if tc else "—"
-        pr_s=f"{pr:.1f} mm" if pr else "—"; rh_s=f"{int(rh)}%" if rh else "—"
+        ws_s=f"{ws:.1f} m/s" if ws else "-"; tc_s=f"{tc:.1f}°C" if tc else "-"
+        pr_s=f"{pr:.1f} mm" if pr else "-"; rh_s=f"{int(rh)}%" if rh else "-"
         ri="🌧️" if pr and pr>0.5 else "☀️"
         bf=12
         if ws:
@@ -430,7 +430,7 @@ def get_available_s3_dates(days_back=60):
 @st.cache_data(ttl=10800)
 def get_modis_sst_anomaly(target_date_str):
     """
-    MODIS MOD11A1 — Sea Surface Temperature anomaly.
+    MODIS MOD11A1 - Sea Surface Temperature anomaly.
     anomaly = today SST - 30-day mean SST
     Returns: ee.Image with band 'SST_anomaly' (degrees C) + scalar mean anomaly
     """
@@ -475,7 +475,7 @@ def get_modis_sst_anomaly(target_date_str):
 @st.cache_data(ttl=7200)
 def process_modis_wqi(target_date_str):
     """
-    MODIS MOD09GA — daily 250-500m WQI for Israel coast.
+    MODIS MOD09GA - daily 250-500m WQI for Israel coast.
     Used as fallback when S3 not available, or as supplement.
     Returns: (wqi_layer, df_beaches, error, age_hours, source_label)
     """
@@ -537,7 +537,7 @@ def process_modis_wqi(target_date_str):
 
 @st.cache_data(ttl=21600)
 def process_israel_s2(target_date_str):
-    """Sentinel-2 MSI SR — 10m WQI for Israel coast. Always uses latest available."""
+    """Sentinel-2 MSI SR - 10m WQI for Israel coast. Always uses latest available."""
     wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     now  = datetime.utcnow()
     end  = ee.Date(now.strftime("%Y-%m-%d")).advance(1,"day")
@@ -584,7 +584,7 @@ def process_israel_s2(target_date_str):
 
 @st.cache_data(ttl=21600)
 def get_available_dates_combined(days_back=7):
-    """Returns list of dicts: {date, source} — S3 dates + daily MODIS fallback."""
+    """Returns list of dicts: {date, source} - S3 dates + daily MODIS fallback."""
     end      = datetime.utcnow()
     start    = end - timedelta(days=days_back)
     wide     = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
@@ -650,7 +650,7 @@ def compute_beach_history_7d():
     wm_gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     # Ocean-only: exclude inland water (use SRTM elevation > 0 as land proxy)
     # Keep only pixels where distance to ocean shoreline is small
-    # Simple: use GSW "transition" band — permanent sea water
+    # Simple: use GSW "transition" band - permanent sea water
     gsw_full = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
     # type 1,2 = ocean/sea in some datasets; use permanent water near coast
     # Practical: exclude Kinneret, Dead Sea using bbox
@@ -694,7 +694,7 @@ def compute_beach_history_7d():
         return {}
 
     def _wqi_for_date(args):
-        """Compute WQI image for one date — S3 preferred, MODIS fallback."""
+        """Compute WQI image for one date - S3 preferred, MODIS fallback."""
         date_str, source = args
         try:
             t = ee.Date(date_str)
@@ -876,7 +876,7 @@ MODE_ISRAEL = "🏖️ Israel Coast"
 MODE_GLOBAL = "🌍 Global"
 mode = MODE_ISRAEL  # Default to Israel Coast
 
-# Risk profile shown in MEDI tab only — initialized here for session state
+# Risk profile shown in MEDI tab only - initialized here for session state
 medi_profile = "Beach Safety"  # default
 
 # ── Israel Coast ──────────────────────────────────────────────────────────────
@@ -1058,7 +1058,7 @@ if mode == MODE_ISRAEL:
         sel_src  = "S3"
 
     # Single MEDI Platform view
-    # MEDI Platform — single view
+    # MEDI Platform - single view
 
     with st.spinner("Computing WQI from S3 · S2 · MODIS..."):
         # Pull all three satellites
@@ -1203,7 +1203,7 @@ if mode == MODE_ISRAEL:
             ).add_to(m)
             folium.Marker(
                 location=[r["lat"],r["lon"]],
-                tooltip=f"🏖️ {r['name']} | WQI: {wqi_str} — Click for MEDI",
+                tooltip=f"🏖️ {r['name']} | WQI: {wqi_str} - Click for MEDI",
                 popup=folium.Popup(f"<b>🏖️ {r['name']}</b><br>WQI: <span style='color:{cm};font-weight:bold;'>{wqi_str}</span><br><small>Sampling zone: 450m radius</small>", max_width=200),
                 icon=folium.DivIcon(
                     html=f'''<div style="background:{cm};border:2px solid white;border-radius:50%;width:{size};height:{size};{ring};cursor:pointer;"></div>
@@ -1434,6 +1434,17 @@ if mode == MODE_ISRAEL:
                     worst_val   = round(valid_vals[worst],1) if worst else "---"
                     n_beaches   = len(visible_beaches)
 
+                    # Coast statistics
+                    cst_valid   = {k:v for k,v in (city_wqi or {}).items() if v is not None}
+                    cst_avg     = f"{sum(cst_valid.values())/len(cst_valid):.1f}" if cst_valid else "N/A"
+                    cst_best    = max(cst_valid, key=cst_valid.get) if cst_valid else "N/A"
+                    cst_best_v  = f"{cst_valid[cst_best]:.1f}" if cst_valid else ""
+                    cst_worst   = min(cst_valid, key=cst_valid.get) if cst_valid else "N/A"
+                    cst_worst_v = f"{cst_valid[cst_worst]:.1f}" if cst_valid else ""
+                    cst_nclean  = sum(1 for v in cst_valid.values() if v>=70)
+                    cst_nmod    = sum(1 for v in cst_valid.values() if 50<=v<70)
+                    cst_npoll   = sum(1 for v in cst_valid.values() if v<50)
+
                     chart_html = f"""
 <!DOCTYPE html><html><body style="margin:0;padding:0;background:#020d18;overflow:hidden;">
 <div style="padding:0.25rem 0 0.5rem;height:100vh;display:flex;flex-direction:column;">
@@ -1441,16 +1452,35 @@ if mode == MODE_ISRAEL:
     <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · {history_label} · Sentinel-3</p>
     <p style="font-size:11px;color:#7fb3d3;margin:0;">{n_beaches} חופים</p>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:12px;">
-    <div style="background:rgba(30,203,123,0.08);border:1px solid rgba(30,203,123,0.25);border-radius:6px;padding:8px 10px;">
-      <p style="font-size:10px;color:#7fb3d3;margin:0 0 1px;">הכי נקי</p>
-      <p style="font-size:13px;font-weight:600;margin:0;color:#1ecb7b;">{best_name}</p>
-      <p style="font-size:11px;color:#7fb3d3;margin:0;">{best_val}</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:7px;">
+    <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:5px;padding:5px;text-align:center;">
+      <p style="font-size:9px;color:#7fb3d3;margin:0;">ממוצע חוף ישראל</p>
+      <p style="font-size:20px;font-weight:700;margin:1px 0;color:#d6eaf8;">{cst_avg}</p>
+      <p style="font-size:9px;color:#7fb3d3;margin:0;">WQI</p>
     </div>
-    <div style="background:rgba(224,60,60,0.08);border:1px solid rgba(224,60,60,0.25);border-radius:6px;padding:8px 10px;">
-      <p style="font-size:10px;color:#7fb3d3;margin:0 0 1px;">דורש תשומת לב</p>
-      <p style="font-size:13px;font-weight:600;margin:0;color:#e03c3c;">{worst_name}</p>
-      <p style="font-size:11px;color:#7fb3d3;margin:0;">{worst_val}</p>
+    <div style="background:rgba(69,117,180,0.08);border:1px solid rgba(69,117,180,0.2);border-radius:5px;padding:5px;text-align:center;">
+      <p style="font-size:9px;color:#7fb3d3;margin:0;">הכי נקי</p>
+      <p style="font-size:11px;font-weight:600;margin:1px 0;color:#4575b4;">{cst_best}</p>
+      <p style="font-size:15px;font-weight:700;margin:0;color:#4575b4;">{cst_best_v}</p>
+    </div>
+    <div style="background:rgba(215,48,39,0.08);border:1px solid rgba(215,48,39,0.2);border-radius:5px;padding:5px;text-align:center;">
+      <p style="font-size:9px;color:#7fb3d3;margin:0;">הכי מזוהם</p>
+      <p style="font-size:11px;font-weight:600;margin:1px 0;color:#d73027;">{cst_worst}</p>
+      <p style="font-size:15px;font-weight:700;margin:0;color:#d73027;">{cst_worst_v}</p>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px;">
+    <div style="background:rgba(69,117,180,0.12);border-radius:4px;padding:3px;text-align:center;">
+      <span style="font-size:15px;font-weight:700;color:#4575b4;">{cst_nclean}</span>
+      <span style="font-size:9px;color:#7fb3d3;"> נקיים</span>
+    </div>
+    <div style="background:rgba(253,174,97,0.12);border-radius:4px;padding:3px;text-align:center;">
+      <span style="font-size:15px;font-weight:700;color:#fdae61;">{cst_nmod}</span>
+      <span style="font-size:9px;color:#7fb3d3;"> בינוניים</span>
+    </div>
+    <div style="background:rgba(215,48,39,0.12);border-radius:4px;padding:3px;text-align:center;">
+      <span style="font-size:15px;font-weight:700;color:#d73027;">{cst_npoll}</span>
+      <span style="font-size:9px;color:#7fb3d3;"> מזוהמים</span>
     </div>
   </div>
   <div style="display:flex;gap:10px;align-items:flex-start;">
@@ -1549,7 +1579,7 @@ else:
     available_dates = [(datetime.utcnow()-timedelta(days=d)).strftime('%Y-%m-%d') for d in range(1,8)]
     sel_date = st.sidebar.selectbox("Select acquisition date:",[f"🟢 {d}" for d in available_dates]).replace("🟢 ","")
 
-    st.markdown("### 🌍 Global WQI — Sentinel-3")
+    st.markdown("### 🌍 Global WQI - Sentinel-3")
 
     if "g_center" not in st.session_state:
         st.session_state.g_center=(24.0,-90.0); st.session_state.g_zoom=5
