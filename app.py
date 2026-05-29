@@ -1580,7 +1580,11 @@ if mode == MODE_ISRAEL:
                         st.rerun()
 
                 # All monitoring zones → visible in chart
+                # Include zones from session_state even if history not yet computed
                 visible_beaches = list(user_zone_history.keys())
+                for zname in st.session_state.user_zones:
+                    if zname not in visible_beaches:
+                        visible_beaches.append(zname)
 
                 # Pre-merge zone history into beach_history so all_dates is correct
                 for zname, zhistory in user_zone_history.items():
@@ -1796,7 +1800,10 @@ if mode == MODE_ISRAEL:
 """
                     components.html(chart_html, height=740, scrolling=False)
                 else:
-                    st.caption("Zoom in to see beach comparison")
+                    if st.session_state.user_zones:
+                        st.info(f"⏳ Loading history for {len(st.session_state.user_zones)} zones...")
+                    else:
+                        st.caption("Draw a shape on the map to start monitoring")
 
                 # ── Monitoring Areas (unified: points + polygons) ─────────────
                 pending_zone = st.session_state.get("pending_zone")
