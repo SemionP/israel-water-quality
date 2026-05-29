@@ -262,6 +262,7 @@ def _gdrive_file_id(token) -> str | None:
 
 def load_zones() -> dict:
     import json as _j, urllib.request
+    _dbg = []
     # 1. Google Drive — try hardcoded file ID first (fastest)
     try:
         token = _gdrive_token()
@@ -270,28 +271,22 @@ def load_zones() -> dict:
             req = urllib.request.Request(
                 f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media",
                 headers={"Authorization":f"Bearer {token}"})
-            return _j.loads(urllib.request.urlopen(req, timeout=10).read().decode())
-    except:
-        pass
-    # 2. Google Drive — search by name (fallback if file was recreated)
-    try:
-        token = _gdrive_token()
-        if token:
-            fid = _gdrive_file_id(token)
-            if fid:
-                req = urllib.request.Request(
-                    f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media",
-                    headers={"Authorization":f"Bearer {token}"})
-                return _j.loads(urllib.request.urlopen(req, timeout=10).read().decode())
-    except:
-        pass
-    # 3. secrets fallback
+            raw = urllib.request.urlopen(req, timeout=10).read().decode()
+            _dbg.append(f"read {len(raw)} bytes")
+            st.session_state["_load_dbg"] = " | ".join(_dbg)
+            return _j.loads(raw)
+        else:
+            _dbg.append("no token")
+    except Exception as e:
+        _dbg.append(f"drive err: {type(e).__name__}: {str(e)[:120]}")
+    st.session_state["_load_dbg"] = " | ".join(_dbg)
+    # 2. secrets fallback
     try:
         raw = st.secrets.get("saved_zones", None)
         if raw: return _j.loads(raw)
     except:
         pass
-    # 4. /tmp fallback
+    # 3. /tmp fallback
     try:
         return _j.loads(open("/tmp/medi_zones.json").read())
     except:
@@ -1869,6 +1864,8 @@ if mode == MODE_ISRAEL:
                 with st.expander("📍 Monitoring Areas", expanded=bool(pending_zone)):
                     if st.session_state.get("_zones_debug"):
                         st.caption(f"🔍 {st.session_state['_zones_debug']}")
+                    if st.session_state.get("_load_dbg"):
+                        st.caption(f"📥 {st.session_state['_load_dbg']}")
                     if pending_zone:
                         if pending_zone["type"] == "polygon":
                             st.info(f"🟦 New polygon: {len(pending_zone['coords'])} vertices")
