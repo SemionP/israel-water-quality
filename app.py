@@ -304,6 +304,7 @@ def load_zones() -> dict:
 def save_zones(zones: dict):
     import json as _j, urllib.request
     data = _j.dumps(zones, ensure_ascii=False).encode()
+    _dbg = []
     # Always save to /tmp
     try:
         with open("/tmp/medi_zones.json","w") as f: f.write(data.decode())
@@ -312,9 +313,11 @@ def save_zones(zones: dict):
     # Save to Google Drive
     try:
         token = _gdrive_token()
-        if not token: return
+        if not token:
+            _dbg.append("no token")
+            st.session_state["_save_dbg"] = " | ".join(_dbg)
+            return
         import urllib.parse
-        # Find existing SA-accessible file by name
         q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
         url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode(
             {"q": q, "fields": "files(id)", "pageSize": "5"})
@@ -338,9 +341,12 @@ def save_zones(zones: dict):
         req2 = urllib.request.Request(url2, data=body, method=method, headers={
             "Authorization": f"Bearer {token}",
             "Content-Type":  "multipart/related; boundary=MEDIboundary42"})
-        urllib.request.urlopen(req2, timeout=15)
-    except:
-        pass
+        resp = urllib.request.urlopen(req2, timeout=15)
+        result = _j.loads(resp.read())
+        _dbg.append(f"saved OK id={result.get('id','?')[:12]} ({method})")
+    except Exception as e:
+        _dbg.append(f"save err: {type(e).__name__}: {str(e)[:120]}")
+    st.session_state["_save_dbg"] = " | ".join(_dbg)
 
 def load_zones_from_all() -> dict: return load_zones()
 def load_points() -> dict: return {}
@@ -1891,6 +1897,12 @@ if mode == MODE_ISRAEL:
                         st.caption(f"🔍 {st.session_state['_zones_debug']}")
                     if st.session_state.get("_load_dbg"):
                         st.caption(f"📥 {st.session_state['_load_dbg']}")
+                    if st.session_state.get("_save_dbg"):
+                        st.caption(f"💾 {st.session_state['_save_dbg']}")
+                    if st.session_state.user_zones:
+                        if st.button("☁️ Force save to Drive", use_container_width=True, key="force_save"):
+                            save_zones(st.session_state.user_zones)
+                            st.rerun()
                     if pending_zone:
                         if pending_zone["type"] == "polygon":
                             st.info(f"🟦 New polygon: {len(pending_zone['coords'])} vertices")
