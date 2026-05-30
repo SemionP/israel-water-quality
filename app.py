@@ -1643,25 +1643,20 @@ if mode == MODE_ISRAEL:
                 control=True,
                 show=is_base,
             ).add_to(m)
-        folium.LayerControl(position="topleft", collapsed=True).add_to(m)
         vis = {'min':30,'max':90,'palette':['#d73027','#f46d43','#fdae61','#fee090','#e0f3f8','#abd9e9','#74add1','#4575b4']}
+        wqi_tile_url = None
         try:
             mid = ee.Image(wqi_layer).getMapId(vis)
             wqi_tile_url = mid['tile_fetcher'].url_format
-            # Always show WQI raster on top of basemap (incl. satellite). Higher zIndex
-            # keeps it above true-color satellite tiles in the basemap layer.
-            wqi_tl = folium.TileLayer(
+            # Always show WQI raster above basemap (incl. satellite). control=False
+            # so it's not toggleable in LayerControl but is always rendered on top.
+            folium.TileLayer(
                 tiles=wqi_tile_url,
                 attr=f'GEE {data_source}',
-                name=f"WQI Index ({data_source})",
-                overlay=True, control=True, opacity=0.75,
-            )
-            # Inject zIndex via the Leaflet options
-            wqi_tl.options['zIndex'] = 450
-            wqi_tl.options['className'] = 'wqi-raster'
-            wqi_tl.add_to(m)
+                name=f"WQI ({data_source})",
+                overlay=True, control=False, opacity=0.75,
+            ).add_to(m)
         except Exception:
-            wqi_tile_url = None
             pass  # map shows base tiles only if GEE layer fails
 
         # ── Task 4: Satellite raster panel via custom Leaflet button ──────────
@@ -2008,6 +2003,8 @@ if mode == MODE_ISRAEL:
                             )
                         ).add_to(m)
 
+        # LayerControl LAST so it registers every layer added above (basemaps, WQI, zones)
+        folium.LayerControl(position="topleft", collapsed=True).add_to(m)
         return m
 
     # ── MEDI Platform ─────────────────────────────────────────────────────────────
@@ -2063,7 +2060,7 @@ if mode == MODE_ISRAEL:
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
-                    key=f"israel_map_wqi_{st.session_state.get('img_idx',0)}_{data_source}_{sel_date}",
+                    key=f"israel_map_wqi_{st.session_state.get('img_idx',0)}",
                     returned_objects=["bounds","last_active_drawing","last_clicked"]
                 )
             with col_info:
