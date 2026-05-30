@@ -1839,12 +1839,28 @@ if mode == MODE_ISRAEL:
                             "wqiColor": col,
                         })
 
+                    # Task 6: Identify territorial waters zone — must come before chart_json
+                    TW_KEYWORDS = ["territorial", "טריטוריאל", "ים ישראל", "israel water",
+                                   "territorial water", "tw_", "terr_"]
+                    tw_zone_name = None
+                    for zn in visible_beaches:
+                        if any(kw in zn.lower() for kw in TW_KEYWORDS):
+                            tw_zone_name = zn
+                            break
+
+                    # Build source label for chart subtitle from actual data used
+                    sources_used = sorted(set(
+                        e.get("source","") for name in visible_beaches
+                        for e in beach_history.get(name, []) if e.get("source")
+                    ))
+                    src_label = " · ".join(sources_used) if sources_used else "S3 · S2 · MODIS"
+
                     chart_json  = _json.dumps(datasets)
                     labels_json = _json.dumps(all_dates)  # full YYYY-MM-DD for tooltip
                     labels_short_json = _json.dumps([d[5:].replace("-","/") for d in all_dates])  # MM/DD for axis
                     legend_json = _json.dumps(legend_items)
 
-                    # Task 6: compute territorial waters average series
+                    # Task 6: compute territorial waters series after beach_history is ready
                     tw_avg_json = "null"
                     tw_label_js = "null"
                     if tw_zone_name and tw_zone_name in beach_history:
@@ -1852,6 +1868,7 @@ if mode == MODE_ISRAEL:
                         tw_series = [tw_map.get(d) for d in all_dates]
                         tw_avg_json = _json.dumps(tw_series)
                         tw_label_js = _json.dumps(tw_zone_name)
+
                     best_name   = best or "---"
                     best_val    = round(valid_vals[best],1) if best else "---"
                     worst_name  = worst or "---"
@@ -1868,23 +1885,6 @@ if mode == MODE_ISRAEL:
                     cst_nclean  = sum(1 for v in cst_valid.values() if v>=70)
                     cst_nmod    = sum(1 for v in cst_valid.values() if 50<=v<70)
                     cst_npoll   = sum(1 for v in cst_valid.values() if v<50)
-
-                    # Task 6: Identify territorial waters zone (a user zone whose name contains
-                    # keywords like "territorial" / "ים טריטוריאלי" / "territorial waters")
-                    TW_KEYWORDS = ["territorial", "טריטוריאל", "ים ישראל", "israel water",
-                                   "territorial water", "tw_", "terr_"]
-                    tw_zone_name = None
-                    for zn in visible_beaches:
-                        if any(kw in zn.lower() for kw in TW_KEYWORDS):
-                            tw_zone_name = zn
-                            break
-
-                    # Build source label for chart subtitle from actual data used
-                    sources_used = sorted(set(
-                        e.get("source","") for name in visible_beaches
-                        for e in beach_history.get(name, []) if e.get("source")
-                    ))
-                    src_label = " · ".join(sources_used) if sources_used else "S3 · S2 · MODIS"
 
                     chart_html = f"""
 <!DOCTYPE html><html><body style="margin:0;padding:0;background:#020d18;overflow:hidden;">
