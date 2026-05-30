@@ -1797,39 +1797,126 @@ if mode == MODE_ISRAEL:
                     ))
 
                     def _get_current(name):
-                        # City maritime zone WQI takes priority
                         if city_wqi and name in city_wqi and city_wqi[name] is not None:
                             return float(city_wqi[name])
-                        # User zone
                         if user_zone_wqi and name in user_zone_wqi and user_zone_wqi[name] is not None:
                             return float(user_zone_wqi[name])
-                        # History fallback
                         hist_vals = [e["wqi"] for e in beach_history.get(name,[]) if e["wqi"] and str(e["wqi"]) != "nan"]
                         return hist_vals[-1] if hist_vals else None
 
                     PALETTE = ["#1D9E75","#378ADD","#7F77DD","#BA7517","#D4537E","#E24B4A","#639922","#D85A30"]
-                    beach_colors = {name: PALETTE[i % len(PALETTE)] for i,name in enumerate(visible_beaches)}
-                    current_vals = {n: _get_current(n) for n in visible_beaches}
-                    valid_vals   = {n:v for n,v in current_vals.items() if v}
+
+                    # ── Task 8: Group-aware chart building ────────────────────
+                    chart_view_mode = st.session_state.get("chart_view_mode", "All zones (individual)")
+                    selected_group  = None
+                    if chart_view_mode.startswith("Group: "):
+                        selected_group = chart_view_mode[len("Group: "):]
+
+                    if selected_group:
+                        # Build one averaged line per group (only show selected group's zones aggregated)
+                        # Also show zones NOT in any group individually, and other groups as their average
+                        grp_map = {}   # group_name -> [zone_names]
+                        ungrouped = []
+                        for zn in visible_beaches:
+                            zg = st.session_state.user_zones.get(zn, {}).get("group", "")
+                            if zg:
+                                grp_map.setdefault(zg, []).append(zn)
+                            else:
+                                ungrouped.append(zn)
+
+                        # For the selected group: one line per member zone (individual)
+                        # For other groups: one averaged line
+                        # For ungrouped: individual lines
+                        chart_names = []
+                        chart_names += ungrouped
+                        for g, members in grp_map.items():
+                            if g == selected_group:
+                                chart_names += members   # individual lines for selected group
+                            else:
+                                chart_names.append(f"[{g}] avg")  # averaged line for other groups
+
+                        beach_colors = {}
+                        for i, nm in enumerate(chart_names):
+                            beach_colors[nm] = PALETTE[i % len(PALETTE)]
+
+                        datasets = []
+                        for nm in chart_names:
+                            if nm.startswith("[") and nm.endswith("] avg"):
+                                # Averaged group line
+                                grp_name = nm[1:nm.index("] avg")]
+                                members  = grp_map.get(grp_name, [])
+                                data = []
+                                srcs = []
+                                for d in all_dates:
+                                    vals = [beach_history[m][0]["wqi"] if m in beach_history else None
+                                            for m in members]
+                                    # per-date lookup
+                                    day_vals = []
+                                    day_srcs = []
+                                    for m in members:
+                                        hm = {e["date"]: e for e in beach_history.get(m, [])}
+                                        if d in hm and hm[d]["wqi"] is not None:
+                                            day_vals.append(hm[d]["wqi"])
+                                            day_srcs.append(hm[d].get("source",""))
+                                    avg = round(sum(day_vals)/len(day_vals), 1) if day_vals else None
+                                    data.append(avg)
+                                    srcs.append(",".join(set(day_srcs)) if day_srcs else "")
+                                datasets.append({
+                                    "label": nm,
+                                    "data": data,
+                                    "sources": srcs,
+                                    "borderColor": beach_colors[nm],
+                                    "borderDash": [4, 2],
+                                    "_isGroupAvg": True,
+                                })
+                            else:
+                                hmap = {e["date"]: e for e in beach_history.get(nm, [])}
+                                data = [hmap[d]["wqi"] if d in hmap else None for d in all_dates]
+                                srcs = [hmap[d].get("source","") if d in hmap else "" for d in all_dates]
+                                datasets.append({
+                                    "label": nm,
+                                    "data": data,
+                                    "sources": srcs,
+                                    "borderColor": beach_colors[nm],
+                                    "borderDash": [],
+                                })
+
+                        current_vals = {}
+                        for nm in chart_names:
+                            if nm.startswith("[") and nm.endswith("] avg"):
+                                grp_name = nm[1:nm.index("] avg")]
+                                members  = grp_map.get(grp_name, [])
+                                mvs = [_get_current(m) for m in members if _get_current(m)]
+                                current_vals[nm] = round(sum(mvs)/len(mvs),1) if mvs else None
+                            else:
+                                current_vals[nm] = _get_current(nm)
+
+                        display_names = chart_names
+
+                    else:
+                        # Original individual mode
+                        beach_colors = {name: PALETTE[i % len(PALETTE)] for i,name in enumerate(visible_beaches)}
+                        current_vals = {n: _get_current(n) for n in visible_beaches}
+                        datasets = []
+                        for name in visible_beaches:
+                            hist_map = {e["date"]: e for e in beach_history.get(name,[])}
+                            data = [hist_map[d]["wqi"] if d in hist_map else None for d in all_dates]
+                            src_map = [hist_map[d].get("source","") if d in hist_map else "" for d in all_dates]
+                            datasets.append({
+                                "label": name,
+                                "data": data,
+                                "sources": src_map,
+                                "borderColor": beach_colors[name],
+                                "borderDash": [5,3] if (current_vals.get(name,100) or 100) < 30 else [],
+                            })
+                        display_names = visible_beaches
+
+                    valid_vals = {n:v for n,v in current_vals.items() if v}
                     best  = max(valid_vals, key=valid_vals.get) if valid_vals else None
                     worst = min(valid_vals, key=valid_vals.get) if valid_vals else None
 
-                    datasets = []
-                    for name in visible_beaches:
-                        hist_map = {e["date"]: e for e in beach_history.get(name,[])}
-                        data = [hist_map[d]["wqi"] if d in hist_map else None for d in all_dates]
-                        # source per data point (None for missing)
-                        src_map = [hist_map[d].get("source","") if d in hist_map else "" for d in all_dates]
-                        datasets.append({
-                            "label": name,
-                            "data": data,
-                            "sources": src_map,
-                            "borderColor": beach_colors[name],
-                            "borderDash": [5,3] if (valid_vals.get(name,100) or 100) < 30 else [],
-                        })
-
                     legend_items = []
-                    for name in visible_beaches:
+                    for name in display_names:
                         v   = current_vals.get(name)
                         col = "#1ecb7b" if v and v>=70 else "#f0a500" if v and v>=55 else "#e03c3c" if v else "#888"
                         legend_items.append({
@@ -1843,17 +1930,21 @@ if mode == MODE_ISRAEL:
                     TW_KEYWORDS = ["territorial", "טריטוריאל", "ים ישראל", "israel water",
                                    "territorial water", "tw_", "terr_"]
                     tw_zone_name = None
-                    for zn in visible_beaches:
+                    for zn in display_names:
                         if any(kw in zn.lower() for kw in TW_KEYWORDS):
                             tw_zone_name = zn
                             break
 
                     # Build source label for chart subtitle from actual data used
                     sources_used = sorted(set(
-                        e.get("source","") for name in visible_beaches
+                        e.get("source","") for name in display_names
                         for e in beach_history.get(name, []) if e.get("source")
                     ))
                     src_label = " · ".join(sources_used) if sources_used else "S3 · S2 · MODIS"
+
+                    # Task 8: Add group mode indicator to subtitle
+                    if selected_group:
+                        src_label = f"Group: {selected_group} · " + src_label
 
                     chart_json  = _json.dumps(datasets)
                     labels_json = _json.dumps(all_dates)  # full YYYY-MM-DD for tooltip
@@ -2156,20 +2247,36 @@ if mode == MODE_ISRAEL:
                         else:
                             st.info(f"📍 New point: {pending_zone['lat']:.4f}, {pending_zone['lon']:.4f}")
                         zone_name_inp = st.text_input("Name:", key="zone_name_inp", placeholder="e.g. Haifa Anchorage")
+
+                        # Task 8: Group assignment
+                        existing_groups = sorted(set(
+                            z.get("group","") for z in st.session_state.user_zones.values()
+                            if z.get("group","")
+                        ))
+                        group_options = ["— No group —"] + existing_groups + ["+ New group…"]
+                        grp_sel = st.selectbox("Group:", group_options, key="zone_group_sel")
+                        if grp_sel == "+ New group…":
+                            zone_group_inp = st.text_input("New group name:", key="zone_group_new_inp",
+                                                            placeholder="e.g. Ports")
+                        elif grp_sel == "— No group —":
+                            zone_group_inp = ""
+                        else:
+                            zone_group_inp = grp_sel
+
                         zc1, zc2 = st.columns(2)
                         with zc1:
                             if st.button("💾 Save", use_container_width=True, key="save_zone"):
                                 if zone_name_inp.strip():
-                                    zn = zone_name_inp.strip()
+                                    zn    = zone_name_inp.strip()
+                                    grp   = zone_group_inp.strip() if zone_group_inp else ""
                                     if pending_zone["type"] == "polygon":
-                                        st.session_state.user_zones[zn] = {"coords": pending_zone["coords"], "type": "polygon"}
+                                        st.session_state.user_zones[zn] = {"coords": pending_zone["coords"], "type": "polygon", "group": grp}
                                     else:
                                         lat, lon = pending_zone["lat"], pending_zone["lon"]
                                         d = 0.005
                                         box = [[lon-d,lat-d],[lon+d,lat-d],[lon+d,lat+d],[lon-d,lat+d],[lon-d,lat-d]]
-                                        st.session_state.user_zones[zn] = {"coords": box, "type": "point", "lat": lat, "lon": lon}
+                                        st.session_state.user_zones[zn] = {"coords": box, "type": "point", "lat": lat, "lon": lon, "group": grp}
                                     save_zones(st.session_state.user_zones)
-                                    # Mark this drawing as processed so it won't re-trigger
                                     h = pending_zone.get("hash")
                                     if h:
                                         st.session_state.saved_drawing_hashes.add(h)
@@ -2178,7 +2285,6 @@ if mode == MODE_ISRAEL:
                                     st.rerun()
                         with zc2:
                             if st.button("✕ Discard", use_container_width=True, key="cancel_zone"):
-                                # Mark as processed so it won't re-trigger either
                                 h = pending_zone.get("hash")
                                 if h:
                                     st.session_state.saved_drawing_hashes.add(h)
@@ -2186,14 +2292,36 @@ if mode == MODE_ISRAEL:
                                 st.rerun()
 
                     if st.session_state.user_zones:
+                        # Task 8: Group filter + chart view mode
+                        all_zone_groups = sorted(set(
+                            z.get("group","") for z in st.session_state.user_zones.values()
+                            if z.get("group","")
+                        ))
+                        if all_zone_groups:
+                            st.markdown("<div style='font-size:11px;color:#7fb3d3;margin:6px 0 2px;'>📊 Chart view</div>",
+                                        unsafe_allow_html=True)
+                            view_opts = ["All zones (individual)"] + [f"Group: {g}" for g in all_zone_groups]
+                            if "chart_view_mode" not in st.session_state:
+                                st.session_state.chart_view_mode = "All zones (individual)"
+                            new_view = st.selectbox("", view_opts, key="chart_view_sel",
+                                                    index=view_opts.index(st.session_state.chart_view_mode)
+                                                    if st.session_state.chart_view_mode in view_opts else 0,
+                                                    label_visibility="collapsed")
+                            if new_view != st.session_state.chart_view_mode:
+                                st.session_state.chart_view_mode = new_view
+                                st.rerun()
+
                         for zname in list(st.session_state.user_zones.keys()):
-                            zwqi = user_zone_wqi.get(zname)
+                            zwqi  = user_zone_wqi.get(zname)
                             zwqi_str = f"{zwqi:.1f}" if zwqi is not None else "..."
                             ztype = st.session_state.user_zones[zname].get("type", "polygon")
+                            zgrp  = st.session_state.user_zones[zname].get("group", "")
                             icon  = "📍" if ztype == "point" else "🟦"
+                            grp_badge = f' <span style="font-size:9px;background:rgba(0,200,200,0.15);color:#00c8c8;border-radius:3px;padding:1px 5px;">{zgrp}</span>' if zgrp else ""
                             zc, zd = st.columns([3, 1])
                             with zc:
-                                st.caption(f"{icon} {zname} — WQI: {zwqi_str}")
+                                st.markdown(f'<div style="font-size:12px;color:#d6eaf8;padding:2px 0;">{icon} {zname}{grp_badge} <span style="color:#7fb3d3;">WQI: {zwqi_str}</span></div>',
+                                            unsafe_allow_html=True)
                             with zd:
                                 if st.button("🗑", key=f"del_zone_{zname}"):
                                     del st.session_state.user_zones[zname]
