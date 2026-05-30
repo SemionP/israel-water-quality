@@ -1666,12 +1666,13 @@ if mode == MODE_ISRAEL:
 
         _sat_js = f"""
 (function() {{
-  // ── Button ──────────────────────────────────────────────────────────────
-  var btn = L.control({{position: 'bottomleft'}});
+  function addSatBtn(map) {{
+  // ── Satellite Button ─────────────────────────────────────────────────────
+  var btn = L.control({{position: 'topright'}});
   btn.onAdd = function(map) {{
     var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
     d.innerHTML = '<a href="#" title="Satellite Imagery" style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);">🛰</a>';
-    d.style.marginBottom = '5px';
+    d.style.marginTop = '4px';
     L.DomEvent.disableClickPropagation(d);
     var panelOpen = false;
     var panel = null;
@@ -1781,44 +1782,145 @@ if mode == MODE_ISRAEL:
     s.src = 'https://cdn.jsdelivr.net/npm/leaflet-side-by-side@2.2.0/leaflet-side-by-side.min.js';
     document.head.appendChild(s);
   }}
+  }} // end addSatBtn
+  // Wait for map to be ready
+  var _satRetry = 0;
+  function _trySatBtn() {{
+    if (typeof map !== 'undefined') {{ addSatBtn(map); }}
+    else if (_satRetry++ < 20) {{ setTimeout(_trySatBtn, 200); }}
+  }}
+  setTimeout(_trySatBtn, 400);
 }})();
 """
-        m.add_child(folium.Element(f'<script>{_sat_js}</script>'))
+        # Build sat+fs as proper MacroElements so Folium injects the correct map variable name
+        _src_abbr_safe = _src_abbr
+        _sel_date_safe = sel_date
+        _wqi_url_safe  = _wqi_url.replace("'", "\\'")
+        _tc_url_safe   = _tc_url.replace("'", "\\'")
+        _view_wqi      = "selected" if _view == "wqi" else ""
+        _view_tc       = "selected" if _view == "true_color" else ""
+        _view_sw       = "selected" if _view == "swipe" else ""
+        _op_pct        = int(_opacity * 100)
 
-        # ── Task 7: Map fullscreen button ──────────────────────────────────────
-        _fs_js = """
+        class SatelliteControl(MacroElement):
+            def __init__(self):
+                super().__init__()
+                self._template = Template("""{% macro script(this, kwargs) %}
 (function() {
-  var fsBtn = L.control({position: 'bottomleft'});
-  fsBtn.onAdd = function(map) {
-    var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-    d.innerHTML = '<a href="#" title="Full Screen" style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:14px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);">⛶</a>';
-    d.style.marginBottom = '5px';
-    L.DomEvent.disableClickPropagation(d);
-    var isFs = false;
-    var anchor = d.querySelector('a');
-    anchor.addEventListener('click', function(e) {
-      e.preventDefault();
-      isFs = !isFs;
-      var mapEl = map.getContainer();
-      if (isFs) {
-        if (mapEl.requestFullscreen) mapEl.requestFullscreen();
-        else if (mapEl.webkitRequestFullscreen) mapEl.webkitRequestFullscreen();
-        anchor.textContent = '✕';
-      } else {
-        if (document.exitFullscreen) document.exitFullscreen();
-        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-        anchor.textContent = '⛶';
+  var mapObj = """ + "{{this._parent.get_name()}}" + """;
+  var panelOpen = false, panel = null;
+  var leftLayer = null, rightLayer = null, sideBySide = null;
+  var wqiUrl = '""" + _wqi_url_safe + """';
+  var tcUrl  = '""" + _tc_url_safe + """';
+
+  function removeSwipe() {
+    if (sideBySide) { try { sideBySide.remove(); } catch(e){} sideBySide = null; }
+    if (leftLayer)  { try { mapObj.removeLayer(leftLayer);  } catch(e){} leftLayer  = null; }
+    if (rightLayer) { try { mapObj.removeLayer(rightLayer); } catch(e){} rightLayer = null; }
+  }
+  function clearSatLayers() {
+    mapObj.eachLayer(function(l) { if (l._isSatLayer) mapObj.removeLayer(l); });
+  }
+  function setLayer(mode, opacity) {
+    removeSwipe(); clearSatLayers();
+    var op = parseFloat(opacity);
+    if (mode === 'wqi' && wqiUrl) {
+      var l = L.tileLayer(wqiUrl, {opacity: op, attribution: 'GEE WQI', zIndex: 500});
+      l._isSatLayer = true; l.addTo(mapObj);
+    } else if (mode === 'true_color' && tcUrl) {
+      var l = L.tileLayer(tcUrl, {opacity: op, attribution: 'GEE True Color', zIndex: 500});
+      l._isSatLayer = true; l.addTo(mapObj);
+    } else if (mode === 'swipe' && wqiUrl && tcUrl) {
+      leftLayer  = L.tileLayer(tcUrl,  {opacity: op, attribution: 'True Color', zIndex: 500});
+      rightLayer = L.tileLayer(wqiUrl, {opacity: op, attribution: 'WQI',        zIndex: 501});
+      leftLayer._isSatLayer = true; rightLayer._isSatLayer = true;
+      leftLayer.addTo(mapObj); rightLayer.addTo(mapObj);
+      if (L.control && L.control.sideBySide) {
+        sideBySide = L.control.sideBySide(leftLayer, rightLayer);
+        sideBySide.addTo(mapObj);
       }
-    });
-    document.addEventListener('fullscreenchange', function() {
-      if (!document.fullscreenElement) { isFs = false; anchor.textContent = '⛶'; }
+    }
+  }
+  function buildPanel(container) {
+    var p = document.createElement('div');
+    p.style.cssText = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.96);border:1px solid rgba(0,200,200,0.35);border-radius:6px;padding:10px 12px;min-width:220px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;z-index:9999;';
+    p.innerHTML = `<div style="font-weight:bold;color:#00c8c8;margin-bottom:8px;font-size:11px;">🛰 SATELLITE IMAGERY <span style="font-size:9px;color:#7fb3d3;">""" + _src_abbr_safe + " · " + _sel_date_safe + """</span></div>
+      <div style="margin-bottom:6px;">
+        <label style="display:block;color:#7fb3d3;font-size:10px;margin-bottom:3px;">Layer</label>
+        <select id="satModeSelect" style="width:100%;background:#041e33;color:#d6eaf8;border:1px solid rgba(0,200,200,0.3);border-radius:3px;padding:3px;font-size:11px;">
+          <option value="wqi" """ + _view_wqi + """>WQI Result</option>
+          <option value="true_color" """ + _view_tc + """>True Color (Raw)</option>
+          <option value="swipe" """ + _view_sw + """>⟷ Split Comparison</option>
+        </select>
+      </div>
+      <div style="margin-bottom:6px;">
+        <label style="display:block;color:#7fb3d3;font-size:10px;margin-bottom:3px;">Opacity: <span id="opVal">""" + str(_op_pct) + """%</span></label>
+        <input id="opSlider" type="range" min="10" max="100" value=" """ + str(_op_pct) + """ " style="width:100%;accent-color:#00c8c8;">
+      </div>
+      <div style="font-size:9px;color:#7fb3d3;">⟵ True Color &nbsp; WQI ⟶ (swipe mode)</div>`;
+    L.DomEvent.disableClickPropagation(p);
+    setTimeout(function() {
+      var sel = document.getElementById('satModeSelect');
+      var sld = document.getElementById('opSlider');
+      var olb = document.getElementById('opVal');
+      if (!sel || !sld) return;
+      function apply() { olb.textContent = sld.value + '%'; setLayer(sel.value, sld.value/100); }
+      sel.addEventListener('change', apply);
+      sld.addEventListener('change', apply);
+      sld.addEventListener('input', function() { olb.textContent = sld.value + '%'; });
+      apply();
+    }, 80);
+    return p;
+  }
+
+  var satCtrl = L.control({position: 'topright'});
+  satCtrl.onAdd = function(m) {
+    var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+    d.style.marginTop = '4px';
+    d.innerHTML = '<a href="#" title="Satellite Imagery" style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);" id="satBtnA">🛰</a>';
+    L.DomEvent.disableClickPropagation(d);
+    d.querySelector('#satBtnA').addEventListener('click', function(e) {
+      e.preventDefault();
+      panelOpen = !panelOpen;
+      if (panelOpen) { panel = buildPanel(d); d.appendChild(panel); }
+      else { if (panel) { d.removeChild(panel); panel = null; } removeSwipe(); clearSatLayers(); }
     });
     return d;
   };
-  fsBtn.addTo(map);
+  satCtrl.addTo(mapObj);
+
+  // Fullscreen button
+  var fsCtrl = L.control({position: 'topright'});
+  fsCtrl.onAdd = function(m) {
+    var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+    d.style.marginTop = '4px';
+    d.innerHTML = '<a href="#" title="Full Screen" style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:14px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);" id="fsBtnA">⛶</a>';
+    L.DomEvent.disableClickPropagation(d);
+    var isFs = false;
+    d.querySelector('#fsBtnA').addEventListener('click', function(e) {
+      e.preventDefault(); isFs = !isFs;
+      var el = mapObj.getContainer();
+      if (isFs) { (el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el); this.textContent='✕'; }
+      else { (document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document); this.textContent='⛶'; }
+    });
+    document.addEventListener('fullscreenchange', function() {
+      if (!document.fullscreenElement) { isFs=false; var a=d.querySelector('#fsBtnA'); if(a) a.textContent='⛶'; }
+    });
+    return d;
+  };
+  fsCtrl.addTo(mapObj);
+
+  // Load side-by-side plugin
+  if (!window._sbsLoaded) {
+    window._sbsLoaded = true;
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/leaflet-side-by-side@2.2.0/leaflet-side-by-side.min.js';
+    document.head.appendChild(s);
+  }
 })();
-"""
-        m.add_child(folium.Element(f'<script>{_fs_js}</script>'))
+{% endmacro %}""")
+
+        m.add_child(SatelliteControl())
 
         m.add_child(OnMapWaterLegend())
         if st.session_state.get("show_zones_on_map", True):
