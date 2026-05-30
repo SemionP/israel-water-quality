@@ -2322,8 +2322,23 @@ if mode == MODE_ISRAEL:
                     worst_val   = round(valid_vals[worst],1) if worst else "---"
                     n_beaches   = len(visible_beaches)
 
-                    # Coast statistics
-                    cst_valid   = {k:v for k,v in (city_wqi or {}).items() if v is not None}
+                    # Coast statistics — pull from current_vals (includes user zones + cities)
+                    # and exclude territorial-waters reference zone from "cleanest/most-polluted"
+                    # comparisons so the benchmark line doesn't dominate.
+                    TW_KEYS = ["territorial","טריטוריאל","ים ישראל","israel water","tw_","terr_"]
+                    def _is_tw(n):
+                        return any(k in n.lower() for k in TW_KEYS)
+
+                    # Combine: user zones (current_vals) + predefined cities (city_wqi)
+                    combined = {}
+                    for k, v in (current_vals or {}).items():
+                        if v is not None and not _is_tw(k) and not (k.startswith("[") and k.endswith("] avg")):
+                            combined[k] = float(v)
+                    for k, v in (city_wqi or {}).items():
+                        if v is not None and k not in combined:
+                            combined[k] = float(v)
+
+                    cst_valid   = combined
                     cst_avg     = f"{sum(cst_valid.values())/len(cst_valid):.1f}" if cst_valid else "N/A"
                     cst_best    = max(cst_valid, key=cst_valid.get) if cst_valid else "N/A"
                     cst_best_v  = f"{cst_valid[cst_best]:.1f}" if cst_valid else ""
