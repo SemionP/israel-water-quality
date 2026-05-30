@@ -1537,6 +1537,72 @@ if mode == MODE_ISRAEL:
 
     if "show_zones_on_map" not in st.session_state:
         st.session_state.show_zones_on_map = True
+    if "sat_panel_open" not in st.session_state:
+        st.session_state.sat_panel_open = False
+    if "sat_view_mode" not in st.session_state:
+        st.session_state.sat_view_mode = "wqi"   # "wqi" | "true_color" | "swipe"
+    if "sat_opacity" not in st.session_state:
+        st.session_state.sat_opacity = 0.85
+
+    @st.cache_data(ttl=7200)
+    def _get_true_color_tile(source: str, target_date_str: str):
+        """Return GEE tile URL for the raw (true-color) satellite image."""
+        wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
+        t  = ee.Date(target_date_str)
+        try:
+            if source == "S3":
+                coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                        .filterBounds(HAIFA_BBOX)
+                        .filterDate(t.advance(-2, "day"), t.advance(1, "day")))
+                if coll.size().getInfo() == 0:
+                    return None
+                img = coll.median().clip(ISRAEL_CLIP)
+                vis = {"bands": ["Oa08_radiance", "Oa06_radiance", "Oa04_radiance"],
+                       "min": 0, "max": 120, "gamma": 1.4}
+            elif source == "S2":
+                coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                        .filterBounds(HAIFA_BBOX)
+                        .filterDate(t.advance(-5, "day"), t.advance(1, "day"))
+                        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+                        .sort("system:time_start", False))
+                if coll.size().getInfo() == 0:
+                    return None
+                img = coll.first().clip(ISRAEL_CLIP)
+                vis = {"bands": ["B4", "B3", "B2"], "min": 0, "max": 3000, "gamma": 1.3}
+            else:  # MODIS
+                terra = (ee.ImageCollection("MODIS/061/MOD09GA")
+                         .filterBounds(HAIFA_BBOX)
+                         .filterDate(t.advance(-2, "day"), t.advance(1, "day"))
+                         .sort("system:time_start", False))
+                if terra.size().getInfo() == 0:
+                    return None
+                img = terra.first().clip(ISRAEL_CLIP)
+                vis = {"bands": ["sur_refl_b01", "sur_refl_b04", "sur_refl_b03"],
+                       "min": 0, "max": 3000, "gamma": 1.4}
+            mid = img.getMapId(vis)
+            return mid["tile_fetcher"].url_format
+        except Exception:
+            return None
+
+    @st.cache_data(ttl=7200)
+    def _get_wqi_tile(source: str, target_date_str: str):
+        """Return GEE tile URL for WQI layer of given source."""
+        vis = {"min": 30, "max": 90,
+               "palette": ["#d73027","#f46d43","#fdae61","#fee090",
+                           "#e0f3f8","#abd9e9","#74add1","#4575b4"]}
+        try:
+            if source == "S3":
+                layer, _, err, _ = process_israel_wqi(target_date_str)
+            elif source == "S2":
+                layer, _, err, _, _ = process_israel_s2(target_date_str)
+            else:
+                layer, _, err, _, _ = process_modis_wqi(target_date_str)
+            if err or layer is None:
+                return None
+            mid = ee.Image(layer).getMapId(vis)
+            return mid["tile_fetcher"].url_format
+        except Exception:
+            return None
 
     # Shared map builder
     def _build_map(selected_beach=None):
@@ -1579,16 +1645,182 @@ if mode == MODE_ISRAEL:
         vis = {'min':30,'max':90,'palette':['#d73027','#f46d43','#fdae61','#fee090','#e0f3f8','#abd9e9','#74add1','#4575b4']}
         try:
             mid = ee.Image(wqi_layer).getMapId(vis)
-            folium.TileLayer(tiles=mid['tile_fetcher'].url_format,
+            wqi_tile_url = mid['tile_fetcher'].url_format
+            folium.TileLayer(tiles=wqi_tile_url,
                              attr=f'GEE {data_source}',
                              name="WQI",overlay=True,control=False,opacity=0.85).add_to(m)
         except Exception:
+            wqi_tile_url = None
             pass  # map shows base tiles only if GEE layer fails
-        # No default markers
+
+        # ── Task 4: Satellite raster panel via custom Leaflet button ──────────
+        # Determine active source abbreviation
+        _src_abbr = "S3" if "Sentinel-3" in data_source or data_source=="S3" else \
+                    "S2" if "Sentinel-2" in data_source or data_source=="S2" else "MODIS"
+
+        # Pre-fetch tile URLs (cached) — run only if panel state warrants it
+        _tc_url   = _get_true_color_tile(_src_abbr, sel_date) or ""
+        _wqi_url  = wqi_tile_url or ""
+        _opacity  = st.session_state.get("sat_opacity", 0.85)
+        _view     = st.session_state.get("sat_view_mode", "wqi")
+
+        _sat_js = f"""
+(function() {{
+  // ── Button ──────────────────────────────────────────────────────────────
+  var btn = L.control({{position: 'topleft'}});
+  btn.onAdd = function(map) {{
+    var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+    d.innerHTML = '<a href="#" title="Satellite Imagery" style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);">🛰</a>';
+    d.style.marginTop = '5px';
+    L.DomEvent.disableClickPropagation(d);
+    var panelOpen = false;
+    var panel = null;
+    var leftLayer = null, rightLayer = null, sideBySide = null;
+
+    function removeSwipe() {{
+      if (sideBySide) {{ try {{ sideBySide.remove(); }} catch(e){{}} sideBySide = null; }}
+      if (leftLayer)  {{ try {{ map.removeLayer(leftLayer);  }} catch(e){{}} leftLayer  = null; }}
+      if (rightLayer) {{ try {{ map.removeLayer(rightLayer); }} catch(e){{}} rightLayer = null; }}
+    }}
+
+    function setLayer(mode, opacity) {{
+      removeSwipe();
+      // Remove any existing sat layers by a marker class
+      map.eachLayer(function(l) {{ if (l._isSatLayer) {{ map.removeLayer(l); }} }});
+
+      var wqiUrl = {repr(_wqi_url)};
+      var tcUrl  = {repr(_tc_url)};
+      var op = parseFloat(opacity);
+
+      if (mode === 'wqi' && wqiUrl) {{
+        var l = L.tileLayer(wqiUrl, {{opacity: op, attribution: 'GEE WQI', zIndex: 500}});
+        l._isSatLayer = true;
+        l.addTo(map);
+      }} else if (mode === 'true_color' && tcUrl) {{
+        var l = L.tileLayer(tcUrl, {{opacity: op, attribution: 'GEE True Color', zIndex: 500}});
+        l._isSatLayer = true;
+        l.addTo(map);
+      }} else if (mode === 'swipe' && wqiUrl && tcUrl) {{
+        leftLayer  = L.tileLayer(tcUrl,  {{opacity: op, attribution: 'True Color', zIndex: 500}});
+        rightLayer = L.tileLayer(wqiUrl, {{opacity: op, attribution: 'WQI',        zIndex: 501}});
+        leftLayer._isSatLayer  = true;
+        rightLayer._isSatLayer = true;
+        leftLayer.addTo(map);
+        rightLayer.addTo(map);
+        // Leaflet side-by-side plugin
+        if (L.control.sideBySide) {{
+          sideBySide = L.control.sideBySide(leftLayer, rightLayer);
+          sideBySide.addTo(map);
+        }}
+      }}
+    }}
+
+    function buildPanel() {{
+      var p = L.DomUtil.create('div', '');
+      p.style.cssText = 'position:absolute;left:40px;top:0;background:rgba(2,13,24,0.96);border:1px solid rgba(0,200,200,0.35);border-radius:6px;padding:10px 12px;min-width:200px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;z-index:9999;';
+      p.innerHTML = `
+        <div style="font-weight:bold;color:#00c8c8;margin-bottom:8px;font-size:11px;letter-spacing:0.5px;">🛰 SATELLITE IMAGERY <span style="font-size:9px;color:#7fb3d3;">{_src_abbr} · {sel_date}</span></div>
+        <div style="margin-bottom:6px;">
+          <label style="display:block;color:#7fb3d3;font-size:10px;margin-bottom:3px;">Layer</label>
+          <select id="satModeSelect" style="width:100%;background:#041e33;color:#d6eaf8;border:1px solid rgba(0,200,200,0.3);border-radius:3px;padding:3px;font-size:11px;">
+            <option value="wqi"        ${'selected' if _view=='wqi' else ''}>WQI Result</option>
+            <option value="true_color" ${'selected' if _view=='true_color' else ''}>True Color (Raw)</option>
+            <option value="swipe"      ${'selected' if _view=='swipe' else ''}>⟷ Split Comparison</option>
+          </select>
+        </div>
+        <div style="margin-bottom:8px;">
+          <label style="display:block;color:#7fb3d3;font-size:10px;margin-bottom:3px;">Opacity: <span id="opacityVal">{int(_opacity*100)}%</span></label>
+          <input id="opacitySlider" type="range" min="10" max="100" value="{int(_opacity*100)}" style="width:100%;accent-color:#00c8c8;">
+        </div>
+        <div style="font-size:9px;color:#7fb3d3;border-top:1px solid rgba(0,200,200,0.15);padding-top:5px;">
+          ${'⟵ True Color &nbsp;&nbsp;&nbsp; WQI ⟶' if _view=='swipe' else ''}
+        </div>
+      `;
+      L.DomEvent.disableClickPropagation(p);
+
+      // Events
+      setTimeout(function() {{
+        var sel = document.getElementById('satModeSelect');
+        var sld = document.getElementById('opacitySlider');
+        var oLabel = document.getElementById('opacityVal');
+        if (!sel || !sld) return;
+        function applyLayer() {{
+          var mode = sel.value;
+          var op   = sld.value / 100;
+          oLabel.textContent = sld.value + '%';
+          setLayer(mode, op);
+        }}
+        sel.addEventListener('change', applyLayer);
+        sld.addEventListener('input', function() {{ oLabel.textContent = sld.value + '%'; }});
+        sld.addEventListener('change', applyLayer);
+        // Init
+        applyLayer();
+      }}, 100);
+      return p;
+    }}
+
+    d.querySelector('a').addEventListener('click', function(e) {{
+      e.preventDefault();
+      panelOpen = !panelOpen;
+      if (panelOpen) {{
+        panel = buildPanel();
+        d.appendChild(panel);
+      }} else {{
+        if (panel) {{ d.removeChild(panel); panel = null; }}
+        removeSwipe();
+        map.eachLayer(function(l) {{ if (l._isSatLayer) {{ map.removeLayer(l); }} }});
+      }}
+    }});
+    return d;
+  }};
+  btn.addTo(map);
+
+  // Load Leaflet side-by-side plugin dynamically
+  if (!L.control.sideBySide) {{
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/leaflet-side-by-side@2.2.0/leaflet-side-by-side.min.js';
+    document.head.appendChild(s);
+  }}
+}})();
+"""
+        m.add_child(folium.Element(f'<script>{_sat_js}</script>'))
+
+        # ── Task 7: Map fullscreen button ──────────────────────────────────────
+        _fs_js = """
+(function() {
+  var fsBtn = L.control({position: 'topleft'});
+  fsBtn.onAdd = function(map) {
+    var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+    d.innerHTML = '<a href="#" title="Full Screen" style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:14px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);">⛶</a>';
+    d.style.marginTop = '5px';
+    L.DomEvent.disableClickPropagation(d);
+    var isFs = false;
+    var anchor = d.querySelector('a');
+    anchor.addEventListener('click', function(e) {
+      e.preventDefault();
+      isFs = !isFs;
+      var mapEl = map.getContainer();
+      if (isFs) {
+        if (mapEl.requestFullscreen) mapEl.requestFullscreen();
+        else if (mapEl.webkitRequestFullscreen) mapEl.webkitRequestFullscreen();
+        anchor.textContent = '✕';
+      } else {
+        if (document.exitFullscreen) document.exitFullscreen();
+        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+        anchor.textContent = '⛶';
+      }
+    });
+    document.addEventListener('fullscreenchange', function() {
+      if (!document.fullscreenElement) { isFs = false; anchor.textContent = '⛶'; }
+    });
+    return d;
+  };
+  fsBtn.addTo(map);
+})();
+"""
+        m.add_child(folium.Element(f'<script>{_fs_js}</script>'))
 
         m.add_child(OnMapWaterLegend())
-
-        # ── Task 3: Render saved zones on map ─────────────────────────────────
         if st.session_state.get("show_zones_on_map", True):
             for zname, zdata in st.session_state.get("user_zones", {}).items():
                 ztype  = zdata.get("type", "polygon")
@@ -1982,7 +2214,10 @@ if mode == MODE_ISRAEL:
 <div style="padding:0.25rem 0 0.5rem;height:100vh;display:flex;flex-direction:column;">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
     <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · {history_label} · {src_label}</p>
-    <p style="font-size:11px;color:#7fb3d3;margin:0;">{n_beaches} אזורים</p>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <p style="font-size:11px;color:#7fb3d3;margin:0;">{n_beaches} אזורים</p>
+      <button id="chartFsBtn" onclick="(function(){{var el=document.documentElement;if(!document.fullscreenElement){{el.requestFullscreen&&el.requestFullscreen();document.getElementById('chartFsBtn').textContent='✕';}}else{{document.exitFullscreen&&document.exitFullscreen();document.getElementById('chartFsBtn').textContent='⛶';}}}})()" style="background:rgba(0,200,200,0.1);border:1px solid rgba(0,200,200,0.35);border-radius:4px;color:#00c8c8;cursor:pointer;font-size:13px;padding:2px 7px;line-height:1.4;" title="Full Screen">⛶</button>
+    </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:7px;">
     <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:5px;padding:5px;text-align:center;">
