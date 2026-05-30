@@ -503,8 +503,8 @@ class OnMapWaterLegend(MacroElement):
         self._template=Template("""{% macro script(this, kwargs) %}
 var lg=L.control({position:'bottomright'});
 lg.onAdd=function(map){var d=L.DomUtil.create('div','info legend');
-d.style.cssText='background:rgba(2,13,24,0.92);padding:12px;border:1px solid rgba(0,200,200,0.3);border-radius:6px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;';
-d.innerHTML='<div style="font-weight:bold;margin-bottom:8px;text-align:center;color:#00c8c8;">Water Quality Index</div><div style="display:flex;align-items:center;gap:8px;"><div style="height:120px;width:14px;background:linear-gradient(to bottom,#4575b4,#74add1,#fdae61,#d73027);border-radius:3px;flex-shrink:0;"></div><div style="display:flex;flex-direction:column;justify-content:space-between;height:120px;font-size:11px;"><span style="color:#1ecb7b;font-weight:bold;">Clean</span><span style="color:#f0a500;font-weight:bold;">Moderate</span><span style="color:#e03c3c;font-weight:bold;">Polluted</span></div></div>';return d;};
+d.style.cssText='background:rgba(2,13,24,0.92);padding:12px;border:1px solid rgba(0,200,200,0.3);border-radius:6px;font-family:Arial,sans-serif;font-size:14px;color:#d6eaf8;';
+d.innerHTML='<div style="font-weight:bold;margin-bottom:8px;text-align:center;color:#00c8c8;">Water Quality Index</div><div style="display:flex;align-items:center;gap:8px;"><div style="height:120px;width:14px;background:linear-gradient(to bottom,#4575b4,#74add1,#fdae61,#d73027);border-radius:3px;flex-shrink:0;"></div><div style="display:flex;flex-direction:column;justify-content:space-between;height:120px;font-size:13px;"><span style="color:#1ecb7b;font-weight:bold;">Clean</span><span style="color:#f0a500;font-weight:bold;">Moderate</span><span style="color:#e03c3c;font-weight:bold;">Polluted</span></div></div>';return d;};
 lg.addTo({{this._parent.get_name()}});{% endmacro %}""")
 
 class OnMapAtmosphereControl(MacroElement):
@@ -520,7 +520,7 @@ class OnMapAtmosphereControl(MacroElement):
             for b,t in enumerate([0.3,1.6,3.4,5.5,8.0,10.8,13.9,17.2,20.8,24.5,28.5,32.7]):
                 if ws<t: bf=b; break
         bc="#27AE60" if bf<4 else "#F39C12" if bf<7 else "#E74C3C"
-        html=f'<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.3);border-radius:8px;padding:10px 13px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;min-width:150px;"><div style="font-weight:bold;margin-bottom:7px;text-align:center;font-size:11px;color:#00c8c8;">🌍 Atmospheric Context</div><div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;"><svg width="24" height="24" viewBox="0 0 28 28"><g transform="rotate({ar},14,14)"><polygon points="14,2 18,22 14,18 10,22" fill="#2980B9" opacity="0.85"/></g></svg><div><div style="font-size:12px;font-weight:bold;">{ws_s}</div><div style="font-size:10px;color:{bc};">Beaufort {bf}</div></div></div><hr style="margin:5px 0;border-color:rgba(0,200,200,0.2);"><div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>🌡️</span><span style="font-weight:bold;">{tc_s}</span></div><div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>{ri}</span><span style="font-weight:bold;">{pr_s}</span></div><div style="display:flex;justify-content:space-between;"><span>💧</span><span style="font-weight:bold;">{rh_s}</span></div></div>'
+        html=f'<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.3);border-radius:8px;padding:10px 13px;font-family:Arial,sans-serif;font-size:14px;color:#d6eaf8;min-width:150px;"><div style="font-weight:bold;margin-bottom:7px;text-align:center;font-size:13px;color:#00c8c8;">🌍 Atmospheric Context</div><div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;"><svg width="24" height="24" viewBox="0 0 28 28"><g transform="rotate({ar},14,14)"><polygon points="14,2 18,22 14,18 10,22" fill="#2980B9" opacity="0.85"/></g></svg><div><div style="font-size:14px;font-weight:bold;">{ws_s}</div><div style="font-size:13px;color:{bc};">Beaufort {bf}</div></div></div><hr style="margin:5px 0;border-color:rgba(0,200,200,0.2);"><div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>🌡️</span><span style="font-weight:bold;">{tc_s}</span></div><div style="display:flex;justify-content:space-between;margin-bottom:2px;"><span>{ri}</span><span style="font-weight:bold;">{pr_s}</span></div><div style="display:flex;justify-content:space-between;"><span>💧</span><span style="font-weight:bold;">{rh_s}</span></div></div>'
         self._template=Template("""{% macro script(this, kwargs) %}
 var ac=L.control({position:'bottomleft'});
 ac.onAdd=function(map){var d=L.DomUtil.create('div','ac');d.innerHTML=`"""+html.replace("`","'")+"""`;L.DomEvent.disableClickPropagation(d);return d;};
@@ -1863,21 +1863,21 @@ if mode == MODE_ISRAEL:
   }
   function buildPanel(container) {
     var p = document.createElement('div');
-    p.style.cssText = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.96);border:1px solid rgba(0,200,200,0.35);border-radius:6px;padding:10px 12px;width:230px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;z-index:9999;box-shadow:-4px 4px 16px rgba(0,0,0,0.6);';
-    p.innerHTML = `<div style="font-weight:bold;color:#00c8c8;margin-bottom:8px;font-size:11px;">🛰 SATELLITE IMAGERY <span style="font-size:9px;color:#7fb3d3;">""" + _src_abbr_safe + " · " + _sel_date_safe + """</span></div>
+    p.style.cssText = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.96);border:1px solid rgba(0,200,200,0.35);border-radius:6px;padding:10px 12px;width:230px;font-family:Arial,sans-serif;font-size:14px;color:#d6eaf8;z-index:9999;box-shadow:-4px 4px 16px rgba(0,0,0,0.6);';
+    p.innerHTML = `<div style="font-weight:bold;color:#00c8c8;margin-bottom:8px;font-size:13px;">🛰 SATELLITE IMAGERY <span style="font-size:12px;color:#7fb3d3;">""" + _src_abbr_safe + " · " + _sel_date_safe + """</span></div>
       <div style="margin-bottom:6px;">
-        <label style="display:block;color:#7fb3d3;font-size:10px;margin-bottom:3px;">Layer</label>
-        <select id="satModeSelect" style="width:100%;background:#041e33;color:#d6eaf8;border:1px solid rgba(0,200,200,0.3);border-radius:3px;padding:3px;font-size:11px;">
+        <label style="display:block;color:#7fb3d3;font-size:13px;margin-bottom:3px;">Layer</label>
+        <select id="satModeSelect" style="width:100%;background:#041e33;color:#d6eaf8;border:1px solid rgba(0,200,200,0.3);border-radius:3px;padding:3px;font-size:13px;">
           <option value="wqi" """ + _view_wqi + """>WQI Result</option>
           <option value="true_color" """ + _view_tc + """>True Color (Raw)</option>
           <option value="swipe" """ + _view_sw + """>⟷ Split Comparison</option>
         </select>
       </div>
       <div style="margin-bottom:6px;">
-        <label style="display:block;color:#7fb3d3;font-size:10px;margin-bottom:3px;">Opacity: <span id="opVal">""" + str(_op_pct) + """%</span></label>
+        <label style="display:block;color:#7fb3d3;font-size:13px;margin-bottom:3px;">Opacity: <span id="opVal">""" + str(_op_pct) + """%</span></label>
         <input id="opSlider" type="range" min="10" max="100" value=" """ + str(_op_pct) + """ " style="width:100%;accent-color:#00c8c8;">
       </div>
-      <div style="font-size:9px;color:#7fb3d3;">⟵ True Color &nbsp; WQI ⟶ (swipe mode)</div>`;
+      <div style="font-size:12px;color:#7fb3d3;">⟵ True Color &nbsp; WQI ⟶ (swipe mode)</div>`;
     L.DomEvent.disableClickPropagation(p);
     setTimeout(function() {
       var sel = document.getElementById('satModeSelect');
@@ -1968,7 +1968,7 @@ if mode == MODE_ISRAEL:
                     folium.Marker(
                         location=[zdata["lat"], zdata["lon"]],
                         icon=folium.DivIcon(
-                            html=f'<div style="font-size:10px;color:{color};font-weight:bold;'
+                            html=f'<div style="font-size:13px;color:{color};font-weight:bold;'
                                  f'white-space:nowrap;text-shadow:0 0 4px #000,0 0 8px #000;'
                                  f'margin-top:-18px;margin-left:12px;">{zname}</div>',
                             icon_size=(0, 0), icon_anchor=(0, 0)
@@ -1996,7 +1996,7 @@ if mode == MODE_ISRAEL:
                         folium.Marker(
                             location=[clat, clon],
                             icon=folium.DivIcon(
-                                html=f'<div style="font-size:10px;color:{color};font-weight:bold;'
+                                html=f'<div style="font-size:13px;color:{color};font-weight:bold;'
                                      f'white-space:nowrap;text-shadow:0 0 4px #000,0 0 8px #000;'
                                      f'text-align:center;transform:translateX(-50%);">{zname}</div>',
                                 icon_size=(0, 0), icon_anchor=(0, 0)
@@ -2034,7 +2034,7 @@ if mode == MODE_ISRAEL:
                         st.rerun()
                 with nav_center:
                     st.markdown(
-                        f'<div style="text-align:center;font-size:11px;color:#7fb3d3;padding:5px 0;">' +
+                        f'<div style="text-align:center;font-size:13px;color:#7fb3d3;padding:5px 0;">' +
                         dots_html +
                         f' <b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</div>',
                         unsafe_allow_html=True
@@ -2352,48 +2352,48 @@ if mode == MODE_ISRAEL:
 <!DOCTYPE html><html style="height:100%;"><body style="margin:0;padding:0;background:#020d18;overflow:hidden;height:100%;">
 <div style="padding:0.4rem 0.5rem 0.25rem;height:100vh;box-sizing:border-box;display:flex;flex-direction:column;gap:0;">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-    <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · {history_label} · {src_label}</p>
+    <p style="font-size:14px;color:#7fb3d3;margin:0;">איכות פני המים · {history_label} · {src_label}</p>
     <div style="display:flex;align-items:center;gap:8px;">
-      <p style="font-size:11px;color:#7fb3d3;margin:0;">{n_beaches} אזורים</p>
-      <button id="chartFsBtn" onclick="(function(){{var el=document.documentElement;if(!document.fullscreenElement){{el.requestFullscreen&&el.requestFullscreen();document.getElementById('chartFsBtn').textContent='✕';}}else{{document.exitFullscreen&&document.exitFullscreen();document.getElementById('chartFsBtn').textContent='⛶';}}}})()" style="background:rgba(0,200,200,0.1);border:1px solid rgba(0,200,200,0.35);border-radius:4px;color:#00c8c8;cursor:pointer;font-size:13px;padding:2px 7px;line-height:1.4;" title="Full Screen">⛶</button>
+      <p style="font-size:13px;color:#7fb3d3;margin:0;">{n_beaches} אזורים</p>
+      <button id="chartFsBtn" onclick="(function(){{var el=document.documentElement;if(!document.fullscreenElement){{el.requestFullscreen&&el.requestFullscreen();document.getElementById('chartFsBtn').textContent='✕';}}else{{document.exitFullscreen&&document.exitFullscreen();document.getElementById('chartFsBtn').textContent='⛶';}}}})()" style="background:rgba(0,200,200,0.1);border:1px solid rgba(0,200,200,0.35);border-radius:4px;color:#00c8c8;cursor:pointer;font-size:15px;padding:2px 7px;line-height:1.4;" title="Full Screen">⛶</button>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:7px;">
     <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:5px;padding:5px;text-align:center;">
-      <p style="font-size:9px;color:#7fb3d3;margin:0;">ממוצע חוף ישראל</p>
-      <p style="font-size:20px;font-weight:700;margin:1px 0;color:#d6eaf8;">{cst_avg}</p>
-      <p style="font-size:9px;color:#7fb3d3;margin:0;">WQI</p>
+      <p style="font-size:12px;color:#7fb3d3;margin:0;">ממוצע חוף ישראל</p>
+      <p style="font-size:24px;font-weight:700;margin:1px 0;color:#d6eaf8;">{cst_avg}</p>
+      <p style="font-size:12px;color:#7fb3d3;margin:0;">WQI</p>
     </div>
     <div style="background:rgba(69,117,180,0.08);border:1px solid rgba(69,117,180,0.2);border-radius:5px;padding:5px;text-align:center;">
-      <p style="font-size:9px;color:#7fb3d3;margin:0;">הכי נקי</p>
-      <p style="font-size:11px;font-weight:600;margin:1px 0;color:#4575b4;">{cst_best}</p>
-      <p style="font-size:15px;font-weight:700;margin:0;color:#4575b4;">{cst_best_v}</p>
+      <p style="font-size:12px;color:#7fb3d3;margin:0;">הכי נקי</p>
+      <p style="font-size:13px;font-weight:600;margin:1px 0;color:#4575b4;">{cst_best}</p>
+      <p style="font-size:18px;font-weight:700;margin:0;color:#4575b4;">{cst_best_v}</p>
     </div>
     <div style="background:rgba(215,48,39,0.08);border:1px solid rgba(215,48,39,0.2);border-radius:5px;padding:5px;text-align:center;">
-      <p style="font-size:9px;color:#7fb3d3;margin:0;">הכי מזוהם</p>
-      <p style="font-size:11px;font-weight:600;margin:1px 0;color:#d73027;">{cst_worst}</p>
-      <p style="font-size:15px;font-weight:700;margin:0;color:#d73027;">{cst_worst_v}</p>
+      <p style="font-size:12px;color:#7fb3d3;margin:0;">הכי מזוהם</p>
+      <p style="font-size:13px;font-weight:600;margin:1px 0;color:#d73027;">{cst_worst}</p>
+      <p style="font-size:18px;font-weight:700;margin:0;color:#d73027;">{cst_worst_v}</p>
     </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px;">
     <div style="background:rgba(69,117,180,0.12);border-radius:4px;padding:3px;text-align:center;">
-      <span style="font-size:15px;font-weight:700;color:#4575b4;">{cst_nclean}</span>
-      <span style="font-size:9px;color:#7fb3d3;"> נקיים</span>
+      <span style="font-size:18px;font-weight:700;color:#4575b4;">{cst_nclean}</span>
+      <span style="font-size:12px;color:#7fb3d3;"> נקיים</span>
     </div>
     <div style="background:rgba(253,174,97,0.12);border-radius:4px;padding:3px;text-align:center;">
-      <span style="font-size:15px;font-weight:700;color:#fdae61;">{cst_nmod}</span>
-      <span style="font-size:9px;color:#7fb3d3;"> בינוניים</span>
+      <span style="font-size:18px;font-weight:700;color:#fdae61;">{cst_nmod}</span>
+      <span style="font-size:12px;color:#7fb3d3;"> בינוניים</span>
     </div>
     <div style="background:rgba(215,48,39,0.12);border-radius:4px;padding:3px;text-align:center;">
-      <span style="font-size:15px;font-weight:700;color:#d73027;">{cst_npoll}</span>
-      <span style="font-size:9px;color:#7fb3d3;"> מזוהמים</span>
+      <span style="font-size:18px;font-weight:700;color:#d73027;">{cst_npoll}</span>
+      <span style="font-size:12px;color:#7fb3d3;"> מזוהמים</span>
     </div>
   </div>
   <div style="display:flex;gap:0;align-items:flex-start;flex:1;min-height:0;">
     <div style="position:relative;flex:1;min-height:0;height:100%;padding-bottom:40px;overflow:hidden;">
       <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches" style="width:100%;height:100%;"></canvas>
     </div>
-    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:flex-start;gap:4px;overflow-y:auto;min-width:130px;max-width:140px;padding:4px 6px;max-height:calc(100vh - 170px);"></div>
+    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:flex-start;gap:4px;overflow-y:auto;min-width:170px;max-width:180px;padding:4px 6px;max-height:calc(100vh - 170px);"></div>
   </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -2489,7 +2489,7 @@ if mode == MODE_ISRAEL:
     options: {{
       responsive: true,
       maintainAspectRatio: false,
-      layout: {{ padding: {{ right: 90, left: 4, top: 4, bottom: 4 }} }},  // room for end labels
+      layout: {{ padding: {{ right: 110, left: 4, top: 4, bottom: 4 }} }},  // room for end labels
       plugins: {{
         legend: {{ display: false }},
         tooltip: {{
@@ -2506,7 +2506,7 @@ if mode == MODE_ISRAEL:
       scales: {{
         x: {{
           ticks: {{
-            color: '#ffffff', font: {{size:11, weight:'600'}},
+            color: '#ffffff', font: {{size:13, weight:'600'}},
             maxRotation: 45, minRotation: 0, autoSkip: true,
             maxTicksLimit: 10, padding: 4
           }},
@@ -2517,7 +2517,7 @@ if mode == MODE_ISRAEL:
         y: {{
           min: 1, max: 100,
           ticks: {{
-            color: '#cccccc', font: {{size:13, weight:'bold'}},
+            color: '#cccccc', font: {{size:14, weight:'bold'}},
             callback: function(v) {{
               if(v===1)   return 'מזוהם 1';
               if(v===25)  return '25';
@@ -2528,7 +2528,7 @@ if mode == MODE_ISRAEL:
             }}
           }},
           grid: {{ color: 'rgba(255,255,255,0.08)' }},
-          title: {{ display:true, text:'איכות המים (WQI)', color:'#cccccc', font:{{size:12,weight:'bold'}} }}
+          title: {{ display:true, text:'איכות המים (WQI)', color:'#cccccc', font:{{size:14,weight:'bold'}} }}
         }}
       }}
     }}
@@ -2554,8 +2554,8 @@ if mode == MODE_ISRAEL:
     var lineH = isTW ? '3px' : '2px';
     r.innerHTML =
       '<span style="width:'+lineW+';height:'+lineH+';background:'+item.color+';flex-shrink:0;border-radius:1px;'+(isTW?'box-shadow:0 0 4px '+item.color+';':'')+'" class="leg-line"></span>' +
-      '<span style="font-size:10px;color:#7fb3d3;flex:1;" class="leg-name">'+(isTW?'<b>'+item.name+'</b>':item.name)+'</span>' +
-      '<span style="font-size:11px;font-weight:600;color:'+item.wqiColor+';" class="leg-wqi">'+item.wqi+'</span>';
+      '<span style="font-size:13px;color:#7fb3d3;flex:1;" class="leg-name">'+(isTW?'<b>'+item.name+'</b>':item.name)+'</span>' +
+      '<span style="font-size:13px;font-weight:600;color:'+item.wqiColor+';" class="leg-wqi">'+item.wqi+'</span>';
 
     r.addEventListener('click', function() {{
       var label = this.dataset.label;
@@ -2585,8 +2585,8 @@ if mode == MODE_ISRAEL:
       r2.dataset.label = twLbl;
       r2.innerHTML =
         '<span style="width:20px;height:3px;background:#FFD700;flex-shrink:0;border-radius:1px;box-shadow:0 0 4px #FFD700;" class="leg-line"></span>' +
-        '<span style="font-size:10px;color:#FFD700;flex:1;font-weight:bold;" class="leg-name">'+twLbl+'</span>' +
-        '<span style="font-size:11px;font-weight:600;color:'+twCol+';" class="leg-wqi">'+(twCurr?twCurr.toFixed(1):'---')+'</span>';
+        '<span style="font-size:13px;color:#FFD700;flex:1;font-weight:bold;" class="leg-name">'+twLbl+'</span>' +
+        '<span style="font-size:13px;font-weight:600;color:'+twCol+';" class="leg-wqi">'+(twCurr?twCurr.toFixed(1):'---')+'</span>';
       r2.addEventListener('click', function() {{
         var dsIdx = -1;
         for (var i=0; i<chartRef.data.datasets.length; i++) {{
@@ -2672,7 +2672,7 @@ if mode == MODE_ISRAEL:
                             if z.get("group","")
                         ))
                         if all_zone_groups:
-                            st.markdown("<div style='font-size:11px;color:#7fb3d3;margin:6px 0 2px;'>📊 Chart view</div>",
+                            st.markdown("<div style='font-size:13px;color:#7fb3d3;margin:6px 0 2px;'>📊 Chart view</div>",
                                         unsafe_allow_html=True)
                             view_opts = ["All zones (individual)"] + [f"Group: {g}" for g in all_zone_groups]
                             if "chart_view_mode" not in st.session_state:
@@ -2691,10 +2691,10 @@ if mode == MODE_ISRAEL:
                             ztype = st.session_state.user_zones[zname].get("type", "polygon")
                             zgrp  = st.session_state.user_zones[zname].get("group", "")
                             icon  = "📍" if ztype == "point" else "🟦"
-                            grp_badge = f' <span style="font-size:9px;background:rgba(0,200,200,0.15);color:#00c8c8;border-radius:3px;padding:1px 5px;">{zgrp}</span>' if zgrp else ""
+                            grp_badge = f' <span style="font-size:12px;background:rgba(0,200,200,0.15);color:#00c8c8;border-radius:3px;padding:1px 5px;">{zgrp}</span>' if zgrp else ""
                             zc, zd = st.columns([3, 1])
                             with zc:
-                                st.markdown(f'<div style="font-size:12px;color:#d6eaf8;padding:2px 0;">{icon} {zname}{grp_badge} <span style="color:#7fb3d3;">WQI: {zwqi_str}</span></div>',
+                                st.markdown(f'<div style="font-size:14px;color:#d6eaf8;padding:2px 0;">{icon} {zname}{grp_badge} <span style="color:#7fb3d3;">WQI: {zwqi_str}</span></div>',
                                             unsafe_allow_html=True)
                             with zd:
                                 if st.button("🗑", key=f"del_zone_{zname}"):
