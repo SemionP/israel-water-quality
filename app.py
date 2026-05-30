@@ -2442,6 +2442,27 @@ if mode == MODE_ISRAEL:
     }});
   }});
 
+  // ── Auto-range Y axis: 10% padding top/bottom, clamped to [0, 100] ──────────
+  var _allVals = [];
+  ds.forEach(function(d) {{
+    (d.data || []).forEach(function(v) {{ if (v !== null && v !== undefined) _allVals.push(v); }});
+  }});
+  var yMin = 0, yMax = 100;   // fallback
+  if (_allVals.length > 0) {{
+    var minV = Math.min.apply(null, _allVals);
+    var maxV = Math.max.apply(null, _allVals);
+    var range = Math.max(maxV - minV, 1);
+    var pad = range * 0.10;
+    yMin = Math.max(0,   Math.floor(minV - pad));
+    yMax = Math.min(100, Math.ceil (maxV + pad));
+    // Guarantee a minimum visible band of 10 units
+    if (yMax - yMin < 10) {{
+      var mid = (yMax + yMin) / 2;
+      yMin = Math.max(0,   Math.floor(mid - 5));
+      yMax = Math.min(100, Math.ceil (mid + 5));
+    }}
+  }}
+
   // ── Task 5: end-of-line label plugin ───────────────────────────────────────
   var endLabelPlugin = {{
     id: 'endLabel',
@@ -2515,16 +2536,16 @@ if mode == MODE_ISRAEL:
           title: {{ display: false }}
         }},
         y: {{
-          min: 1, max: 100,
+          min: yMin, max: yMax,
           ticks: {{
             color: '#cccccc', font: {{size:14, weight:'bold'}},
-            callback: function(v) {{
-              if(v===1)   return 'מזוהם 1';
-              if(v===25)  return '25';
-              if(v===50)  return '50';
-              if(v===75)  return '75';
-              if(v===100) return 'נקי 100';
-              return '';
+            maxTicksLimit: 6,
+            callback: function(v, idx, ticks) {{
+              // Bottom-most visible tick → label "מזוהם N"
+              if (idx === 0)                  return 'מזוהם ' + Math.round(v);
+              // Top-most visible tick → label "נקי N"
+              if (idx === ticks.length - 1)   return 'נקי ' + Math.round(v);
+              return Math.round(v);
             }}
           }},
           grid: {{ color: 'rgba(255,255,255,0.08)' }},
