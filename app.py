@@ -1533,7 +1533,7 @@ if mode == MODE_ISRAEL:
         "Ocean":     {"tile": "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}", "attr": "Esri"},
     }
     if "basemap" not in st.session_state:
-        st.session_state.basemap = "Dark"
+        st.session_state.basemap = "Satellite"
 
     if "show_zones_on_map" not in st.session_state:
         st.session_state.show_zones_on_map = True
@@ -1608,8 +1608,8 @@ if mode == MODE_ISRAEL:
 
     # Shared map builder
     def _build_map(selected_beach=None):
-        bm      = st.session_state.get("basemap", "Dark")
-        bm_data = BASEMAPS.get(bm, BASEMAPS["Dark"])
+        bm      = st.session_state.get("basemap", "Satellite")
+        bm_data = BASEMAPS.get(bm, BASEMAPS["Satellite"])
         m = folium.Map(
             location=[32.4, 34.85],
             zoom_start=8,
@@ -1648,9 +1648,18 @@ if mode == MODE_ISRAEL:
         try:
             mid = ee.Image(wqi_layer).getMapId(vis)
             wqi_tile_url = mid['tile_fetcher'].url_format
-            folium.TileLayer(tiles=wqi_tile_url,
-                             attr=f'GEE {data_source}',
-                             name="WQI",overlay=True,control=False,opacity=0.85).add_to(m)
+            # Always show WQI raster on top of basemap (incl. satellite). Higher zIndex
+            # keeps it above true-color satellite tiles in the basemap layer.
+            wqi_tl = folium.TileLayer(
+                tiles=wqi_tile_url,
+                attr=f'GEE {data_source}',
+                name=f"WQI Index ({data_source})",
+                overlay=True, control=True, opacity=0.75,
+            )
+            # Inject zIndex via the Leaflet options
+            wqi_tl.options['zIndex'] = 450
+            wqi_tl.options['className'] = 'wqi-raster'
+            wqi_tl.add_to(m)
         except Exception:
             wqi_tile_url = None
             pass  # map shows base tiles only if GEE layer fails
