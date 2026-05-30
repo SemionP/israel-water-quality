@@ -501,7 +501,7 @@ class OnMapWaterLegend(MacroElement):
     def __init__(self):
         super().__init__()
         self._template=Template("""{% macro script(this, kwargs) %}
-var lg=L.control({position:'topright'});
+var lg=L.control({position:'bottomright'});
 lg.onAdd=function(map){var d=L.DomUtil.create('div','info legend');
 d.style.cssText='background:rgba(2,13,24,0.92);padding:12px;border:1px solid rgba(0,200,200,0.3);border-radius:6px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;';
 d.innerHTML='<div style="font-weight:bold;margin-bottom:8px;text-align:center;color:#00c8c8;">Water Quality Index</div><div style="display:flex;align-items:center;gap:8px;"><div style="height:120px;width:14px;background:linear-gradient(to bottom,#4575b4,#74add1,#fdae61,#d73027);border-radius:3px;flex-shrink:0;"></div><div style="display:flex;flex-direction:column;justify-content:space-between;height:120px;font-size:11px;"><span style="color:#1ecb7b;font-weight:bold;">Clean</span><span style="color:#f0a500;font-weight:bold;">Moderate</span><span style="color:#e03c3c;font-weight:bold;">Polluted</span></div></div>';return d;};
@@ -1843,7 +1843,7 @@ if mode == MODE_ISRAEL:
   }
   function buildPanel(container) {
     var p = document.createElement('div');
-    p.style.cssText = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.96);border:1px solid rgba(0,200,200,0.35);border-radius:6px;padding:10px 12px;min-width:220px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;z-index:9999;';
+    p.style.cssText = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.96);border:1px solid rgba(0,200,200,0.35);border-radius:6px;padding:10px 12px;width:230px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;z-index:9999;box-shadow:-4px 4px 16px rgba(0,0,0,0.6);';
     p.innerHTML = `<div style="font-weight:bold;color:#00c8c8;margin-bottom:8px;font-size:11px;">🛰 SATELLITE IMAGERY <span style="font-size:9px;color:#7fb3d3;">""" + _src_abbr_safe + " · " + _sel_date_safe + """</span></div>
       <div style="margin-bottom:6px;">
         <label style="display:block;color:#7fb3d3;font-size:10px;margin-bottom:3px;">Layer</label>
@@ -1922,7 +1922,7 @@ if mode == MODE_ISRAEL:
 
         m.add_child(SatelliteControl())
 
-        m.add_child(OnMapWaterLegend())
+        m.add_child(folium.Element('<!-- WQI legend removed -->'))
         if st.session_state.get("show_zones_on_map", True):
             for zname, zdata in st.session_state.get("user_zones", {}).items():
                 ztype  = zdata.get("type", "polygon")
@@ -2722,7 +2722,7 @@ else:
                              name="WQI",overlay=True,control=False,opacity=0.85).add_to(mg)
         except: pass
 
-    mg.add_child(OnMapWaterLegend())
+    mg.add_child(folium.Element('<!-- WQI legend removed -->'))
     mdg=st_folium(mg,width=900,height=580,key="global_map",returned_objects=["center","zoom"])
 
     if mdg:
