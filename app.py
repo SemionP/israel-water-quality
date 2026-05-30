@@ -1667,11 +1667,11 @@ if mode == MODE_ISRAEL:
         _sat_js = f"""
 (function() {{
   // ── Button ──────────────────────────────────────────────────────────────
-  var btn = L.control({{position: 'topleft'}});
+  var btn = L.control({{position: 'bottomleft'}});
   btn.onAdd = function(map) {{
     var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
     d.innerHTML = '<a href="#" title="Satellite Imagery" style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);">🛰</a>';
-    d.style.marginTop = '5px';
+    d.style.marginBottom = '5px';
     L.DomEvent.disableClickPropagation(d);
     var panelOpen = false;
     var panel = null;
@@ -1717,7 +1717,7 @@ if mode == MODE_ISRAEL:
 
     function buildPanel() {{
       var p = L.DomUtil.create('div', '');
-      p.style.cssText = 'position:absolute;left:40px;top:0;background:rgba(2,13,24,0.96);border:1px solid rgba(0,200,200,0.35);border-radius:6px;padding:10px 12px;min-width:200px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;z-index:9999;';
+      p.style.cssText = 'position:absolute;left:40px;bottom:0;background:rgba(2,13,24,0.96);border:1px solid rgba(0,200,200,0.35);border-radius:6px;padding:10px 12px;min-width:210px;font-family:Arial,sans-serif;font-size:12px;color:#d6eaf8;z-index:9999;';
       p.innerHTML = `
         <div style="font-weight:bold;color:#00c8c8;margin-bottom:8px;font-size:11px;letter-spacing:0.5px;">🛰 SATELLITE IMAGERY <span style="font-size:9px;color:#7fb3d3;">{_src_abbr} · {sel_date}</span></div>
         <div style="margin-bottom:6px;">
@@ -1788,11 +1788,11 @@ if mode == MODE_ISRAEL:
         # ── Task 7: Map fullscreen button ──────────────────────────────────────
         _fs_js = """
 (function() {
-  var fsBtn = L.control({position: 'topleft'});
+  var fsBtn = L.control({position: 'bottomleft'});
   fsBtn.onAdd = function(map) {
     var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
     d.innerHTML = '<a href="#" title="Full Screen" style="display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:14px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);">⛶</a>';
-    d.style.marginTop = '5px';
+    d.style.marginBottom = '5px';
     L.DomEvent.disableClickPropagation(d);
     var isFs = false;
     var anchor = d.querySelector('a');
@@ -2210,8 +2210,8 @@ if mode == MODE_ISRAEL:
                     cst_npoll   = sum(1 for v in cst_valid.values() if v<50)
 
                     chart_html = f"""
-<!DOCTYPE html><html><body style="margin:0;padding:0;background:#020d18;overflow:hidden;">
-<div style="padding:0.25rem 0 0.5rem;height:100vh;display:flex;flex-direction:column;">
+<!DOCTYPE html><html style="height:100%;"><body style="margin:0;padding:0;background:#020d18;overflow:hidden;height:100%;">
+<div style="padding:0.4rem 0.5rem 0.25rem;height:100vh;box-sizing:border-box;display:flex;flex-direction:column;gap:0;">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
     <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · {history_label} · {src_label}</p>
     <div style="display:flex;align-items:center;gap:8px;">
@@ -2250,11 +2250,11 @@ if mode == MODE_ISRAEL:
       <span style="font-size:9px;color:#7fb3d3;"> מזוהמים</span>
     </div>
   </div>
-  <div style="display:flex;gap:10px;align-items:flex-start;">
-    <div style="position:relative;flex:1;min-height:550px;height:calc(100vh - 160px);padding-bottom:40px;">
-      <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches"></canvas>
+  <div style="display:flex;gap:0;align-items:flex-start;flex:1;min-height:0;">
+    <div style="position:relative;flex:1;min-height:0;height:100%;padding-bottom:40px;overflow:hidden;">
+      <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches" style="width:100%;height:100%;"></canvas>
     </div>
-    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:space-around;min-height:600px;height:calc(100vh - 100px);min-width:110px;"></div>
+    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:flex-start;gap:4px;overflow-y:auto;min-width:130px;max-width:140px;padding:4px 6px;max-height:calc(100vh - 170px);"></div>
   </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
@@ -2350,7 +2350,7 @@ if mode == MODE_ISRAEL:
     options: {{
       responsive: true,
       maintainAspectRatio: false,
-      layout: {{ padding: {{ right: 130 }} }},  // room for end labels
+      layout: {{ padding: {{ right: 90, left: 4, top: 4, bottom: 4 }} }},  // room for end labels
       plugins: {{
         legend: {{ display: false }},
         tooltip: {{
