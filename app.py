@@ -1547,36 +1547,38 @@ if mode == MODE_ISRAEL:
     @st.cache_data(ttl=7200)
     def _get_true_color_tile(source: str, target_date_str: str):
         """Return GEE tile URL for the raw (true-color) satellite image."""
-        wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
+        wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(10)
         t  = ee.Date(target_date_str)
+        # Use a wider display area — full Mediterranean coast + some inland
+        DISPLAY_BOX = ee.Geometry.Rectangle([33.5, 29.5, 36.5, 33.5])
         try:
             if source == "S3":
                 coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                        .filterBounds(HAIFA_BBOX)
-                        .filterDate(t.advance(-2, "day"), t.advance(1, "day")))
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-3, "day"), t.advance(1, "day")))
                 if coll.size().getInfo() == 0:
                     return None
-                img = coll.median().clip(ISRAEL_CLIP)
+                img = coll.median().clip(DISPLAY_BOX)
                 vis = {"bands": ["Oa08_radiance", "Oa06_radiance", "Oa04_radiance"],
                        "min": 0, "max": 120, "gamma": 1.4}
             elif source == "S2":
                 coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                        .filterBounds(HAIFA_BBOX)
-                        .filterDate(t.advance(-5, "day"), t.advance(1, "day"))
-                        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-8, "day"), t.advance(1, "day"))
+                        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
                         .sort("system:time_start", False))
                 if coll.size().getInfo() == 0:
                     return None
-                img = coll.first().clip(ISRAEL_CLIP)
+                img = coll.mosaic().clip(DISPLAY_BOX)
                 vis = {"bands": ["B4", "B3", "B2"], "min": 0, "max": 3000, "gamma": 1.3}
             else:  # MODIS
                 terra = (ee.ImageCollection("MODIS/061/MOD09GA")
-                         .filterBounds(HAIFA_BBOX)
-                         .filterDate(t.advance(-2, "day"), t.advance(1, "day"))
+                         .filterBounds(DISPLAY_BOX)
+                         .filterDate(t.advance(-3, "day"), t.advance(1, "day"))
                          .sort("system:time_start", False))
                 if terra.size().getInfo() == 0:
                     return None
-                img = terra.first().clip(ISRAEL_CLIP)
+                img = terra.mosaic().clip(DISPLAY_BOX)
                 vis = {"bands": ["sur_refl_b01", "sur_refl_b04", "sur_refl_b03"],
                        "min": 0, "max": 3000, "gamma": 1.4}
             mid = img.getMapId(vis)
@@ -1586,7 +1588,7 @@ if mode == MODE_ISRAEL:
 
     @st.cache_data(ttl=7200)
     def _get_wqi_tile(source: str, target_date_str: str):
-        """Return GEE tile URL for WQI layer of given source."""
+        """Return GEE tile URL for WQI layer of given source — uses same pipeline as main map."""
         vis = {"min": 30, "max": 90,
                "palette": ["#d73027","#f46d43","#fdae61","#fee090",
                            "#e0f3f8","#abd9e9","#74add1","#4575b4"]}
@@ -1835,10 +1837,24 @@ if mode == MODE_ISRAEL:
       rightLayer = L.tileLayer(wqiUrl, {opacity: op, attribution: 'WQI',        zIndex: 501});
       leftLayer._isSatLayer = true; rightLayer._isSatLayer = true;
       leftLayer.addTo(mapObj); rightLayer.addTo(mapObj);
-      if (L.control && L.control.sideBySide) {
-        sideBySide = L.control.sideBySide(leftLayer, rightLayer);
-        sideBySide.addTo(mapObj);
+      function _initSwipe() {
+        if (L.control && L.control.sideBySide) {
+          sideBySide = L.control.sideBySide(leftLayer, rightLayer);
+          sideBySide.addTo(mapObj);
+          // Set divider to 50% after a short delay
+          setTimeout(function() {
+            var divider = document.querySelector('.leaflet-sbs-divider');
+            if (divider) {
+              var mapW = mapObj.getContainer().offsetWidth;
+              divider.style.left = (mapW / 2) + 'px';
+              mapObj.fire('move'); // force redraw
+            }
+          }, 300);
+        } else {
+          setTimeout(_initSwipe, 200);
+        }
       }
+      _initSwipe();
     }
   }
   function buildPanel(container) {
