@@ -1535,6 +1535,9 @@ if mode == MODE_ISRAEL:
     if "basemap" not in st.session_state:
         st.session_state.basemap = "Dark"
 
+    if "show_zones_on_map" not in st.session_state:
+        st.session_state.show_zones_on_map = True
+
     # Shared map builder
     def _build_map(selected_beach=None):
         bm      = st.session_state.get("basemap", "Dark")
@@ -1584,6 +1587,68 @@ if mode == MODE_ISRAEL:
         # No default markers
 
         m.add_child(OnMapWaterLegend())
+
+        # ── Task 3: Render saved zones on map ─────────────────────────────────
+        if st.session_state.get("show_zones_on_map", True):
+            for zname, zdata in st.session_state.get("user_zones", {}).items():
+                ztype  = zdata.get("type", "polygon")
+                coords = zdata.get("coords", [])
+                # Detect territorial waters zone for special styling
+                TW_KEYS = ["territorial","טריטוריאל","ים ישראל","israel water","tw_","terr_"]
+                is_tw   = any(kw in zname.lower() for kw in TW_KEYS)
+                color   = "#FFD700" if is_tw else "#00c8c8"
+                weight  = 3 if is_tw else 2
+                dash    = "8 4" if is_tw else None
+
+                if ztype == "point" and zdata.get("lat") is not None:
+                    folium.CircleMarker(
+                        location=[zdata["lat"], zdata["lon"]],
+                        radius=8,
+                        color=color,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.35,
+                        weight=weight,
+                        tooltip=folium.Tooltip(zname, sticky=True),
+                    ).add_to(m)
+                    folium.Marker(
+                        location=[zdata["lat"], zdata["lon"]],
+                        icon=folium.DivIcon(
+                            html=f'<div style="font-size:10px;color:{color};font-weight:bold;'
+                                 f'white-space:nowrap;text-shadow:0 0 4px #000,0 0 8px #000;'
+                                 f'margin-top:-18px;margin-left:12px;">{zname}</div>',
+                            icon_size=(0, 0), icon_anchor=(0, 0)
+                        )
+                    ).add_to(m)
+                elif coords:
+                    # coords are [[lon,lat],...] — folium needs [[lat,lon],...]
+                    latlons = [[c[1], c[0]] for c in coords]
+                    poly_kwargs = dict(
+                        locations=latlons,
+                        color=color,
+                        weight=weight,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.08,
+                        tooltip=folium.Tooltip(zname, sticky=True),
+                    )
+                    if dash:
+                        poly_kwargs["dash_array"] = dash
+                    folium.Polygon(**poly_kwargs).add_to(m)
+                    # Centroid label
+                    if latlons:
+                        clat = sum(p[0] for p in latlons) / len(latlons)
+                        clon = sum(p[1] for p in latlons) / len(latlons)
+                        folium.Marker(
+                            location=[clat, clon],
+                            icon=folium.DivIcon(
+                                html=f'<div style="font-size:10px;color:{color};font-weight:bold;'
+                                     f'white-space:nowrap;text-shadow:0 0 4px #000,0 0 8px #000;'
+                                     f'text-align:center;transform:translateX(-50%);">{zname}</div>',
+                                icon_size=(0, 0), icon_anchor=(0, 0)
+                            )
+                        ).add_to(m)
+
         return m
 
     # ── MEDI Platform ─────────────────────────────────────────────────────────────
@@ -1630,6 +1695,12 @@ if mode == MODE_ISRAEL:
             beach_history = {}
             col_map, col_info = st.columns([1, 1], gap="small")
             with col_map:
+                # ── Task 3: Show/Hide zones toggle ────────────────────────────
+                z_icon = "👁️" if st.session_state.show_zones_on_map else "👁️‍🗨️"
+                z_label = f"{z_icon} הסתר אזורים" if st.session_state.show_zones_on_map else f"{z_icon} הצג אזורים"
+                if st.button(z_label, key="toggle_zones_map", use_container_width=False):
+                    st.session_state.show_zones_on_map = not st.session_state.show_zones_on_map
+                    st.rerun()
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
@@ -1772,6 +1843,15 @@ if mode == MODE_ISRAEL:
                     labels_json = _json.dumps(all_dates)  # full YYYY-MM-DD for tooltip
                     labels_short_json = _json.dumps([d[5:].replace("-","/") for d in all_dates])  # MM/DD for axis
                     legend_json = _json.dumps(legend_items)
+
+                    # Task 6: compute territorial waters average series
+                    tw_avg_json = "null"
+                    tw_label_js = "null"
+                    if tw_zone_name and tw_zone_name in beach_history:
+                        tw_map = {e["date"]: e["wqi"] for e in beach_history[tw_zone_name] if e["wqi"] is not None}
+                        tw_series = [tw_map.get(d) for d in all_dates]
+                        tw_avg_json = _json.dumps(tw_series)
+                        tw_label_js = _json.dumps(tw_zone_name)
                     best_name   = best or "---"
                     best_val    = round(valid_vals[best],1) if best else "---"
                     worst_name  = worst or "---"
@@ -1789,12 +1869,29 @@ if mode == MODE_ISRAEL:
                     cst_nmod    = sum(1 for v in cst_valid.values() if 50<=v<70)
                     cst_npoll   = sum(1 for v in cst_valid.values() if v<50)
 
+                    # Task 6: Identify territorial waters zone (a user zone whose name contains
+                    # keywords like "territorial" / "ים טריטוריאלי" / "territorial waters")
+                    TW_KEYWORDS = ["territorial", "טריטוריאל", "ים ישראל", "israel water",
+                                   "territorial water", "tw_", "terr_"]
+                    tw_zone_name = None
+                    for zn in visible_beaches:
+                        if any(kw in zn.lower() for kw in TW_KEYWORDS):
+                            tw_zone_name = zn
+                            break
+
+                    # Build source label for chart subtitle from actual data used
+                    sources_used = sorted(set(
+                        e.get("source","") for name in visible_beaches
+                        for e in beach_history.get(name, []) if e.get("source")
+                    ))
+                    src_label = " · ".join(sources_used) if sources_used else "S3 · S2 · MODIS"
+
                     chart_html = f"""
 <!DOCTYPE html><html><body style="margin:0;padding:0;background:#020d18;overflow:hidden;">
 <div style="padding:0.25rem 0 0.5rem;height:100vh;display:flex;flex-direction:column;">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-    <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · {history_label} · Sentinel-3</p>
-    <p style="font-size:11px;color:#7fb3d3;margin:0;">{n_beaches} חופים</p>
+    <p style="font-size:12px;color:#7fb3d3;margin:0;">איכות פני המים · {history_label} · {src_label}</p>
+    <p style="font-size:11px;color:#7fb3d3;margin:0;">{n_beaches} אזורים</p>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:7px;">
     <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:5px;padding:5px;text-align:center;">
@@ -1837,65 +1934,209 @@ if mode == MODE_ISRAEL:
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
 (function(){{
-  var ds={chart_json};
-  var lb={labels_json};
-  var ls={labels_short_json};
-  var lg={legend_json};
-  var gc='rgba(255,255,255,0.08)';
-  var tc='#aaaaaa';
-  ds=ds.map(d=>({{...d,backgroundColor:'transparent',tension:0.35,pointRadius:4,
-    pointBackgroundColor:d.borderColor,borderWidth:2,spanGaps:true}}));
-  new Chart(document.getElementById('beachTrend'),{{
-    type:'line',data:{{labels:ls,datasets:ds}},
-    options:{{responsive:true,maintainAspectRatio:false,
-      plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{
-        title:function(items){{ return lb[items[0].dataIndex]; }},
-        label:function(c){{
-          var src=c.dataset.sources?c.dataset.sources[c.dataIndex]:'';
-          var srcLabel=src?(' · '+src):'';
-          return c.dataset.label+': '+c.parsed.y+srcLabel;
+  var ds    = {chart_json};
+  var lb    = {labels_json};
+  var ls    = {labels_short_json};
+  var lg    = {legend_json};
+  var twAvg = {tw_avg_json};   // Task 6: territorial waters series or null
+  var twLbl = {tw_label_js};   // Task 6: label string or null
+
+  // ── Task 2: hidden-state tracking ──────────────────────────────────────────
+  var hiddenMap = {{}};  // label -> true if hidden
+  var chartRef  = null;
+
+  // ── Task 6: Inject territorial-waters reference dataset if present ──────────
+  if (twAvg) {{
+    ds = ds.filter(function(d){{ return d.label !== twLbl; }});
+    ds.push({{
+      label: twLbl,
+      data: twAvg,
+      sources: twAvg.map(function(){{ return 'TW'; }}),
+      borderColor: '#FFD700',
+      borderDash: [],
+      borderWidth: 3.5,
+      pointRadius: 3,
+      pointBackgroundColor: '#FFD700',
+      backgroundColor: 'transparent',
+      tension: 0.35,
+      spanGaps: true,
+      _isTW: true
+    }});
+  }}
+
+  // ── Style all datasets ──────────────────────────────────────────────────────
+  ds = ds.map(function(d) {{
+    var isTW = d._isTW || false;
+    return Object.assign({{}}, d, {{
+      backgroundColor: 'transparent',
+      tension: 0.35,
+      pointRadius: isTW ? 3 : 4,
+      pointBackgroundColor: d.borderColor,
+      borderWidth: isTW ? 3.5 : 2,
+      spanGaps: true
+    }});
+  }});
+
+  // ── Task 5: end-of-line label plugin ───────────────────────────────────────
+  var endLabelPlugin = {{
+    id: 'endLabel',
+    afterDatasetsDraw: function(chart) {{
+      var ctx = chart.ctx;
+      chart.data.datasets.forEach(function(dataset, i) {{
+        var meta = chart.getDatasetMeta(i);
+        if (meta.hidden) return;
+        // Find the last visible (non-null) point
+        var lastPt = null;
+        for (var j = dataset.data.length - 1; j >= 0; j--) {{
+          if (dataset.data[j] !== null && dataset.data[j] !== undefined) {{
+            var el = meta.data[j];
+            if (el) {{ lastPt = {{ x: el.x, y: el.y, val: dataset.data[j] }}; break; }}
+          }}
         }}
-      }}}}}},
-      scales:{{
-        x:{{
-          ticks:{{
-            color:'#ffffff',
-            font:{{size:11,weight:'600'}},
-            maxRotation:45,
-            minRotation:0,
-            autoSkip:true,
-            maxTicksLimit:10,
-            padding:4
+        if (!lastPt) return;
+        var isTW = dataset._isTW || false;
+        var label = dataset.label;
+        // Truncate long names
+        if (label.length > 18) label = label.substring(0, 16) + '…';
+        ctx.save();
+        ctx.font = isTW ? 'bold 11px Arial' : '10px Arial';
+        ctx.fillStyle = dataset.borderColor;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        // Draw small connecting tick
+        ctx.beginPath();
+        ctx.strokeStyle = dataset.borderColor;
+        ctx.lineWidth = 1;
+        ctx.moveTo(lastPt.x, lastPt.y);
+        ctx.lineTo(lastPt.x + 5, lastPt.y);
+        ctx.stroke();
+        ctx.fillText(label, lastPt.x + 7, lastPt.y);
+        ctx.restore();
+      }});
+    }}
+  }};
+
+  // ── Build chart ─────────────────────────────────────────────────────────────
+  chartRef = new Chart(document.getElementById('beachTrend'), {{
+    type: 'line',
+    data: {{ labels: ls, datasets: ds }},
+    plugins: [endLabelPlugin],
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: {{ padding: {{ right: 130 }} }},  // room for end labels
+      plugins: {{
+        legend: {{ display: false }},
+        tooltip: {{
+          callbacks: {{
+            title: function(items) {{ return lb[items[0].dataIndex]; }},
+            label: function(c) {{
+              var src = c.dataset.sources ? c.dataset.sources[c.dataIndex] : '';
+              var srcLabel = src ? (' · ' + src) : '';
+              return c.dataset.label + ': ' + c.parsed.y + srcLabel;
+            }}
+          }}
+        }}
+      }},
+      scales: {{
+        x: {{
+          ticks: {{
+            color: '#ffffff', font: {{size:11, weight:'600'}},
+            maxRotation: 45, minRotation: 0, autoSkip: true,
+            maxTicksLimit: 10, padding: 4
           }},
-          grid:{{color:'rgba(255,255,255,0.08)'}},
-          border:{{color:'rgba(255,255,255,0.2)'}},
-          title:{{display:false}}
+          grid: {{ color: 'rgba(255,255,255,0.08)' }},
+          border: {{ color: 'rgba(255,255,255,0.2)' }},
+          title: {{ display: false }}
         }},
-        y:{{min:1,max:100,
-          ticks:{{color:'#cccccc',font:{{size:13,weight:'bold'}},
-            callback:function(v){{
-              if(v===1) return 'מזוהם 1';
-              if(v===25) return '25';
-              if(v===50) return '50';
-              if(v===75) return '75';
+        y: {{
+          min: 1, max: 100,
+          ticks: {{
+            color: '#cccccc', font: {{size:13, weight:'bold'}},
+            callback: function(v) {{
+              if(v===1)   return 'מזוהם 1';
+              if(v===25)  return '25';
+              if(v===50)  return '50';
+              if(v===75)  return '75';
               if(v===100) return 'נקי 100';
               return '';
-            }}}},
-          grid:{{color:'rgba(255,255,255,0.08)'}},
-          title:{{display:true,text:'איכות המים (WQI)',color:'#cccccc',font:{{size:12,weight:'bold'}}}}
+            }}
+          }},
+          grid: {{ color: 'rgba(255,255,255,0.08)' }},
+          title: {{ display:true, text:'איכות המים (WQI)', color:'#cccccc', font:{{size:12,weight:'bold'}} }}
         }}
       }}
     }}
   }});
-  var el=document.getElementById('beachLegend');
-  lg.forEach(function(item){{
-    var r=document.createElement('div');
-    r.style.cssText='display:flex;align-items:center;gap:5px;';
-    r.innerHTML=`<span style="width:16px;height:2px;background:${{item.color}};flex-shrink:0;border-radius:1px;"></span>
-      <span style="font-size:10px;color:#7fb3d3;flex:1;">${{item.name}}</span>
-      <span style="font-size:11px;font-weight:600;color:${{item.wqiColor}};">${{item.wqi}}</span>`;
+
+  // ── Task 2: Clickable legend with toggle ────────────────────────────────────
+  var el = document.getElementById('beachLegend');
+  lg.forEach(function(item, idx) {{
+    var r = document.createElement('div');
+    r.style.cssText = 'display:flex;align-items:center;gap:5px;cursor:pointer;padding:2px 4px;border-radius:3px;transition:opacity 0.2s;user-select:none;';
+    r.dataset.label = item.name;
+
+    // Find matching dataset index (including TW which may have been appended)
+    function getDatasetIdx(label) {{
+      for (var i=0; i<chartRef.data.datasets.length; i++) {{
+        if (chartRef.data.datasets[i].label === label) return i;
+      }}
+      return -1;
+    }}
+
+    var isTW = twLbl && item.name === twLbl;
+    var lineW = isTW ? '20px' : '16px';
+    var lineH = isTW ? '3px' : '2px';
+    r.innerHTML =
+      '<span style="width:'+lineW+';height:'+lineH+';background:'+item.color+';flex-shrink:0;border-radius:1px;'+(isTW?'box-shadow:0 0 4px '+item.color+';':'')+'" class="leg-line"></span>' +
+      '<span style="font-size:10px;color:#7fb3d3;flex:1;" class="leg-name">'+(isTW?'<b>'+item.name+'</b>':item.name)+'</span>' +
+      '<span style="font-size:11px;font-weight:600;color:'+item.wqiColor+';" class="leg-wqi">'+item.wqi+'</span>';
+
+    r.addEventListener('click', function() {{
+      var label = this.dataset.label;
+      var dsIdx = getDatasetIdx(label);
+      if (dsIdx === -1) return;
+      var meta  = chartRef.getDatasetMeta(dsIdx);
+      meta.hidden = !meta.hidden;
+      hiddenMap[label] = meta.hidden;
+      // Visual feedback on legend row
+      this.style.opacity = meta.hidden ? '0.35' : '1.0';
+      this.querySelector('.leg-line').style.opacity = meta.hidden ? '0.3' : '1';
+      chartRef.update();
+    }});
+
     el.appendChild(r);
   }});
+
+  // Also add TW entry to legend if it exists but wasn't in original lg
+  if (twLbl) {{
+    var twInLg = lg.some(function(i){{ return i.name === twLbl; }});
+    if (!twInLg) {{
+      var twValid = (twAvg||[]).filter(function(v){{ return v!==null&&v!==undefined; }});
+      var twCurr  = twValid.length ? twValid[twValid.length-1] : null;
+      var twCol   = twCurr>=70?'#1ecb7b':twCurr>=55?'#f0a500':'#e03c3c';
+      var r2 = document.createElement('div');
+      r2.style.cssText='display:flex;align-items:center;gap:5px;cursor:pointer;padding:2px 4px;border-radius:3px;transition:opacity 0.2s;user-select:none;margin-top:6px;border-top:1px solid rgba(255,215,0,0.2);padding-top:6px;';
+      r2.dataset.label = twLbl;
+      r2.innerHTML =
+        '<span style="width:20px;height:3px;background:#FFD700;flex-shrink:0;border-radius:1px;box-shadow:0 0 4px #FFD700;" class="leg-line"></span>' +
+        '<span style="font-size:10px;color:#FFD700;flex:1;font-weight:bold;" class="leg-name">'+twLbl+'</span>' +
+        '<span style="font-size:11px;font-weight:600;color:'+twCol+';" class="leg-wqi">'+(twCurr?twCurr.toFixed(1):'---')+'</span>';
+      r2.addEventListener('click', function() {{
+        var dsIdx = -1;
+        for (var i=0; i<chartRef.data.datasets.length; i++) {{
+          if (chartRef.data.datasets[i].label === twLbl) {{ dsIdx=i; break; }}
+        }}
+        if (dsIdx===-1) return;
+        var meta = chartRef.getDatasetMeta(dsIdx);
+        meta.hidden = !meta.hidden;
+        this.style.opacity = meta.hidden ? '0.35' : '1.0';
+        chartRef.update();
+      }});
+      el.appendChild(r2);
+    }}
+  }}
+
 }})();
 </script></body></html>
 """
