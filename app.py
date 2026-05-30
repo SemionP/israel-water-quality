@@ -2054,7 +2054,7 @@ if mode == MODE_ISRAEL:
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
-                    key="israel_map_wqi",
+                    key=f"israel_map_wqi_{st.session_state.get('img_idx',0)}_{data_source}_{sel_date}",
                     returned_objects=["bounds","last_active_drawing","last_clicked"]
                 )
             with col_info:
