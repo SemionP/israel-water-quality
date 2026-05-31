@@ -1794,7 +1794,18 @@ if mode == MODE_ISRAEL:
         # ── Collect ALL raster tile URLs for every available source ──────────────
         # Passed into the custom JS "Satellite Layers" panel button (below layers icon).
         # Only the active/visible layer is added via folium; others are toggled in JS.
-        _raster_layers = []  # list of {id, label, url, visible}
+        _raster_layers = []  # list of {id, label, date, url, visible}
+
+        def _age_to_date(age_h):
+            if age_h is None: return ""
+            try:
+                return (datetime.utcnow() - timedelta(hours=age_h)).strftime("%Y-%m-%d")
+            except Exception:
+                return ""
+
+        _s3_date_str  = _age_to_date(s3_age)
+        _s2_date_str  = _age_to_date(s2_age)
+        _mod_date_str = _age_to_date(mod_age)
 
         # Sentinel-3 WQI
         try:
@@ -1802,7 +1813,7 @@ if mode == MODE_ISRAEL:
                 _s3_mid = ee.Image(s3_layer).getMapId(vis)
                 _s3_url = _s3_mid['tile_fetcher'].url_format
                 is_active_s3 = (data_source in ("S3", "Sentinel-3"))
-                _raster_layers.append({"id":"wqi_s3","label":"WQI \u00b7 Sentinel-3","url":_s3_url,"visible":is_active_s3})
+                _raster_layers.append({"id":"wqi_s3","label":"WQI \u00b7 Sentinel-3","date":_s3_date_str,"url":_s3_url,"visible":is_active_s3})
                 if is_active_s3:
                     wqi_tile_url = _s3_url
         except Exception:
@@ -1812,7 +1823,7 @@ if mode == MODE_ISRAEL:
         try:
             _s3_tc = _get_true_color_tile("S3", sel_date)
             if _s3_tc:
-                _raster_layers.append({"id":"tc_s3","label":"True Color \u00b7 Sentinel-3","url":_s3_tc,"visible":False})
+                _raster_layers.append({"id":"tc_s3","label":"True Color \u00b7 Sentinel-3","date":_s3_date_str,"url":_s3_tc,"visible":False})
         except Exception:
             pass
 
@@ -1822,7 +1833,7 @@ if mode == MODE_ISRAEL:
                 _s2_mid = ee.Image(s2_layer).getMapId(vis)
                 _s2_url = _s2_mid['tile_fetcher'].url_format
                 is_active_s2 = (data_source in ("S2", "Sentinel-2"))
-                _raster_layers.append({"id":"wqi_s2","label":"WQI \u00b7 Sentinel-2","url":_s2_url,"visible":is_active_s2})
+                _raster_layers.append({"id":"wqi_s2","label":"WQI \u00b7 Sentinel-2","date":_s2_date_str,"url":_s2_url,"visible":is_active_s2})
                 if is_active_s2:
                     wqi_tile_url = _s2_url
         except Exception:
@@ -1832,7 +1843,7 @@ if mode == MODE_ISRAEL:
         try:
             _s2_tc = _get_true_color_tile("S2", sel_date)
             if _s2_tc:
-                _raster_layers.append({"id":"tc_s2","label":"True Color \u00b7 Sentinel-2","url":_s2_tc,"visible":False})
+                _raster_layers.append({"id":"tc_s2","label":"True Color \u00b7 Sentinel-2","date":_s2_date_str,"url":_s2_tc,"visible":False})
         except Exception:
             pass
 
@@ -1842,7 +1853,7 @@ if mode == MODE_ISRAEL:
                 _mod_mid = ee.Image(mod_layer).getMapId(vis)
                 _mod_url = _mod_mid['tile_fetcher'].url_format
                 is_active_mod = (data_source not in ("S3", "Sentinel-3", "S2", "Sentinel-2"))
-                _raster_layers.append({"id":"wqi_mod","label":"WQI \u00b7 MODIS","url":_mod_url,"visible":is_active_mod})
+                _raster_layers.append({"id":"wqi_mod","label":"WQI \u00b7 MODIS","date":_mod_date_str,"url":_mod_url,"visible":is_active_mod})
                 if is_active_mod:
                     wqi_tile_url = _mod_url
         except Exception:
@@ -1852,7 +1863,7 @@ if mode == MODE_ISRAEL:
         try:
             _mod_tc = _get_true_color_tile("MODIS", sel_date)
             if _mod_tc:
-                _raster_layers.append({"id":"tc_mod","label":"True Color \u00b7 MODIS","url":_mod_tc,"visible":False})
+                _raster_layers.append({"id":"tc_mod","label":"True Color \u00b7 MODIS","date":_mod_date_str,"url":_mod_tc,"visible":False})
         except Exception:
             pass
 
@@ -1912,7 +1923,7 @@ if mode == MODE_ISRAEL:
     }
 
     var BTN_STYLE = 'display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);cursor:pointer;box-sizing:border-box;';
-    var PANEL_RIGHT = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:240px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:-4px 6px 20px rgba(0,0,0,0.7);';
+    var PANEL_RIGHT = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:280px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:-4px 6px 20px rgba(0,0,0,0.7);';
     var PANEL_LEFT  = 'position:absolute;left:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:200px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:4px 6px 20px rgba(0,0,0,0.7);';
 
     function setBasemap(id) {
@@ -2001,12 +2012,13 @@ if mode == MODE_ISRAEL:
       } else {
         _rasterLayers.forEach(function(rl) {
           var chk = rl.visible ? 'checked' : '';
+          var dateBadge = rl.date ? ' <span style="font-size:10px;color:#7fb3d3;background:rgba(0,200,200,0.08);padding:1px 5px;border-radius:3px;margin-left:auto;">' + rl.date + '</span>' : '';
           rows += '<label style="display:flex;align-items:center;gap:7px;margin-bottom:7px;cursor:pointer;">' +
-            '<input type="checkbox" id="rl_cb_' + rl.id + '" ' + chk + ' style="accent-color:#00c8c8;width:14px;height:14px;cursor:pointer;">' +
-            '<span style="font-size:12px;color:#d6eaf8;">' + rl.label + '</span></label>';
+            '<input type="checkbox" id="rl_cb_' + rl.id + '" ' + chk + ' style="accent-color:#00c8c8;width:14px;height:14px;cursor:pointer;flex-shrink:0;">' +
+            '<span style="font-size:12px;color:#d6eaf8;flex:1;">' + rl.label + '</span>' + dateBadge + '</label>';
         });
       }
-      p.innerHTML = '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">\\ud83d\\udef0 Satellite Products <span style="font-size:10px;color:#7fb3d3;font-weight:normal;text-transform:none;letter-spacing:0;">' + _sel_date + '</span></div>' + rows + '<div style="border-top:1px solid rgba(0,200,200,0.15);margin-top:6px;padding-top:7px;"><label style="display:block;color:#7fb3d3;font-size:11px;margin-bottom:3px;">Opacity: <span id="satOpVal">' + Math.round(_opacity*100) + '%</span></label><input id="satOpSlider" type="range" min="10" max="100" value="' + Math.round(_opacity*100) + '" style="width:100%;accent-color:#00c8c8;"></div>';
+      p.innerHTML = '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">\\ud83d\\udef0 Satellite Products</div>' + rows + '<div style="border-top:1px solid rgba(0,200,200,0.15);margin-top:6px;padding-top:7px;"><label style="display:block;color:#7fb3d3;font-size:11px;margin-bottom:3px;">Opacity: <span id="satOpVal">' + Math.round(_opacity*100) + '%</span></label><input id="satOpSlider" type="range" min="10" max="100" value="' + Math.round(_opacity*100) + '" style="width:100%;accent-color:#00c8c8;"></div>';
       L.DomEvent.disableClickPropagation(p);
       setTimeout(function() {
         _rasterLayers.forEach(function(rl) {
