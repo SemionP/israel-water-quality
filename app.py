@@ -164,8 +164,41 @@ p,div,span,label{font-family:'Exo 2',sans-serif!important;color:var(--text-prima
 .medi-header{display:flex;align-items:center;gap:18px;padding:6px 16px;background:linear-gradient(90deg,rgba(0,200,200,0.06) 0%,transparent 100%);border-left:2px solid var(--teal-bright);border-bottom:1px solid rgba(0,200,200,0.1);margin-bottom:4px;}
 .logo-text{font-family:'Rajdhani',sans-serif;font-size:1.2rem;font-weight:700;color:var(--teal-bright);letter-spacing:0.1em;line-height:1;}
 .logo-sub{font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:var(--teal-dim);letter-spacing:0.18em;text-transform:uppercase;margin-top:3px;}
-.status-badge{margin-left:auto;font-family:'Share Tech Mono',monospace;font-size:0.72rem;color:var(--green-safe);border:1px solid var(--green-safe);padding:4px 10px;border-radius:2px;animation:pulse-badge 2.5s ease-in-out infinite;}
-@keyframes pulse-badge{0%,100%{opacity:1;}50%{opacity:0.5;}}
+.contact-btn{margin-left:auto;font-family:'Rajdhani',sans-serif;font-size:0.8rem;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--teal-bright);background:transparent;border:1px solid rgba(0,200,200,0.4);border-radius:3px;padding:5px 15px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:background 0.2s,border-color 0.2s;}
+.contact-btn:hover{background:rgba(0,200,200,0.1);border-color:var(--teal-bright);}
+.medi-modal-overlay{display:none;position:fixed;inset:0;background:rgba(2,13,24,0.88);align-items:center;justify-content:center;z-index:9999;}
+.medi-modal-overlay.on{display:flex;}
+.medi-modal{width:500px;background:#041e33;border:1px solid rgba(0,200,200,0.22);border-radius:6px;overflow:hidden;position:relative;}
+.scan-lines{position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,200,200,0.016) 3px,rgba(0,200,200,0.016) 4px);z-index:0;}
+.scan-sweep{position:absolute;left:0;right:0;height:2px;background:rgba(0,200,200,0.18);animation:sweep 3.5s linear infinite;z-index:0;}
+@keyframes sweep{0%{top:0;opacity:0.7;}100%{top:100%;opacity:0;}}
+.modal-hdr{position:relative;z-index:1;padding:13px 18px;background:rgba(0,200,200,0.06);border-bottom:1px solid rgba(0,200,200,0.13);display:flex;align-items:center;justify-content:space-between;}
+.modal-ttl{font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:700;color:var(--teal-bright);letter-spacing:0.08em;text-transform:uppercase;}
+.modal-sub{font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:var(--teal-dim);letter-spacing:0.14em;margin-top:2px;}
+.modal-close{background:transparent;border:none;color:var(--text-dim);font-size:20px;cursor:pointer;line-height:1;padding:2px 4px;}
+.modal-close:hover{color:var(--teal-bright);}
+.modal-body{position:relative;z-index:1;padding:16px 18px;}
+.m-sec{font-family:'Share Tech Mono',monospace;font-size:0.58rem;color:rgba(0,200,200,0.4);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px;}
+.m-row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;}
+.m-fg{margin-bottom:10px;}
+.m-fl{font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:var(--text-dim);letter-spacing:0.1em;text-transform:uppercase;display:block;margin-bottom:4px;}
+.m-fi{width:100%;background:var(--ocean-surface);border:1px solid rgba(0,200,200,0.18);border-radius:3px;color:var(--text-primary);font-family:'Exo 2',sans-serif;font-size:0.8rem;padding:6px 9px;outline:none;transition:border-color 0.2s;}
+.m-fi:focus{border-color:rgba(0,200,200,0.55);}
+.m-fi::placeholder{color:rgba(214,234,248,0.28);}
+select.m-fi{appearance:none;cursor:pointer;}
+select.m-fi option{background:#041e33;}
+textarea.m-fi{resize:none;height:80px;line-height:1.5;}
+.m-div{height:1px;background:rgba(0,200,200,0.09);margin:10px 0;}
+.modal-ftr{position:relative;z-index:1;padding:11px 18px;border-top:1px solid rgba(0,200,200,0.1);display:flex;align-items:center;justify-content:flex-end;}
+.pulse-wrap{position:relative;display:inline-flex;}
+.pulse-ring{position:absolute;inset:-4px;border-radius:5px;border:1px solid rgba(0,200,200,0.45);animation:pring 2s ease-out infinite;}
+@keyframes pring{0%{opacity:0.7;transform:scale(1);}100%{opacity:0;transform:scale(1.1);}}
+.m-sbtn{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:0.82rem;letter-spacing:0.1em;text-transform:uppercase;color:#020d18;background:var(--teal-bright);border:none;border-radius:3px;padding:7px 20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+.m-sbtn:hover{background:#00dddd;}
+.m-success{display:none;position:relative;z-index:1;padding:36px 18px;text-align:center;}
+.m-success-icon{font-size:38px;color:var(--green-safe);margin-bottom:12px;}
+.m-success-title{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1.1rem;color:var(--teal-bright);letter-spacing:0.08em;margin-bottom:8px;}
+.m-success-msg{font-family:'Share Tech Mono',monospace;font-size:0.65rem;color:var(--text-dim);letter-spacing:0.1em;line-height:1.8;}
 [data-testid="stSelectbox"]>div>div,[data-testid="stRadio"] label{background:var(--ocean-surface)!important;border:1px solid rgba(0,200,200,0.2)!important;color:var(--text-primary)!important;border-radius:3px!important;}
 [data-testid="stMetric"]{background:rgba(0,200,200,0.05)!important;border:1px solid rgba(0,200,200,0.15)!important;border-radius:4px!important;padding:10px 14px!important;}
 [data-testid="stMetricLabel"]{color:var(--teal-dim)!important;font-size:0.75rem!important;}
@@ -234,8 +267,98 @@ st.markdown("""
     <div class="logo-text">⬡ MEDI PLATFORM</div>
     <div class="logo-sub">Maritime Environmental Decision Intelligence</div>
   </div>
-  <div class="status-badge">● LIVE MONITORING</div>
+  <button class="contact-btn" onclick="document.getElementById('medi-overlay').classList.add('on')">
+    ✉ Contact Us
+  </button>
 </div>
+
+<div class="medi-modal-overlay" id="medi-overlay">
+  <div class="medi-modal">
+    <div class="scan-lines"></div>
+    <div class="scan-sweep"></div>
+    <div class="modal-hdr">
+      <div>
+        <div class="modal-ttl">⬡ Contact MEDI</div>
+        <div class="modal-sub">Maritime Data &amp; Research Inquiries</div>
+      </div>
+      <button class="modal-close" onclick="document.getElementById('medi-overlay').classList.remove('on')">✕</button>
+    </div>
+    <div class="modal-body" id="medi-form-body">
+      <div class="m-sec">▸ your details</div>
+      <div class="m-row2">
+        <div><label class="m-fl">Full name</label><input class="m-fi" id="mf-name" type="text" placeholder="Dr. Jane Smith" /></div>
+        <div><label class="m-fl">Organization</label><input class="m-fi" id="mf-org" type="text" placeholder="Institute / Company" /></div>
+      </div>
+      <div class="m-fg"><label class="m-fl">Email</label><input class="m-fi" id="mf-email" type="email" placeholder="you@organization.com" /></div>
+      <div class="m-div"></div>
+      <div class="m-sec">▸ your inquiry</div>
+      <div class="m-row2">
+        <div>
+          <label class="m-fl">Use case</label>
+          <select class="m-fi" id="mf-use">
+            <option value="">Select type…</option>
+            <option>Research / Academia</option>
+            <option>Port Operations</option>
+            <option>Aquaculture</option>
+            <option>Environmental Agency</option>
+            <option>ESG / Compliance</option>
+            <option>Maritime Surveillance</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div>
+          <label class="m-fl">Timeline</label>
+          <select class="m-fi" id="mf-time">
+            <option value="">Select…</option>
+            <option>Just exploring</option>
+            <option>3–6 months</option>
+            <option>Immediate need</option>
+          </select>
+        </div>
+      </div>
+      <div class="m-fg"><label class="m-fl">What are you looking for?</label><textarea class="m-fi" id="mf-msg" placeholder="Describe your research, data needs, monitoring goals, or integration interest…"></textarea></div>
+    </div>
+    <div class="m-success" id="medi-success">
+      <div class="m-success-icon">✓</div>
+      <div class="m-success-title">Inquiry sent</div>
+      <div class="m-success-msg">Your message is on its way.<br>We'll be in touch shortly.</div>
+    </div>
+    <div class="modal-ftr" id="medi-form-ftr">
+      <div class="pulse-wrap">
+        <div class="pulse-ring"></div>
+        <button class="m-sbtn" onclick="mediSubmit()">&#9658; Send inquiry</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function mediSubmit(){
+  var name=document.getElementById('mf-name').value||'(not provided)';
+  var org=document.getElementById('mf-org').value||'(not provided)';
+  var email=document.getElementById('mf-email').value||'(not provided)';
+  var use=document.getElementById('mf-use').value||'(not provided)';
+  var time=document.getElementById('mf-time').value||'(not provided)';
+  var msg=document.getElementById('mf-msg').value||'(not provided)';
+  var subject=encodeURIComponent('MEDI Platform Inquiry — '+use);
+  var body=encodeURIComponent('Name: '+name+'\\nOrganization: '+org+'\\nReply email: '+email+'\\nUse Case: '+use+'\\nTimeline: '+time+'\\n\\nInquiry:\\n'+msg);
+  window.open('mailto:semion.polinov@gmail.com?subject='+subject+'&body='+body);
+  document.getElementById('medi-form-body').style.display='none';
+  document.getElementById('medi-form-ftr').style.display='none';
+  document.getElementById('medi-success').style.display='block';
+  setTimeout(function(){
+    document.getElementById('medi-overlay').classList.remove('on');
+    setTimeout(function(){
+      document.getElementById('medi-form-body').style.display='block';
+      document.getElementById('medi-form-ftr').style.display='flex';
+      document.getElementById('medi-success').style.display='none';
+      ['mf-name','mf-org','mf-email','mf-msg'].forEach(function(id){document.getElementById(id).value='';});
+      document.getElementById('mf-use').selectedIndex=0;
+      document.getElementById('mf-time').selectedIndex=0;
+    },400);
+  },2500);
+}
+</script>
 """, unsafe_allow_html=True)
 
 # Analytics
