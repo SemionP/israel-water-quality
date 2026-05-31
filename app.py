@@ -1789,19 +1789,76 @@ if mode == MODE_ISRAEL:
             ).add_to(m)
         vis = {'min':30,'max':90,'palette':['#d73027','#f46d43','#fdae61','#fee090','#e0f3f8','#abd9e9','#74add1','#4575b4']}
         wqi_tile_url = None
+
+        # ── Add ALL available satellite rasters grouped under "🛰 Satellite Data" ──
+        # Build a FeatureGroup so all raster layers appear under a single collapsible
+        # group in LayerControl, placed below the basemap entries.
+        from folium import FeatureGroup
+        raster_group = FeatureGroup(name="🛰 Satellite Data", overlay=True, control=True, show=True)
+
+        _all_raster_urls = {}  # src_key -> tile_url, for the sat panel
+
+        # Sentinel-3 WQI
         try:
-            mid = ee.Image(wqi_layer).getMapId(vis)
-            wqi_tile_url = mid['tile_fetcher'].url_format
-            # Always show WQI raster above basemap (incl. satellite). control=False
-            # so it's not toggleable in LayerControl but is always rendered on top.
-            folium.TileLayer(
-                tiles=wqi_tile_url,
-                attr=f'GEE {data_source}',
-                name=f"WQI ({data_source})",
-                overlay=True, control=False, opacity=0.75,
-            ).add_to(m)
+            if s3_layer is not None:
+                _s3_mid = ee.Image(s3_layer).getMapId(vis)
+                _s3_url = _s3_mid['tile_fetcher'].url_format
+                _all_raster_urls["S3"] = _s3_url
+                is_active_s3 = (data_source in ("S3", "Sentinel-3"))
+                folium.TileLayer(
+                    tiles=_s3_url,
+                    attr='GEE Sentinel-3',
+                    name="WQI · Sentinel-3",
+                    overlay=True, control=False,
+                    opacity=0.75 if is_active_s3 else 0.0,
+                    show=is_active_s3,
+                ).add_to(raster_group)
+                if is_active_s3:
+                    wqi_tile_url = _s3_url
         except Exception:
-            pass  # map shows base tiles only if GEE layer fails
+            pass
+
+        # Sentinel-2 WQI
+        try:
+            if s2_layer is not None:
+                _s2_mid = ee.Image(s2_layer).getMapId(vis)
+                _s2_url = _s2_mid['tile_fetcher'].url_format
+                _all_raster_urls["S2"] = _s2_url
+                is_active_s2 = (data_source in ("S2", "Sentinel-2"))
+                folium.TileLayer(
+                    tiles=_s2_url,
+                    attr='GEE Sentinel-2',
+                    name="WQI · Sentinel-2",
+                    overlay=True, control=False,
+                    opacity=0.75 if is_active_s2 else 0.0,
+                    show=is_active_s2,
+                ).add_to(raster_group)
+                if is_active_s2:
+                    wqi_tile_url = _s2_url
+        except Exception:
+            pass
+
+        # MODIS WQI
+        try:
+            if mod_layer is not None:
+                _mod_mid = ee.Image(mod_layer).getMapId(vis)
+                _mod_url = _mod_mid['tile_fetcher'].url_format
+                _all_raster_urls["MODIS"] = _mod_url
+                is_active_mod = (data_source not in ("S3", "Sentinel-3", "S2", "Sentinel-2"))
+                folium.TileLayer(
+                    tiles=_mod_url,
+                    attr='GEE MODIS',
+                    name="WQI · MODIS",
+                    overlay=True, control=False,
+                    opacity=0.75 if is_active_mod else 0.0,
+                    show=is_active_mod,
+                ).add_to(raster_group)
+                if is_active_mod:
+                    wqi_tile_url = _mod_url
+        except Exception:
+            pass
+
+        raster_group.add_to(m)
 
         # ── Task 4: Satellite raster panel via custom Leaflet button ──────────
         # Determine active source abbreviation
@@ -2073,6 +2130,114 @@ if mode == MODE_ISRAEL:
     return d;
   };
   fsCtrl.addTo(mapObj);
+
+  // ── Distance Measurement Tool ────────────────────────────────────────────
+  (function() {
+    var measuring = false;
+    var points = [];
+    var lines = [];
+    var labels = [];
+    var totalLabel = null;
+
+    function haversineKm(lat1, lon1, lat2, lon2) {
+      var R = 6371;
+      var dLat = (lat2 - lat1) * Math.PI / 180;
+      var dLon = (lon2 - lon1) * Math.PI / 180;
+      var a = Math.sin(dLat/2)*Math.sin(dLat/2) +
+              Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*
+              Math.sin(dLon/2)*Math.sin(dLon/2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    function fmtDist(km) {
+      return km < 1 ? (km * 1000).toFixed(0) + ' m' : km.toFixed(2) + ' km';
+    }
+
+    function clearMeasure() {
+      lines.forEach(function(l) { mapObj.removeLayer(l); });
+      labels.forEach(function(l) { mapObj.removeLayer(l); });
+      if (totalLabel) { mapObj.removeLayer(totalLabel); totalLabel = null; }
+      lines = []; labels = []; points = [];
+    }
+
+    function updateCursor(on) {
+      mapObj.getContainer().style.cursor = on ? 'crosshair' : '';
+    }
+
+    function onClick(e) {
+      if (!measuring) return;
+      var ll = e.latlng;
+      points.push(ll);
+      // Draw circle marker at click
+      var dot = L.circleMarker(ll, {radius:4, color:'#00c8c8', fillColor:'#00c8c8', fillOpacity:1, weight:2}).addTo(mapObj);
+      labels.push(dot);
+
+      if (points.length >= 2) {
+        var prev = points[points.length - 2];
+        var segKm = haversineKm(prev.lat, prev.lng, ll.lat, ll.lng);
+        // Segment line
+        var line = L.polyline([prev, ll], {color:'#00c8c8', weight:2, dashArray:'6 4', opacity:0.9}).addTo(mapObj);
+        lines.push(line);
+        // Segment distance label at midpoint
+        var midLat = (prev.lat + ll.lat) / 2;
+        var midLon = (prev.lng + ll.lng) / 2;
+        var segLabel = L.marker([midLat, midLon], {
+          icon: L.divIcon({
+            html: '<div style="background:rgba(2,13,24,0.88);color:#00c8c8;border:1px solid rgba(0,200,200,0.45);border-radius:3px;padding:1px 5px;font-size:11px;font-family:monospace;white-space:nowrap;">' + fmtDist(segKm) + '</div>',
+            className: '', iconAnchor: [0, 0]
+          })
+        }).addTo(mapObj);
+        labels.push(segLabel);
+
+        // Update/add total label at latest point
+        var totalKm = 0;
+        for (var i = 1; i < points.length; i++) {
+          totalKm += haversineKm(points[i-1].lat, points[i-1].lng, points[i].lat, points[i].lng);
+        }
+        if (totalLabel) mapObj.removeLayer(totalLabel);
+        if (points.length > 2) {
+          totalLabel = L.marker(ll, {
+            icon: L.divIcon({
+              html: '<div style="background:rgba(2,13,24,0.95);color:#fff;border:1px solid #00c8c8;border-radius:3px;padding:2px 7px;font-size:12px;font-family:monospace;white-space:nowrap;margin-top:12px;">∑ ' + fmtDist(totalKm) + '</div>',
+              className: '', iconAnchor: [0, 0]
+            })
+          }).addTo(mapObj);
+        }
+      }
+    }
+
+    var rulerCtrl = L.control({position: 'topright'});
+    rulerCtrl.onAdd = function(m) {
+      var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+      d.style.marginTop = '4px';
+      var a = document.createElement('a');
+      a.href = '#';
+      a.title = 'Measure Distance';
+      a.style.cssText = 'display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:15px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);';
+      a.textContent = '📏';
+      L.DomEvent.disableClickPropagation(d);
+      a.addEventListener('click', function(e) {
+        e.preventDefault();
+        measuring = !measuring;
+        if (measuring) {
+          clearMeasure();
+          a.style.background = 'rgba(0,200,200,0.25)';
+          a.style.color = '#fff';
+          updateCursor(true);
+          mapObj.on('click', onClick);
+        } else {
+          a.style.background = 'rgba(2,13,24,0.92)';
+          a.style.color = '#00c8c8';
+          updateCursor(false);
+          mapObj.off('click', onClick);
+          clearMeasure();
+        }
+      });
+      d.appendChild(a);
+      return d;
+    };
+    rulerCtrl.addTo(mapObj);
+  })();
 
   // Load side-by-side plugin
   if (!window._sbsLoaded) {
