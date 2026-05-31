@@ -261,160 +261,126 @@ textarea.m-fi{resize:none;height:80px;line-height:1.5;}
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""
+# ── Header with Contact Us button (pure Streamlit) ────────────────────────────
+if "contact_modal_open" not in st.session_state:
+    st.session_state.contact_modal_open = False
+if "contact_sent" not in st.session_state:
+    st.session_state.contact_sent = False
+
+header_col, btn_col = st.columns([8, 1])
+with header_col:
+    st.markdown("""
 <div class="medi-header">
   <div>
     <div class="logo-text">⬡ MEDI PLATFORM</div>
     <div class="logo-sub">Maritime Environmental Decision Intelligence</div>
   </div>
-  <button class="contact-btn" onclick="window.mediOpenModal && window.mediOpenModal()">
-    ✉ Contact Us
-  </button>
+</div>
+""", unsafe_allow_html=True)
+with btn_col:
+    st.markdown("<div style='padding-top:6px;'>", unsafe_allow_html=True)
+    if st.button("✉ Contact Us", key="open_contact_modal", use_container_width=True):
+        st.session_state.contact_modal_open = True
+        st.session_state.contact_sent = False
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ── Contact Modal ──────────────────────────────────────────────────────────────
+if st.session_state.contact_modal_open:
+    st.markdown("""
+<style>
+.modal-backdrop{background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.22);border-radius:6px;padding:0;margin-bottom:12px;position:relative;overflow:hidden;}
+.scan-lines{position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,200,200,0.016) 3px,rgba(0,200,200,0.016) 4px);z-index:0;}
+.modal-inner{position:relative;z-index:1;}
+.modal-hdr2{padding:13px 20px;background:rgba(0,200,200,0.06);border-bottom:1px solid rgba(0,200,200,0.13);display:flex;align-items:center;justify-content:space-between;}
+.modal-ttl2{font-family:'Rajdhani',sans-serif;font-size:1.05rem;font-weight:700;color:#00c8c8;letter-spacing:0.08em;text-transform:uppercase;}
+.modal-sub2{font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#007f8a;letter-spacing:0.14em;margin-top:2px;}
+.modal-body2{padding:16px 20px;}
+.m-sec2{font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:rgba(0,200,200,0.4);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:10px;margin-top:4px;}
+.modal-divider{height:1px;background:rgba(0,200,200,0.09);margin:14px 0;}
+.modal-success{padding:32px 20px;text-align:center;}
+.modal-success-icon{font-size:36px;color:#1ecb7b;margin-bottom:10px;}
+.modal-success-title{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1.1rem;color:#00c8c8;letter-spacing:0.08em;margin-bottom:6px;}
+.modal-success-msg{font-family:'Share Tech Mono',monospace;font-size:0.65rem;color:#7fb3d3;letter-spacing:0.1em;line-height:1.8;}
+.sweep-bar{height:2px;background:linear-gradient(90deg,transparent,rgba(0,200,200,0.4),transparent);animation:sweepbar 2.5s ease-in-out infinite;}
+@keyframes sweepbar{0%,100%{opacity:0.3;}50%{opacity:1;}}
+</style>
+""", unsafe_allow_html=True)
+
+    st.markdown('<div class="modal-backdrop"><div class="scan-lines"></div><div class="sweep-bar"></div><div class="modal-inner">', unsafe_allow_html=True)
+
+    # Header row
+    st.markdown("""
+<div class="modal-hdr2">
+  <div>
+    <div class="modal-ttl2">⬡ Contact MEDI</div>
+    <div class="modal-sub2">Maritime Data &amp; Research Inquiries</div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Contact Modal — injected into parent document to escape iframe sandbox ──
-components.html("""
-<script>
-(function(){
-  var p = window.parent.document;
-  if(p.getElementById('medi-overlay')) return;
+    if st.session_state.contact_sent:
+        st.markdown("""
+<div class="modal-success">
+  <div class="modal-success-icon">✓</div>
+  <div class="modal-success-title">Inquiry sent</div>
+  <div class="modal-success-msg">Your message is on its way.<br>We'll be in touch shortly.</div>
+</div>
+""", unsafe_allow_html=True)
+        if st.button("✕  Close", key="close_success_modal"):
+            st.session_state.contact_modal_open = False
+            st.session_state.contact_sent = False
+            st.rerun()
+    else:
+        st.markdown('<div class="modal-body2">', unsafe_allow_html=True)
+        st.markdown('<div class="m-sec2">▸ your details</div>', unsafe_allow_html=True)
 
-  var style = p.createElement('style');
-  style.textContent = `
-    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&family=Exo+2:wght@300;400;600&display=swap');
-    #medi-overlay{display:none;position:fixed;inset:0;background:rgba(2,13,24,0.9);align-items:center;justify-content:center;z-index:999999;}
-    #medi-overlay.on{display:flex;}
-    #medi-modal{width:500px;max-width:94vw;background:#041e33;border:1px solid rgba(0,200,200,0.22);border-radius:6px;overflow:hidden;position:relative;}
-    #medi-modal .scan-lines{position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,200,200,0.016) 3px,rgba(0,200,200,0.016) 4px);z-index:0;}
-    #medi-modal .scan-sweep{position:absolute;left:0;right:0;height:2px;background:rgba(0,200,200,0.18);animation:msweep 3.5s linear infinite;z-index:0;}
-    @keyframes msweep{0%{top:0;opacity:0.7;}100%{top:100%;opacity:0;}}
-    #medi-modal .mhdr{position:relative;z-index:1;padding:13px 18px;background:rgba(0,200,200,0.06);border-bottom:1px solid rgba(0,200,200,0.13);display:flex;align-items:center;justify-content:space-between;}
-    #medi-modal .mttl{font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:700;color:#00c8c8;letter-spacing:0.08em;text-transform:uppercase;}
-    #medi-modal .msub{font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#007f8a;letter-spacing:0.14em;margin-top:2px;}
-    #medi-modal .mclose{background:transparent;border:none;color:#7fb3d3;font-size:22px;cursor:pointer;line-height:1;padding:2px 6px;}
-    #medi-modal .mclose:hover{color:#00c8c8;}
-    #medi-modal .mbody{position:relative;z-index:1;padding:16px 18px;}
-    #medi-modal .msec{font-family:'Share Tech Mono',monospace;font-size:0.58rem;color:rgba(0,200,200,0.4);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px;}
-    #medi-modal .mrow2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;}
-    #medi-modal .mfg{margin-bottom:10px;}
-    #medi-modal .mfl{font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#7fb3d3;letter-spacing:0.1em;text-transform:uppercase;display:block;margin-bottom:4px;}
-    #medi-modal .mfi{width:100%;box-sizing:border-box;background:#062d4a;border:1px solid rgba(0,200,200,0.18);border-radius:3px;color:#d6eaf8;font-family:'Exo 2',sans-serif;font-size:0.8rem;padding:6px 9px;outline:none;transition:border-color 0.2s;}
-    #medi-modal .mfi:focus{border-color:rgba(0,200,200,0.55);}
-    #medi-modal .mfi::placeholder{color:rgba(214,234,248,0.28);}
-    #medi-modal select.mfi{appearance:none;cursor:pointer;}
-    #medi-modal select.mfi option{background:#041e33;color:#d6eaf8;}
-    #medi-modal textarea.mfi{resize:none;height:80px;line-height:1.5;}
-    #medi-modal .mdiv{height:1px;background:rgba(0,200,200,0.09);margin:10px 0;}
-    #medi-modal .mftr{position:relative;z-index:1;padding:11px 18px;border-top:1px solid rgba(0,200,200,0.1);display:flex;align-items:center;justify-content:flex-end;}
-    #medi-modal .mpwrap{position:relative;display:inline-flex;}
-    #medi-modal .mpring{position:absolute;inset:-4px;border-radius:5px;border:1px solid rgba(0,200,200,0.45);animation:mpring 2s ease-out infinite;}
-    @keyframes mpring{0%{opacity:0.7;transform:scale(1);}100%{opacity:0;transform:scale(1.1);}}
-    #medi-modal .msbtn{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:0.82rem;letter-spacing:0.1em;text-transform:uppercase;color:#020d18;background:#00c8c8;border:none;border-radius:3px;padding:7px 20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
-    #medi-modal .msbtn:hover{background:#00dddd;}
-    #medi-modal .msuccess{display:none;position:relative;z-index:1;padding:36px 18px;text-align:center;}
-    #medi-modal .msuccess-icon{font-size:38px;color:#1ecb7b;margin-bottom:12px;}
-    #medi-modal .msuccess-title{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1.1rem;color:#00c8c8;letter-spacing:0.08em;margin-bottom:8px;}
-    #medi-modal .msuccess-msg{font-family:'Share Tech Mono',monospace;font-size:0.65rem;color:#7fb3d3;letter-spacing:0.1em;line-height:1.8;}
-  `;
-  p.head.appendChild(style);
+        col1, col2 = st.columns(2)
+        with col1:
+            contact_name = st.text_input("Full name", placeholder="Dr. Jane Smith", key="cf_name", label_visibility="visible")
+        with col2:
+            contact_org = st.text_input("Organization", placeholder="Institute / Company", key="cf_org", label_visibility="visible")
+        contact_email = st.text_input("Email", placeholder="you@organization.com", key="cf_email", label_visibility="visible")
 
-  var overlay = p.createElement('div');
-  overlay.id = 'medi-overlay';
-  overlay.innerHTML = `
-    <div id="medi-modal">
-      <div class="scan-lines"></div>
-      <div class="scan-sweep"></div>
-      <div class="mhdr">
-        <div>
-          <div class="mttl">⬡ Contact MEDI</div>
-          <div class="msub">Maritime Data &amp; Research Inquiries</div>
-        </div>
-        <button class="mclose" id="medi-close">✕</button>
-      </div>
-      <div class="mbody" id="medi-form-body">
-        <div class="msec">▸ your details</div>
-        <div class="mrow2">
-          <div><label class="mfl">Full name</label><input class="mfi" id="mf-name" type="text" placeholder="Dr. Jane Smith" /></div>
-          <div><label class="mfl">Organization</label><input class="mfi" id="mf-org" type="text" placeholder="Institute / Company" /></div>
-        </div>
-        <div class="mfg"><label class="mfl">Email</label><input class="mfi" id="mf-email" type="email" placeholder="you@organization.com" /></div>
-        <div class="mdiv"></div>
-        <div class="msec">▸ your inquiry</div>
-        <div class="mrow2">
-          <div>
-            <label class="mfl">Use case</label>
-            <select class="mfi" id="mf-use">
-              <option value="">Select type…</option>
-              <option>Research / Academia</option>
-              <option>Port Operations</option>
-              <option>Aquaculture</option>
-              <option>Environmental Agency</option>
-              <option>ESG / Compliance</option>
-              <option>Maritime Surveillance</option>
-              <option>Other</option>
-            </select>
-          </div>
-          <div>
-            <label class="mfl">Timeline</label>
-            <select class="mfi" id="mf-time">
-              <option value="">Select…</option>
-              <option>Just exploring</option>
-              <option>3–6 months</option>
-              <option>Immediate need</option>
-            </select>
-          </div>
-        </div>
-        <div class="mfg"><label class="mfl">What are you looking for?</label><textarea class="mfi" id="mf-msg" placeholder="Describe your research, data needs, monitoring goals, or integration interest…"></textarea></div>
-      </div>
-      <div class="msuccess" id="medi-success">
-        <div class="msuccess-icon">✓</div>
-        <div class="msuccess-title">Inquiry sent</div>
-        <div class="msuccess-msg">Your message is on its way.<br>We'll be in touch shortly.</div>
-      </div>
-      <div class="mftr" id="medi-form-ftr">
-        <div class="mpwrap">
-          <div class="mpring"></div>
-          <button class="msbtn" id="medi-submit">&#9658; Send inquiry</button>
-        </div>
-      </div>
-    </div>
-  `;
-  p.body.appendChild(overlay);
+        st.markdown('<div class="modal-divider"></div><div class="m-sec2">▸ your inquiry</div>', unsafe_allow_html=True)
 
-  p.getElementById('medi-close').addEventListener('click', function(){ p.getElementById('medi-overlay').classList.remove('on'); });
-  p.getElementById('medi-overlay').addEventListener('click', function(e){ if(e.target===this) this.classList.remove('on'); });
+        col3, col4 = st.columns(2)
+        with col3:
+            contact_use = st.selectbox("Use case", ["", "Research / Academia", "Port Operations", "Aquaculture", "Environmental Agency", "ESG / Compliance", "Maritime Surveillance", "Other"], key="cf_use")
+        with col4:
+            contact_time = st.selectbox("Timeline", ["", "Just exploring", "3–6 months", "Immediate need"], key="cf_time")
+        contact_msg = st.text_area("What are you looking for?", placeholder="Describe your research, data needs, monitoring goals, or integration interest…", key="cf_msg", height=100)
 
-  p.getElementById('medi-submit').addEventListener('click', function(){
-    var name = p.getElementById('mf-name').value||'(not provided)';
-    var org  = p.getElementById('mf-org').value||'(not provided)';
-    var email= p.getElementById('mf-email').value||'(not provided)';
-    var use  = p.getElementById('mf-use').value||'(not provided)';
-    var time = p.getElementById('mf-time').value||'(not provided)';
-    var msg  = p.getElementById('mf-msg').value||'(not provided)';
-    var subject = encodeURIComponent('MEDI Platform Inquiry — '+use);
-    var body    = encodeURIComponent('Name: '+name+'\nOrganization: '+org+'\nReply email: '+email+'\nUse Case: '+use+'\nTimeline: '+time+'\n\nInquiry:\n'+msg);
-    window.parent.open('mailto:semion.polinov@gmail.com?subject='+subject+'&body='+body);
-    p.getElementById('medi-form-body').style.display='none';
-    p.getElementById('medi-form-ftr').style.display='none';
-    p.getElementById('medi-success').style.display='block';
-    setTimeout(function(){
-      p.getElementById('medi-overlay').classList.remove('on');
-      setTimeout(function(){
-        p.getElementById('medi-form-body').style.display='block';
-        p.getElementById('medi-form-ftr').style.display='flex';
-        p.getElementById('medi-success').style.display='none';
-        ['mf-name','mf-org','mf-email','mf-msg'].forEach(function(id){p.getElementById(id).value='';});
-        p.getElementById('mf-use').selectedIndex=0;
-        p.getElementById('mf-time').selectedIndex=0;
-      },400);
-    },2500);
-  });
+        st.markdown('</div>', unsafe_allow_html=True)
 
-  window.parent.mediOpenModal = function(){ p.getElementById('medi-overlay').classList.add('on'); };
-})();
-</script>
-""", height=0)
+        # Footer buttons
+        btn_l, btn_r = st.columns([3, 1])
+        with btn_l:
+            if st.button("✕  Close", key="close_contact_modal"):
+                st.session_state.contact_modal_open = False
+                st.rerun()
+        with btn_r:
+            if st.button("▶ Send inquiry", key="send_contact", use_container_width=True):
+                name  = contact_name  or "(not provided)"
+                org   = contact_org   or "(not provided)"
+                email = contact_email or "(not provided)"
+                use   = contact_use   or "(not provided)"
+                time  = contact_time  or "(not provided)"
+                msg   = contact_msg   or "(not provided)"
+                mailto_body = (
+                    f"Name: {name}\nOrganization: {org}\nReply email: {email}\n"
+                    f"Use Case: {use}\nTimeline: {time}\n\nInquiry:\n{msg}"
+                )
+                import urllib.parse
+                subject_enc = urllib.parse.quote(f"MEDI Platform Inquiry — {use}")
+                body_enc    = urllib.parse.quote(mailto_body)
+                mailto_link = f"mailto:semion.polinov@gmail.com?subject={subject_enc}&body={body_enc}"
+                st.markdown(f'<meta http-equiv="refresh" content="0;url={mailto_link}">', unsafe_allow_html=True)
+                components.html(f'<script>window.open("{mailto_link}");</script>', height=0)
+                st.session_state.contact_sent = True
+                st.rerun()
+
+    st.markdown('</div></div>', unsafe_allow_html=True)
 
 # Analytics
 components.html('<script async src="https://cloud.umami.is/script.js" data-website-id="07a48db1-5aa7-4d88-aaac-9cfb6fc2600d"></script>', height=0)
