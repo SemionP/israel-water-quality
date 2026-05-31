@@ -1774,19 +1774,8 @@ if mode == MODE_ISRAEL:
             edit_options={"edit": False}
         ).add_to(m)
 
-        # Add basemap tile layers with LayerControl
-        for bm_name, bm_data in BASEMAPS.items():
-            is_base = (bm_name == st.session_state.basemap)
-            tile_url = bm_data["tile"]
-            tile_attr = bm_data["attr"]
-            folium.TileLayer(
-                tiles=tile_url,
-                attr=tile_attr,
-                name=bm_name,
-                overlay=False,
-                control=True,
-                show=is_base,
-            ).add_to(m)
+        # Note: basemap tile layers are NOT added here; the custom JS basemap
+        # button (topleft) manages basemap switching directly.
         vis = {'min':30,'max':90,'palette':['#d73027','#f46d43','#fdae61','#fee090','#e0f3f8','#abd9e9','#74add1','#4575b4']}
         wqi_tile_url = None
 
@@ -1864,11 +1853,14 @@ if mode == MODE_ISRAEL:
                 ).add_to(m)
 
         # ── Custom Leaflet controls via folium.Element with retry pattern (RELIABLE) ──
-        # Two separate buttons in topright: 🛰 Satellite Products | 📏 Ruler | ⛶ Fullscreen
-        # Layer control (basemaps) stays on topleft as native folium.LayerControl
+        # Topleft: 🗂 Basemaps | Topright: 🛰 Satellite Products | ⛶ Fullscreen | 📏 Ruler
         import json as _cjson
         _rl_json = _cjson.dumps(_raster_layers)
         _sel_date_js = sel_date
+        _bm_list_js = [{"id": name, "name": name, "url": data["tile"], "attr": data["attr"]}
+                       for name, data in BASEMAPS.items()]
+        _bm_json = _cjson.dumps(_bm_list_js)
+        _active_bm_js = st.session_state.get("basemap", "Satellite")
 
         _ctrl_html = """
 <script>
@@ -1890,8 +1882,18 @@ if mode == MODE_ISRAEL:
 
     var _rasterLayers = __RL_JSON__;
     var _sel_date = "__SEL_DATE__";
+    var _basemaps = __BM_JSON__;
+    var _activeBasemapId = "__ACTIVE_BM__";
+    var _bmLayerRef = null;  // current basemap tile layer
     var _tileRegistry = {};
     var _opacity = 0.75;
+
+    // Find the existing basemap tile layer added by folium and track it
+    mapObj.eachLayer(function(l) {
+      if (l._url && !l._isSatLayer && _bmLayerRef === null) {
+        _bmLayerRef = l;
+      }
+    });
 
     // Pre-create all tile layers (but only add visible ones to map)
     _rasterLayers.forEach(function(rl) {
@@ -1909,6 +1911,69 @@ if mode == MODE_ISRAEL:
 
     var BTN_STYLE = 'display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);cursor:pointer;box-sizing:border-box;';
     var PANEL_STYLE = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:240px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:-4px 6px 20px rgba(0,0,0,0.7);';
+    var PANEL_STYLE_LEFT = 'position:absolute;left:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:200px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:4px 6px 20px rgba(0,0,0,0.7);';
+
+    function setBasemap(id) {
+      var bm = _basemaps.filter(function(b){return b.id === id;})[0];
+      if (!bm) return;
+      var newLayer = L.tileLayer(bm.url, {attribution: bm.attr, zIndex: 1});
+      newLayer.addTo(mapObj);
+      newLayer.bringToBack();
+      if (_bmLayerRef && _bmLayerRef !== newLayer) {
+        try { mapObj.removeLayer(_bmLayerRef); } catch(e) {}
+      }
+      _bmLayerRef = newLayer;
+      _activeBasemapId = id;
+    }
+
+    // ── 0. BASEMAP BUTTON (topleft) ──────────────────────────────────────
+    var bmOpen = false, bmPanel = null;
+    var bmCtrl = L.control({position: 'topleft'});
+    bmCtrl.onAdd = function() {
+      var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+      d.style.marginTop = '4px';
+      var a = document.createElement('a');
+      a.href = '#'; a.title = 'Background Maps';
+      a.style.cssText = BTN_STYLE; a.innerHTML = '\u29c9'; // tioled squares
+      // Use a stacked-squares SVG so it reads as "layers"
+      a.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00c8c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>';
+      L.DomEvent.disableClickPropagation(d);
+      a.addEventListener('click', function(e) {
+        e.preventDefault(); bmOpen = !bmOpen;
+        if (bmOpen) {
+          a.style.background = 'rgba(0,200,200,0.25)';
+          bmPanel = buildBmPanel();
+          d.appendChild(bmPanel);
+        } else {
+          a.style.background = 'rgba(2,13,24,0.92)';
+          if (bmPanel) { d.removeChild(bmPanel); bmPanel = null; }
+        }
+      });
+      d.appendChild(a); return d;
+    };
+    function buildBmPanel() {
+      var p = document.createElement('div');
+      p.style.cssText = PANEL_STYLE_LEFT;
+      var rows = '';
+      _basemaps.forEach(function(bm) {
+        var chk = (bm.id === _activeBasemapId) ? 'checked' : '';
+        rows += '<label style="display:flex;align-items:center;gap:7px;margin-bottom:6px;cursor:pointer;">' +
+          '<input type="radio" name="bm_radio" value="' + bm.id + '" ' + chk + ' style="accent-color:#00c8c8;width:14px;height:14px;cursor:pointer;">' +
+          '<span style="font-size:12px;color:#d6eaf8;">' + bm.name + '</span></label>';
+      });
+      p.innerHTML =
+        '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">Background Map</div>' +
+        rows;
+      L.DomEvent.disableClickPropagation(p);
+      setTimeout(function() {
+        var radios = p.querySelectorAll('input[name="bm_radio"]');
+        radios.forEach(function(r) {
+          r.addEventListener('change', function() { if (r.checked) setBasemap(r.value); });
+        });
+      }, 60);
+      return p;
+    }
+    bmCtrl.addTo(mapObj);
 
     // ── 1. SATELLITE PRODUCTS BUTTON ─────────────────────────────────────
     var satOpen = false, satPanel = null;
@@ -2057,7 +2122,11 @@ if mode == MODE_ISRAEL:
 })();
 </script>
 """
-        _ctrl_html = _ctrl_html.replace("__RL_JSON__", _rl_json).replace("__SEL_DATE__", _sel_date_js)
+        _ctrl_html = (_ctrl_html
+                      .replace("__RL_JSON__", _rl_json)
+                      .replace("__SEL_DATE__", _sel_date_js)
+                      .replace("__BM_JSON__", _bm_json)
+                      .replace("__ACTIVE_BM__", _active_bm_js))
         m.get_root().html.add_child(folium.Element(_ctrl_html))
 
         m.add_child(folium.Element('<!-- WQI legend removed -->'))
@@ -2121,17 +2190,8 @@ if mode == MODE_ISRAEL:
                             )
                         ).add_to(m)
 
-        # LayerControl — basemaps only; rasters controlled by custom satellite button
-        folium.LayerControl(position="topleft", collapsed=True).add_to(m)
-        # Style the layer toggle to match other 30x30 toolbar buttons
-        m.add_child(folium.Element("""<style>
-.leaflet-control-layers-toggle{width:30px!important;height:30px!important;background-size:18px 18px!important;background-color:rgba(2,13,24,0.92)!important;border:1px solid rgba(0,200,200,0.4)!important;border-radius:2px!important;filter:brightness(0) saturate(100%) invert(75%) sepia(100%) saturate(400%) hue-rotate(140deg) brightness(1.1)!important;}
-.leaflet-control-layers{border:none!important;background:transparent!important;box-shadow:none!important;}
-.leaflet-control-layers-expanded{background:rgba(2,13,24,0.97)!important;border:1px solid rgba(0,200,200,0.4)!important;border-radius:6px!important;color:#d6eaf8!important;font-family:Arial,sans-serif!important;font-size:13px!important;padding:8px 12px!important;box-shadow:-4px 6px 20px rgba(0,0,0,0.7)!important;}
-.leaflet-control-layers-expanded .leaflet-control-layers-toggle{display:none!important;}
-.leaflet-control-layers label span{color:#d6eaf8!important;}
-.leaflet-control-layers-separator{border-color:rgba(0,200,200,0.2)!important;}
-</style>"""))
+        # Native folium.LayerControl removed — replaced by custom 30×30 basemap
+        # button injected via JS (topleft, matching the other toolbar buttons).
         return m
 
     # ── MEDI Platform ─────────────────────────────────────────────────────────────
