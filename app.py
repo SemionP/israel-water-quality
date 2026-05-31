@@ -1863,199 +1863,173 @@ if mode == MODE_ISRAEL:
                     name=_rl["label"], overlay=True, control=False, opacity=0.75,
                 ).add_to(m)
 
-        # ── Custom Leaflet controls: Layers + Satellite Products + Ruler + Fullscreen ──
+        # ── Custom Leaflet controls via folium.Element with retry pattern (RELIABLE) ──
+        # Two separate buttons in topright: 🛰 Satellite Products | 📏 Ruler | ⛶ Fullscreen
+        # Layer control (basemaps) stays on topleft as native folium.LayerControl
         import json as _cjson
-        _raster_layers_json = _cjson.dumps(_raster_layers).replace("'", "\\'")
+        _rl_json = _cjson.dumps(_raster_layers)
         _sel_date_js = sel_date
 
-        class CustomControls(MacroElement):
-            def __init__(self):
-                super().__init__()
-                self._template = Template("""{% macro script(this, kwargs) %}
+        _ctrl_html = """
+<script>
 (function() {
-  var mapObj = """ + "{{this._parent.get_name()}}" + """;
-
-  // ── Shared tile-layer registry keyed by layer id ─────────────────────────
-  var _tileRegistry = {};
-  var _rasterLayers = """ + _raster_layers_json + """;
-  var _opacity = 0.75;
-
-  function _getOrCreate(rl) {
-    if (_tileRegistry[rl.id]) return _tileRegistry[rl.id];
-    var l = L.tileLayer(rl.url, {opacity: rl.visible ? _opacity : 0, attribution: 'GEE', zIndex: 500});
-    l._isSatLayer = true;
-    l._rlId = rl.id;
-    _tileRegistry[rl.id] = l;
-    if (rl.visible) l.addTo(mapObj);
-    return l;
-  }
-
-  // Pre-create all layers (visible ones already added by folium; create hidden ones here)
-  _rasterLayers.forEach(function(rl) { _getOrCreate(rl); });
-
-  function setLayerVisible(id, visible) {
-    var rl = _rasterLayers.find(function(r){ return r.id === id; });
-    if (!rl) return;
-    var l = _tileRegistry[id];
-    if (!l) return;
-    if (visible) {
-      if (!mapObj.hasLayer(l)) l.addTo(mapObj);
-      l.setOpacity(_opacity);
-    } else {
-      l.setOpacity(0);
-    }
-  }
-
-  function applyOpacityAll() {
-    _rasterLayers.forEach(function(rl) {
-      var cb = document.getElementById('rl_cb_' + rl.id);
-      if (cb && cb.checked) {
-        var l = _tileRegistry[rl.id];
-        if (l) l.setOpacity(_opacity);
+  var _ctrlInit = false;
+  function _tryInit() {
+    if (_ctrlInit) return;
+    // Find the Leaflet map instance — folium stores it as window.map_<id>
+    var mapObj = null;
+    for (var k in window) {
+      if (k.indexOf('map_') === 0 && window[k] && typeof window[k].addLayer === 'function') {
+        mapObj = window[k]; break;
       }
+    }
+    if (!mapObj || typeof L === 'undefined') {
+      return setTimeout(_tryInit, 200);
+    }
+    _ctrlInit = true;
+
+    var _rasterLayers = __RL_JSON__;
+    var _sel_date = "__SEL_DATE__";
+    var _tileRegistry = {};
+    var _opacity = 0.75;
+
+    // Pre-create all tile layers (but only add visible ones to map)
+    _rasterLayers.forEach(function(rl) {
+      var l = L.tileLayer(rl.url, {opacity: _opacity, attribution: 'GEE', zIndex: 500});
+      l._isSatLayer = true;
+      _tileRegistry[rl.id] = l;
+      if (rl.visible) l.addTo(mapObj);
     });
-  }
 
-  // ── Button style helper ───────────────────────────────────────────────────
-  var BTN_STYLE = 'display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);cursor:pointer;box-sizing:border-box;';
-  var PANEL_STYLE = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:250px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:-4px 6px 20px rgba(0,0,0,0.7);';
-  var HDR_STYLE  = 'font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;';
+    function setLayerVisible(id, on) {
+      var l = _tileRegistry[id]; if (!l) return;
+      if (on) { if (!mapObj.hasLayer(l)) l.addTo(mapObj); l.setOpacity(_opacity); }
+      else    { if (mapObj.hasLayer(l)) mapObj.removeLayer(l); }
+    }
 
-  function makeCtrl(iconText, titleText) {
-    var ctrl = L.control({position: 'topright'});
-    ctrl.onAdd = function() {
+    var BTN_STYLE = 'display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);cursor:pointer;box-sizing:border-box;';
+    var PANEL_STYLE = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:240px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:-4px 6px 20px rgba(0,0,0,0.7);';
+
+    // ── 1. SATELLITE PRODUCTS BUTTON ─────────────────────────────────────
+    var satOpen = false, satPanel = null;
+    var satCtrl = L.control({position: 'topright'});
+    satCtrl.onAdd = function() {
       var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
       d.style.marginTop = '4px';
       var a = document.createElement('a');
-      a.href = '#'; a.title = titleText;
-      a.style.cssText = BTN_STYLE;
-      a.innerHTML = iconText;
+      a.href = '#'; a.title = 'Satellite Products';
+      a.style.cssText = BTN_STYLE; a.innerHTML = '🛰';
       L.DomEvent.disableClickPropagation(d);
-      d.appendChild(a);
-      ctrl._btn = a; ctrl._container = d;
-      return d;
-    };
-    return ctrl;
-  }
-
-  // ── 1. Satellite Products Button ─────────────────────────────────────────
-  var satOpen = false, satPanel = null;
-  var satCtrl = makeCtrl('🛰', 'Satellite Products');
-  satCtrl.onAdd = function() {
-    var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-    d.style.marginTop = '4px';
-    var a = document.createElement('a');
-    a.href = '#'; a.title = 'Satellite Products';
-    a.style.cssText = BTN_STYLE;
-    a.innerHTML = '🛰';
-    L.DomEvent.disableClickPropagation(d);
-
-    a.addEventListener('click', function(e) {
-      e.preventDefault();
-      satOpen = !satOpen;
-      if (satOpen) {
-        a.style.background = 'rgba(0,200,200,0.22)';
-        satPanel = buildSatPanel();
-        d.appendChild(satPanel);
-      } else {
-        a.style.background = 'rgba(2,13,24,0.92)';
-        if (satPanel) { d.removeChild(satPanel); satPanel = null; }
-      }
-    });
-    d.appendChild(a);
-    return d;
-  };
-
-  function buildSatPanel() {
-    var p = document.createElement('div');
-    p.style.cssText = PANEL_STYLE;
-    var rows = '';
-    _rasterLayers.forEach(function(rl) {
-      var chk = rl.visible ? 'checked' : '';
-      rows += '<label style="display:flex;align-items:center;gap:7px;margin-bottom:7px;cursor:pointer;">' +
-        '<input type="checkbox" id="rl_cb_' + rl.id + '" ' + chk + ' style="accent-color:#00c8c8;width:14px;height:14px;cursor:pointer;">' +
-        '<span style="font-size:12px;color:#d6eaf8;">' + rl.label + '</span></label>';
-    });
-    p.innerHTML =
-      '<div style="' + HDR_STYLE + '">🛰 Satellite Products <span style="font-size:10px;color:#7fb3d3;font-weight:normal;">' + _sel_date_js + '</span></div>' +
-      rows +
-      '<div style="border-top:1px solid rgba(0,200,200,0.15);margin-top:6px;padding-top:7px;">' +
-      '<label style="display:block;color:#7fb3d3;font-size:11px;margin-bottom:3px;">Opacity: <span id="satOpVal">' + Math.round(_opacity*100) + '%</span></label>' +
-      '<input id="satOpSlider" type="range" min="10" max="100" value="' + Math.round(_opacity*100) + '" style="width:100%;accent-color:#00c8c8;"></div>';
-    L.DomEvent.disableClickPropagation(p);
-    setTimeout(function() {
-      _rasterLayers.forEach(function(rl) {
-        var cb = document.getElementById('rl_cb_' + rl.id);
-        if (cb) cb.addEventListener('change', function() { setLayerVisible(rl.id, cb.checked); });
+      a.addEventListener('click', function(e) {
+        e.preventDefault(); satOpen = !satOpen;
+        if (satOpen) {
+          a.style.background = 'rgba(0,200,200,0.25)';
+          satPanel = buildSatPanel();
+          d.appendChild(satPanel);
+        } else {
+          a.style.background = 'rgba(2,13,24,0.92)';
+          if (satPanel) { d.removeChild(satPanel); satPanel = null; }
+        }
       });
-      var sld = document.getElementById('satOpSlider');
-      var lbl = document.getElementById('satOpVal');
-      if (sld) {
-        sld.addEventListener('input', function() {
-          _opacity = sld.value / 100;
-          lbl.textContent = sld.value + '%';
-          applyOpacityAll();
+      d.appendChild(a); return d;
+    };
+
+    function buildSatPanel() {
+      var p = document.createElement('div');
+      p.style.cssText = PANEL_STYLE;
+      var rows = '';
+      if (_rasterLayers.length === 0) {
+        rows = '<div style="color:#7fb3d3;font-size:11px;padding:4px 0;">No raster data available for this date</div>';
+      } else {
+        _rasterLayers.forEach(function(rl) {
+          var chk = rl.visible ? 'checked' : '';
+          rows += '<label style="display:flex;align-items:center;gap:7px;margin-bottom:7px;cursor:pointer;">' +
+            '<input type="checkbox" id="rl_cb_' + rl.id + '" ' + chk + ' style="accent-color:#00c8c8;width:14px;height:14px;cursor:pointer;">' +
+            '<span style="font-size:12px;color:#d6eaf8;">' + rl.label + '</span></label>';
         });
       }
-    }, 60);
-    return p;
-  }
-  satCtrl.addTo(mapObj);
+      p.innerHTML =
+        '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">🛰 Satellite Products <span style="font-size:10px;color:#7fb3d3;font-weight:normal;text-transform:none;letter-spacing:0;">' + _sel_date + '</span></div>' +
+        rows +
+        '<div style="border-top:1px solid rgba(0,200,200,0.15);margin-top:6px;padding-top:7px;">' +
+        '<label style="display:block;color:#7fb3d3;font-size:11px;margin-bottom:3px;">Opacity: <span id="satOpVal">' + Math.round(_opacity*100) + '%</span></label>' +
+        '<input id="satOpSlider" type="range" min="10" max="100" value="' + Math.round(_opacity*100) + '" style="width:100%;accent-color:#00c8c8;">' +
+        '</div>';
+      L.DomEvent.disableClickPropagation(p);
+      setTimeout(function() {
+        _rasterLayers.forEach(function(rl) {
+          var cb = document.getElementById('rl_cb_' + rl.id);
+          if (cb) cb.addEventListener('change', function() { setLayerVisible(rl.id, cb.checked); });
+        });
+        var sld = document.getElementById('satOpSlider');
+        var lbl = document.getElementById('satOpVal');
+        if (sld) sld.addEventListener('input', function() {
+          _opacity = sld.value / 100;
+          lbl.textContent = sld.value + '%';
+          Object.keys(_tileRegistry).forEach(function(k) {
+            var l = _tileRegistry[k];
+            if (l && mapObj.hasLayer(l)) l.setOpacity(_opacity);
+          });
+        });
+      }, 60);
+      return p;
+    }
+    satCtrl.addTo(mapObj);
 
-  // ── 2. Fullscreen button ─────────────────────────────────────────────────
-  var fsCtrl = L.control({position: 'topright'});
-  fsCtrl.onAdd = function() {
-    var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-    d.style.marginTop = '4px';
-    var a = document.createElement('a');
-    a.href = '#'; a.title = 'Full Screen';
-    a.style.cssText = BTN_STYLE; a.innerHTML = '⛶';
-    L.DomEvent.disableClickPropagation(d);
-    var isFs = false;
-    a.addEventListener('click', function(e) {
-      e.preventDefault(); isFs = !isFs;
-      var el = mapObj.getContainer();
-      if (isFs) { (el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el); a.innerHTML='✕'; }
-      else { (document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document); a.innerHTML='⛶'; }
-    });
-    document.addEventListener('fullscreenchange', function() {
-      if (!document.fullscreenElement) { isFs=false; a.innerHTML='⛶'; }
-    });
-    d.appendChild(a); return d;
-  };
-  fsCtrl.addTo(mapObj);
+    // ── 2. FULLSCREEN BUTTON ─────────────────────────────────────────────
+    var fsCtrl = L.control({position: 'topright'});
+    fsCtrl.onAdd = function() {
+      var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+      d.style.marginTop = '4px';
+      var a = document.createElement('a');
+      a.href = '#'; a.title = 'Full Screen';
+      a.style.cssText = BTN_STYLE; a.innerHTML = '⛶';
+      L.DomEvent.disableClickPropagation(d);
+      var isFs = false;
+      a.addEventListener('click', function(e) {
+        e.preventDefault(); isFs = !isFs;
+        var el = mapObj.getContainer();
+        if (isFs) { (el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el); a.innerHTML='✕'; }
+        else { (document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document); a.innerHTML='⛶'; }
+      });
+      document.addEventListener('fullscreenchange', function() {
+        if (!document.fullscreenElement) { isFs=false; a.innerHTML='⛶'; }
+      });
+      d.appendChild(a); return d;
+    };
+    fsCtrl.addTo(mapObj);
 
-  // ── 3. Distance Measurement Tool ─────────────────────────────────────────
-  (function() {
-    var measuring = false, points = [], lines = [], mlabels = [], totalLabel = null;
-
+    // ── 3. DISTANCE MEASUREMENT BUTTON ───────────────────────────────────
+    var measuring = false, mpoints = [], mlines = [], mlabels = [], mtotal = null;
     function hkm(la1,lo1,la2,lo2) {
       var R=6371, dLa=(la2-la1)*Math.PI/180, dLo=(lo2-lo1)*Math.PI/180;
       var a=Math.sin(dLa/2)*Math.sin(dLa/2)+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dLo/2)*Math.sin(dLo/2);
       return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
     }
     function fmt(km){ return km<1?(km*1000).toFixed(0)+' m':km.toFixed(2)+' km'; }
-    function clearAll() {
-      lines.forEach(function(l){mapObj.removeLayer(l);}); mlabels.forEach(function(l){mapObj.removeLayer(l);});
-      if(totalLabel){mapObj.removeLayer(totalLabel);totalLabel=null;}
-      lines=[]; mlabels=[]; points=[];
+    function clearMeas() {
+      mlines.forEach(function(l){mapObj.removeLayer(l);});
+      mlabels.forEach(function(l){mapObj.removeLayer(l);});
+      if(mtotal){mapObj.removeLayer(mtotal);mtotal=null;}
+      mlines=[]; mlabels=[]; mpoints=[];
     }
-    function onClick(e) {
+    function onMeasClick(e) {
       if(!measuring) return;
-      var ll=e.latlng; points.push(ll);
+      var ll=e.latlng; mpoints.push(ll);
       var dot=L.circleMarker(ll,{radius:4,color:'#00c8c8',fillColor:'#00c8c8',fillOpacity:1,weight:2}).addTo(mapObj);
       mlabels.push(dot);
-      if(points.length>=2) {
-        var prev=points[points.length-2], segKm=hkm(prev.lat,prev.lng,ll.lat,ll.lng);
+      if(mpoints.length>=2) {
+        var prev=mpoints[mpoints.length-2];
+        var segKm=hkm(prev.lat,prev.lng,ll.lat,ll.lng);
         var line=L.polyline([prev,ll],{color:'#00c8c8',weight:2,dashArray:'6 4',opacity:0.9}).addTo(mapObj);
-        lines.push(line);
+        mlines.push(line);
         var mid=[(prev.lat+ll.lat)/2,(prev.lng+ll.lng)/2];
         var sl=L.marker(mid,{icon:L.divIcon({html:'<div style="background:rgba(2,13,24,0.88);color:#00c8c8;border:1px solid rgba(0,200,200,0.45);border-radius:3px;padding:1px 5px;font-size:11px;font-family:monospace;white-space:nowrap;">'+fmt(segKm)+'</div>',className:'',iconAnchor:[0,0]})}).addTo(mapObj);
         mlabels.push(sl);
-        var tot=0; for(var i=1;i<points.length;i++) tot+=hkm(points[i-1].lat,points[i-1].lng,points[i].lat,points[i].lng);
-        if(totalLabel) mapObj.removeLayer(totalLabel);
-        if(points.length>2) {
-          totalLabel=L.marker(ll,{icon:L.divIcon({html:'<div style="background:rgba(2,13,24,0.95);color:#fff;border:1px solid #00c8c8;border-radius:3px;padding:2px 7px;font-size:11px;font-family:monospace;white-space:nowrap;margin-top:12px;">\u03a3 '+fmt(tot)+'</div>',className:'',iconAnchor:[0,0]})}).addTo(mapObj);
+        var tot=0; for(var i=1;i<mpoints.length;i++) tot+=hkm(mpoints[i-1].lat,mpoints[i-1].lng,mpoints[i].lat,mpoints[i].lng);
+        if(mtotal) mapObj.removeLayer(mtotal);
+        if(mpoints.length>2) {
+          mtotal=L.marker(ll,{icon:L.divIcon({html:'<div style="background:rgba(2,13,24,0.95);color:#fff;border:1px solid #00c8c8;border-radius:3px;padding:2px 7px;font-size:11px;font-family:monospace;white-space:nowrap;margin-top:12px;">\u03a3 '+fmt(tot)+'</div>',className:'',iconAnchor:[0,0]})}).addTo(mapObj);
         }
       }
     }
@@ -2063,29 +2037,28 @@ if mode == MODE_ISRAEL:
     rulerCtrl.onAdd = function() {
       var d=L.DomUtil.create('div','leaflet-bar leaflet-control'); d.style.marginTop='4px';
       var a=document.createElement('a'); a.href='#'; a.title='Measure Distance';
-      a.style.cssText=BTN_STYLE; a.innerHTML='📏';
+      a.style.cssText=BTN_STYLE; a.innerHTML='\ud83d\udccf';
       L.DomEvent.disableClickPropagation(d);
       a.addEventListener('click',function(e){
         e.preventDefault(); measuring=!measuring;
-        if(measuring){clearAll();a.style.background='rgba(0,200,200,0.25)';a.style.color='#fff';mapObj.getContainer().style.cursor='crosshair';mapObj.on('click',onClick);}
-        else{a.style.background='rgba(2,13,24,0.92)';a.style.color='#00c8c8';mapObj.getContainer().style.cursor='';mapObj.off('click',onClick);clearAll();}
+        if(measuring){clearMeas();a.style.background='rgba(0,200,200,0.25)';a.style.color='#fff';mapObj.getContainer().style.cursor='crosshair';mapObj.on('click',onMeasClick);}
+        else{a.style.background='rgba(2,13,24,0.92)';a.style.color='#00c8c8';mapObj.getContainer().style.cursor='';mapObj.off('click',onMeasClick);clearMeas();}
       });
       d.appendChild(a); return d;
     };
     rulerCtrl.addTo(mapObj);
-  })();
-
-  // Load side-by-side plugin
-  if (!window._sbsLoaded) {
-    window._sbsLoaded = true;
-    var s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/leaflet-side-by-side@2.2.0/leaflet-side-by-side.min.js';
-    document.head.appendChild(s);
+  }
+  // Start trying after DOM ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function(){ setTimeout(_tryInit, 200); });
+  } else {
+    setTimeout(_tryInit, 200);
   }
 })();
-{% endmacro %}""")
-
-        m.add_child(CustomControls())
+</script>
+"""
+        _ctrl_html = _ctrl_html.replace("__RL_JSON__", _rl_json).replace("__SEL_DATE__", _sel_date_js)
+        m.get_root().html.add_child(folium.Element(_ctrl_html))
 
         m.add_child(folium.Element('<!-- WQI legend removed -->'))
         if st.session_state.get("show_zones_on_map", True):
