@@ -267,99 +267,154 @@ st.markdown("""
     <div class="logo-text">⬡ MEDI PLATFORM</div>
     <div class="logo-sub">Maritime Environmental Decision Intelligence</div>
   </div>
-  <button class="contact-btn" onclick="document.getElementById('medi-overlay').classList.add('on')">
+  <button class="contact-btn" onclick="window.mediOpenModal && window.mediOpenModal()">
     ✉ Contact Us
   </button>
 </div>
-
-<div class="medi-modal-overlay" id="medi-overlay">
-  <div class="medi-modal">
-    <div class="scan-lines"></div>
-    <div class="scan-sweep"></div>
-    <div class="modal-hdr">
-      <div>
-        <div class="modal-ttl">⬡ Contact MEDI</div>
-        <div class="modal-sub">Maritime Data &amp; Research Inquiries</div>
-      </div>
-      <button class="modal-close" onclick="document.getElementById('medi-overlay').classList.remove('on')">✕</button>
-    </div>
-    <div class="modal-body" id="medi-form-body">
-      <div class="m-sec">▸ your details</div>
-      <div class="m-row2">
-        <div><label class="m-fl">Full name</label><input class="m-fi" id="mf-name" type="text" placeholder="Dr. Jane Smith" /></div>
-        <div><label class="m-fl">Organization</label><input class="m-fi" id="mf-org" type="text" placeholder="Institute / Company" /></div>
-      </div>
-      <div class="m-fg"><label class="m-fl">Email</label><input class="m-fi" id="mf-email" type="email" placeholder="you@organization.com" /></div>
-      <div class="m-div"></div>
-      <div class="m-sec">▸ your inquiry</div>
-      <div class="m-row2">
-        <div>
-          <label class="m-fl">Use case</label>
-          <select class="m-fi" id="mf-use">
-            <option value="">Select type…</option>
-            <option>Research / Academia</option>
-            <option>Port Operations</option>
-            <option>Aquaculture</option>
-            <option>Environmental Agency</option>
-            <option>ESG / Compliance</option>
-            <option>Maritime Surveillance</option>
-            <option>Other</option>
-          </select>
-        </div>
-        <div>
-          <label class="m-fl">Timeline</label>
-          <select class="m-fi" id="mf-time">
-            <option value="">Select…</option>
-            <option>Just exploring</option>
-            <option>3–6 months</option>
-            <option>Immediate need</option>
-          </select>
-        </div>
-      </div>
-      <div class="m-fg"><label class="m-fl">What are you looking for?</label><textarea class="m-fi" id="mf-msg" placeholder="Describe your research, data needs, monitoring goals, or integration interest…"></textarea></div>
-    </div>
-    <div class="m-success" id="medi-success">
-      <div class="m-success-icon">✓</div>
-      <div class="m-success-title">Inquiry sent</div>
-      <div class="m-success-msg">Your message is on its way.<br>We'll be in touch shortly.</div>
-    </div>
-    <div class="modal-ftr" id="medi-form-ftr">
-      <div class="pulse-wrap">
-        <div class="pulse-ring"></div>
-        <button class="m-sbtn" onclick="mediSubmit()">&#9658; Send inquiry</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<script>
-function mediSubmit(){
-  var name=document.getElementById('mf-name').value||'(not provided)';
-  var org=document.getElementById('mf-org').value||'(not provided)';
-  var email=document.getElementById('mf-email').value||'(not provided)';
-  var use=document.getElementById('mf-use').value||'(not provided)';
-  var time=document.getElementById('mf-time').value||'(not provided)';
-  var msg=document.getElementById('mf-msg').value||'(not provided)';
-  var subject=encodeURIComponent('MEDI Platform Inquiry — '+use);
-  var body=encodeURIComponent('Name: '+name+'\\nOrganization: '+org+'\\nReply email: '+email+'\\nUse Case: '+use+'\\nTimeline: '+time+'\\n\\nInquiry:\\n'+msg);
-  window.open('mailto:semion.polinov@gmail.com?subject='+subject+'&body='+body);
-  document.getElementById('medi-form-body').style.display='none';
-  document.getElementById('medi-form-ftr').style.display='none';
-  document.getElementById('medi-success').style.display='block';
-  setTimeout(function(){
-    document.getElementById('medi-overlay').classList.remove('on');
-    setTimeout(function(){
-      document.getElementById('medi-form-body').style.display='block';
-      document.getElementById('medi-form-ftr').style.display='flex';
-      document.getElementById('medi-success').style.display='none';
-      ['mf-name','mf-org','mf-email','mf-msg'].forEach(function(id){document.getElementById(id).value='';});
-      document.getElementById('mf-use').selectedIndex=0;
-      document.getElementById('mf-time').selectedIndex=0;
-    },400);
-  },2500);
-}
-</script>
 """, unsafe_allow_html=True)
+
+# ── Contact Modal — injected into parent document to escape iframe sandbox ──
+components.html("""
+<script>
+(function(){
+  var p = window.parent.document;
+  if(p.getElementById('medi-overlay')) return;
+
+  var style = p.createElement('style');
+  style.textContent = `
+    @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&family=Exo+2:wght@300;400;600&display=swap');
+    #medi-overlay{display:none;position:fixed;inset:0;background:rgba(2,13,24,0.9);align-items:center;justify-content:center;z-index:999999;}
+    #medi-overlay.on{display:flex;}
+    #medi-modal{width:500px;max-width:94vw;background:#041e33;border:1px solid rgba(0,200,200,0.22);border-radius:6px;overflow:hidden;position:relative;}
+    #medi-modal .scan-lines{position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,200,200,0.016) 3px,rgba(0,200,200,0.016) 4px);z-index:0;}
+    #medi-modal .scan-sweep{position:absolute;left:0;right:0;height:2px;background:rgba(0,200,200,0.18);animation:msweep 3.5s linear infinite;z-index:0;}
+    @keyframes msweep{0%{top:0;opacity:0.7;}100%{top:100%;opacity:0;}}
+    #medi-modal .mhdr{position:relative;z-index:1;padding:13px 18px;background:rgba(0,200,200,0.06);border-bottom:1px solid rgba(0,200,200,0.13);display:flex;align-items:center;justify-content:space-between;}
+    #medi-modal .mttl{font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:700;color:#00c8c8;letter-spacing:0.08em;text-transform:uppercase;}
+    #medi-modal .msub{font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#007f8a;letter-spacing:0.14em;margin-top:2px;}
+    #medi-modal .mclose{background:transparent;border:none;color:#7fb3d3;font-size:22px;cursor:pointer;line-height:1;padding:2px 6px;}
+    #medi-modal .mclose:hover{color:#00c8c8;}
+    #medi-modal .mbody{position:relative;z-index:1;padding:16px 18px;}
+    #medi-modal .msec{font-family:'Share Tech Mono',monospace;font-size:0.58rem;color:rgba(0,200,200,0.4);letter-spacing:0.14em;text-transform:uppercase;margin-bottom:8px;}
+    #medi-modal .mrow2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;}
+    #medi-modal .mfg{margin-bottom:10px;}
+    #medi-modal .mfl{font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:#7fb3d3;letter-spacing:0.1em;text-transform:uppercase;display:block;margin-bottom:4px;}
+    #medi-modal .mfi{width:100%;box-sizing:border-box;background:#062d4a;border:1px solid rgba(0,200,200,0.18);border-radius:3px;color:#d6eaf8;font-family:'Exo 2',sans-serif;font-size:0.8rem;padding:6px 9px;outline:none;transition:border-color 0.2s;}
+    #medi-modal .mfi:focus{border-color:rgba(0,200,200,0.55);}
+    #medi-modal .mfi::placeholder{color:rgba(214,234,248,0.28);}
+    #medi-modal select.mfi{appearance:none;cursor:pointer;}
+    #medi-modal select.mfi option{background:#041e33;color:#d6eaf8;}
+    #medi-modal textarea.mfi{resize:none;height:80px;line-height:1.5;}
+    #medi-modal .mdiv{height:1px;background:rgba(0,200,200,0.09);margin:10px 0;}
+    #medi-modal .mftr{position:relative;z-index:1;padding:11px 18px;border-top:1px solid rgba(0,200,200,0.1);display:flex;align-items:center;justify-content:flex-end;}
+    #medi-modal .mpwrap{position:relative;display:inline-flex;}
+    #medi-modal .mpring{position:absolute;inset:-4px;border-radius:5px;border:1px solid rgba(0,200,200,0.45);animation:mpring 2s ease-out infinite;}
+    @keyframes mpring{0%{opacity:0.7;transform:scale(1);}100%{opacity:0;transform:scale(1.1);}}
+    #medi-modal .msbtn{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:0.82rem;letter-spacing:0.1em;text-transform:uppercase;color:#020d18;background:#00c8c8;border:none;border-radius:3px;padding:7px 20px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+    #medi-modal .msbtn:hover{background:#00dddd;}
+    #medi-modal .msuccess{display:none;position:relative;z-index:1;padding:36px 18px;text-align:center;}
+    #medi-modal .msuccess-icon{font-size:38px;color:#1ecb7b;margin-bottom:12px;}
+    #medi-modal .msuccess-title{font-family:'Rajdhani',sans-serif;font-weight:700;font-size:1.1rem;color:#00c8c8;letter-spacing:0.08em;margin-bottom:8px;}
+    #medi-modal .msuccess-msg{font-family:'Share Tech Mono',monospace;font-size:0.65rem;color:#7fb3d3;letter-spacing:0.1em;line-height:1.8;}
+  `;
+  p.head.appendChild(style);
+
+  var overlay = p.createElement('div');
+  overlay.id = 'medi-overlay';
+  overlay.innerHTML = `
+    <div id="medi-modal">
+      <div class="scan-lines"></div>
+      <div class="scan-sweep"></div>
+      <div class="mhdr">
+        <div>
+          <div class="mttl">⬡ Contact MEDI</div>
+          <div class="msub">Maritime Data &amp; Research Inquiries</div>
+        </div>
+        <button class="mclose" id="medi-close">✕</button>
+      </div>
+      <div class="mbody" id="medi-form-body">
+        <div class="msec">▸ your details</div>
+        <div class="mrow2">
+          <div><label class="mfl">Full name</label><input class="mfi" id="mf-name" type="text" placeholder="Dr. Jane Smith" /></div>
+          <div><label class="mfl">Organization</label><input class="mfi" id="mf-org" type="text" placeholder="Institute / Company" /></div>
+        </div>
+        <div class="mfg"><label class="mfl">Email</label><input class="mfi" id="mf-email" type="email" placeholder="you@organization.com" /></div>
+        <div class="mdiv"></div>
+        <div class="msec">▸ your inquiry</div>
+        <div class="mrow2">
+          <div>
+            <label class="mfl">Use case</label>
+            <select class="mfi" id="mf-use">
+              <option value="">Select type…</option>
+              <option>Research / Academia</option>
+              <option>Port Operations</option>
+              <option>Aquaculture</option>
+              <option>Environmental Agency</option>
+              <option>ESG / Compliance</option>
+              <option>Maritime Surveillance</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <div>
+            <label class="mfl">Timeline</label>
+            <select class="mfi" id="mf-time">
+              <option value="">Select…</option>
+              <option>Just exploring</option>
+              <option>3–6 months</option>
+              <option>Immediate need</option>
+            </select>
+          </div>
+        </div>
+        <div class="mfg"><label class="mfl">What are you looking for?</label><textarea class="mfi" id="mf-msg" placeholder="Describe your research, data needs, monitoring goals, or integration interest…"></textarea></div>
+      </div>
+      <div class="msuccess" id="medi-success">
+        <div class="msuccess-icon">✓</div>
+        <div class="msuccess-title">Inquiry sent</div>
+        <div class="msuccess-msg">Your message is on its way.<br>We'll be in touch shortly.</div>
+      </div>
+      <div class="mftr" id="medi-form-ftr">
+        <div class="mpwrap">
+          <div class="mpring"></div>
+          <button class="msbtn" id="medi-submit">&#9658; Send inquiry</button>
+        </div>
+      </div>
+    </div>
+  `;
+  p.body.appendChild(overlay);
+
+  p.getElementById('medi-close').addEventListener('click', function(){ p.getElementById('medi-overlay').classList.remove('on'); });
+  p.getElementById('medi-overlay').addEventListener('click', function(e){ if(e.target===this) this.classList.remove('on'); });
+
+  p.getElementById('medi-submit').addEventListener('click', function(){
+    var name = p.getElementById('mf-name').value||'(not provided)';
+    var org  = p.getElementById('mf-org').value||'(not provided)';
+    var email= p.getElementById('mf-email').value||'(not provided)';
+    var use  = p.getElementById('mf-use').value||'(not provided)';
+    var time = p.getElementById('mf-time').value||'(not provided)';
+    var msg  = p.getElementById('mf-msg').value||'(not provided)';
+    var subject = encodeURIComponent('MEDI Platform Inquiry — '+use);
+    var body    = encodeURIComponent('Name: '+name+'\nOrganization: '+org+'\nReply email: '+email+'\nUse Case: '+use+'\nTimeline: '+time+'\n\nInquiry:\n'+msg);
+    window.parent.open('mailto:semion.polinov@gmail.com?subject='+subject+'&body='+body);
+    p.getElementById('medi-form-body').style.display='none';
+    p.getElementById('medi-form-ftr').style.display='none';
+    p.getElementById('medi-success').style.display='block';
+    setTimeout(function(){
+      p.getElementById('medi-overlay').classList.remove('on');
+      setTimeout(function(){
+        p.getElementById('medi-form-body').style.display='block';
+        p.getElementById('medi-form-ftr').style.display='flex';
+        p.getElementById('medi-success').style.display='none';
+        ['mf-name','mf-org','mf-email','mf-msg'].forEach(function(id){p.getElementById(id).value='';});
+        p.getElementById('mf-use').selectedIndex=0;
+        p.getElementById('mf-time').selectedIndex=0;
+      },400);
+    },2500);
+  });
+
+  window.parent.mediOpenModal = function(){ p.getElementById('medi-overlay').classList.add('on'); };
+})();
+</script>
+""", height=0)
 
 # Analytics
 components.html('<script async src="https://cloud.umami.is/script.js" data-website-id="07a48db1-5aa7-4d88-aaac-9cfb6fc2600d"></script>', height=0)
