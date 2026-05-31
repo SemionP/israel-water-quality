@@ -1852,7 +1852,7 @@ if mode == MODE_ISRAEL:
                     name=_rl["label"], overlay=True, control=False, opacity=0.75,
                 ).add_to(m)
 
-        # ── Custom Leaflet controls via folium.Element with retry pattern (RELIABLE) ──
+        # ── Custom Leaflet controls via MacroElement (script macro = runs AFTER map exists) ──
         # Topleft: 🗂 Basemaps | Topright: 🛰 Satellite Products | ⛶ Fullscreen | 📏 Ruler
         import json as _cjson
         _rl_json = _cjson.dumps(_raster_layers)
@@ -1862,29 +1862,18 @@ if mode == MODE_ISRAEL:
         _bm_json = _cjson.dumps(_bm_list_js)
         _active_bm_js = st.session_state.get("basemap", "Satellite")
 
-        _ctrl_html = """
-<script>
+        # Pre-substitute placeholder values into the JS body
+        _js_body = """
 (function() {
-  var _ctrlInit = false;
-  function _tryInit() {
-    if (_ctrlInit) return;
-    // Find the Leaflet map instance — folium stores it as window.map_<id>
-    var mapObj = null;
-    for (var k in window) {
-      if (k.indexOf('map_') === 0 && window[k] && typeof window[k].addLayer === 'function') {
-        mapObj = window[k]; break;
-      }
-    }
-    if (!mapObj || typeof L === 'undefined') {
-      return setTimeout(_tryInit, 200);
-    }
-    _ctrlInit = true;
+  try {
+    var mapObj = __MAP_VAR__;
+    if (!mapObj || typeof L === 'undefined') { console.warn('[MEDI] map or L not ready'); return; }
 
     var _rasterLayers = __RL_JSON__;
     var _sel_date = "__SEL_DATE__";
     var _basemaps = __BM_JSON__;
     var _activeBasemapId = "__ACTIVE_BM__";
-    var _bmLayerRef = null;  // current basemap tile layer
+    var _bmLayerRef = null;
     var _tileRegistry = {};
     var _opacity = 0.75;
 
@@ -1895,7 +1884,7 @@ if mode == MODE_ISRAEL:
       }
     });
 
-    // Pre-create all tile layers (but only add visible ones to map)
+    // Pre-create all raster tile layers (only add visible ones)
     _rasterLayers.forEach(function(rl) {
       var l = L.tileLayer(rl.url, {opacity: _opacity, attribution: 'GEE', zIndex: 500});
       l._isSatLayer = true;
@@ -1910,23 +1899,20 @@ if mode == MODE_ISRAEL:
     }
 
     var BTN_STYLE = 'display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);cursor:pointer;box-sizing:border-box;';
-    var PANEL_STYLE = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:240px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:-4px 6px 20px rgba(0,0,0,0.7);';
-    var PANEL_STYLE_LEFT = 'position:absolute;left:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:200px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:4px 6px 20px rgba(0,0,0,0.7);';
+    var PANEL_RIGHT = 'position:absolute;right:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:240px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:-4px 6px 20px rgba(0,0,0,0.7);';
+    var PANEL_LEFT  = 'position:absolute;left:36px;top:0;background:rgba(2,13,24,0.97);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:10px 13px;width:200px;font-family:Arial,sans-serif;font-size:13px;color:#d6eaf8;z-index:9999;box-shadow:4px 6px 20px rgba(0,0,0,0.7);';
 
     function setBasemap(id) {
-      var bm = _basemaps.filter(function(b){return b.id === id;})[0];
+      var bm = null;
+      for (var i=0;i<_basemaps.length;i++) { if (_basemaps[i].id === id) { bm = _basemaps[i]; break; } }
       if (!bm) return;
-      var newLayer = L.tileLayer(bm.url, {attribution: bm.attr, zIndex: 1});
-      newLayer.addTo(mapObj);
-      newLayer.bringToBack();
-      if (_bmLayerRef && _bmLayerRef !== newLayer) {
-        try { mapObj.removeLayer(_bmLayerRef); } catch(e) {}
-      }
-      _bmLayerRef = newLayer;
-      _activeBasemapId = id;
+      var nl = L.tileLayer(bm.url, {attribution: bm.attr, zIndex: 1});
+      nl.addTo(mapObj); nl.bringToBack();
+      if (_bmLayerRef && _bmLayerRef !== nl) { try { mapObj.removeLayer(_bmLayerRef); } catch(e){} }
+      _bmLayerRef = nl; _activeBasemapId = id;
     }
 
-    // ── 0. BASEMAP BUTTON (topleft) ──────────────────────────────────────
+    // ── BASEMAP BUTTON (topleft) ─────────────────────────────────────────
     var bmOpen = false, bmPanel = null;
     var bmCtrl = L.control({position: 'topleft'});
     bmCtrl.onAdd = function() {
@@ -1934,16 +1920,14 @@ if mode == MODE_ISRAEL:
       d.style.marginTop = '4px';
       var a = document.createElement('a');
       a.href = '#'; a.title = 'Background Maps';
-      a.style.cssText = BTN_STYLE; a.innerHTML = '\u29c9'; // tioled squares
-      // Use a stacked-squares SVG so it reads as "layers"
+      a.style.cssText = BTN_STYLE;
       a.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00c8c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>';
       L.DomEvent.disableClickPropagation(d);
       a.addEventListener('click', function(e) {
         e.preventDefault(); bmOpen = !bmOpen;
         if (bmOpen) {
           a.style.background = 'rgba(0,200,200,0.25)';
-          bmPanel = buildBmPanel();
-          d.appendChild(bmPanel);
+          bmPanel = buildBmPanel(); d.appendChild(bmPanel);
         } else {
           a.style.background = 'rgba(2,13,24,0.92)';
           if (bmPanel) { d.removeChild(bmPanel); bmPanel = null; }
@@ -1953,7 +1937,7 @@ if mode == MODE_ISRAEL:
     };
     function buildBmPanel() {
       var p = document.createElement('div');
-      p.style.cssText = PANEL_STYLE_LEFT;
+      p.style.cssText = PANEL_LEFT;
       var rows = '';
       _basemaps.forEach(function(bm) {
         var chk = (bm.id === _activeBasemapId) ? 'checked' : '';
@@ -1961,21 +1945,17 @@ if mode == MODE_ISRAEL:
           '<input type="radio" name="bm_radio" value="' + bm.id + '" ' + chk + ' style="accent-color:#00c8c8;width:14px;height:14px;cursor:pointer;">' +
           '<span style="font-size:12px;color:#d6eaf8;">' + bm.name + '</span></label>';
       });
-      p.innerHTML =
-        '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">Background Map</div>' +
-        rows;
+      p.innerHTML = '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">Background Map</div>' + rows;
       L.DomEvent.disableClickPropagation(p);
       setTimeout(function() {
         var radios = p.querySelectorAll('input[name="bm_radio"]');
-        radios.forEach(function(r) {
-          r.addEventListener('change', function() { if (r.checked) setBasemap(r.value); });
-        });
+        radios.forEach(function(r) { r.addEventListener('change', function() { if (r.checked) setBasemap(r.value); }); });
       }, 60);
       return p;
     }
     bmCtrl.addTo(mapObj);
 
-    // ── 1. SATELLITE PRODUCTS BUTTON ─────────────────────────────────────
+    // ── SATELLITE PRODUCTS BUTTON (topright) ─────────────────────────────
     var satOpen = false, satPanel = null;
     var satCtrl = L.control({position: 'topright'});
     satCtrl.onAdd = function() {
@@ -1983,14 +1963,13 @@ if mode == MODE_ISRAEL:
       d.style.marginTop = '4px';
       var a = document.createElement('a');
       a.href = '#'; a.title = 'Satellite Products';
-      a.style.cssText = BTN_STYLE; a.innerHTML = '🛰';
+      a.style.cssText = BTN_STYLE; a.innerHTML = '\\ud83d\\udef0';
       L.DomEvent.disableClickPropagation(d);
       a.addEventListener('click', function(e) {
         e.preventDefault(); satOpen = !satOpen;
         if (satOpen) {
           a.style.background = 'rgba(0,200,200,0.25)';
-          satPanel = buildSatPanel();
-          d.appendChild(satPanel);
+          satPanel = buildSatPanel(); d.appendChild(satPanel);
         } else {
           a.style.background = 'rgba(2,13,24,0.92)';
           if (satPanel) { d.removeChild(satPanel); satPanel = null; }
@@ -1998,13 +1977,12 @@ if mode == MODE_ISRAEL:
       });
       d.appendChild(a); return d;
     };
-
     function buildSatPanel() {
       var p = document.createElement('div');
-      p.style.cssText = PANEL_STYLE;
+      p.style.cssText = PANEL_RIGHT;
       var rows = '';
       if (_rasterLayers.length === 0) {
-        rows = '<div style="color:#7fb3d3;font-size:11px;padding:4px 0;">No raster data available for this date</div>';
+        rows = '<div style="color:#7fb3d3;font-size:11px;padding:4px 0;">No raster data for this date</div>';
       } else {
         _rasterLayers.forEach(function(rl) {
           var chk = rl.visible ? 'checked' : '';
@@ -2013,13 +1991,7 @@ if mode == MODE_ISRAEL:
             '<span style="font-size:12px;color:#d6eaf8;">' + rl.label + '</span></label>';
         });
       }
-      p.innerHTML =
-        '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">🛰 Satellite Products <span style="font-size:10px;color:#7fb3d3;font-weight:normal;text-transform:none;letter-spacing:0;">' + _sel_date + '</span></div>' +
-        rows +
-        '<div style="border-top:1px solid rgba(0,200,200,0.15);margin-top:6px;padding-top:7px;">' +
-        '<label style="display:block;color:#7fb3d3;font-size:11px;margin-bottom:3px;">Opacity: <span id="satOpVal">' + Math.round(_opacity*100) + '%</span></label>' +
-        '<input id="satOpSlider" type="range" min="10" max="100" value="' + Math.round(_opacity*100) + '" style="width:100%;accent-color:#00c8c8;">' +
-        '</div>';
+      p.innerHTML = '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">\\ud83d\\udef0 Satellite Products <span style="font-size:10px;color:#7fb3d3;font-weight:normal;text-transform:none;letter-spacing:0;">' + _sel_date + '</span></div>' + rows + '<div style="border-top:1px solid rgba(0,200,200,0.15);margin-top:6px;padding-top:7px;"><label style="display:block;color:#7fb3d3;font-size:11px;margin-bottom:3px;">Opacity: <span id="satOpVal">' + Math.round(_opacity*100) + '%</span></label><input id="satOpSlider" type="range" min="10" max="100" value="' + Math.round(_opacity*100) + '" style="width:100%;accent-color:#00c8c8;"></div>';
       L.DomEvent.disableClickPropagation(p);
       setTimeout(function() {
         _rasterLayers.forEach(function(rl) {
@@ -2029,11 +2001,9 @@ if mode == MODE_ISRAEL:
         var sld = document.getElementById('satOpSlider');
         var lbl = document.getElementById('satOpVal');
         if (sld) sld.addEventListener('input', function() {
-          _opacity = sld.value / 100;
-          lbl.textContent = sld.value + '%';
+          _opacity = sld.value / 100; lbl.textContent = sld.value + '%';
           Object.keys(_tileRegistry).forEach(function(k) {
-            var l = _tileRegistry[k];
-            if (l && mapObj.hasLayer(l)) l.setOpacity(_opacity);
+            var l = _tileRegistry[k]; if (l && mapObj.hasLayer(l)) l.setOpacity(_opacity);
           });
         });
       }, 60);
@@ -2041,30 +2011,25 @@ if mode == MODE_ISRAEL:
     }
     satCtrl.addTo(mapObj);
 
-    // ── 2. FULLSCREEN BUTTON ─────────────────────────────────────────────
+    // ── FULLSCREEN (topright) ────────────────────────────────────────────
     var fsCtrl = L.control({position: 'topright'});
     fsCtrl.onAdd = function() {
-      var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-      d.style.marginTop = '4px';
-      var a = document.createElement('a');
-      a.href = '#'; a.title = 'Full Screen';
-      a.style.cssText = BTN_STYLE; a.innerHTML = '⛶';
+      var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control'); d.style.marginTop = '4px';
+      var a = document.createElement('a'); a.href = '#'; a.title = 'Full Screen';
+      a.style.cssText = BTN_STYLE; a.innerHTML = '\\u26f6';
       L.DomEvent.disableClickPropagation(d);
       var isFs = false;
       a.addEventListener('click', function(e) {
         e.preventDefault(); isFs = !isFs;
         var el = mapObj.getContainer();
-        if (isFs) { (el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el); a.innerHTML='✕'; }
-        else { (document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document); a.innerHTML='⛶'; }
-      });
-      document.addEventListener('fullscreenchange', function() {
-        if (!document.fullscreenElement) { isFs=false; a.innerHTML='⛶'; }
+        if (isFs) { (el.requestFullscreen||el.webkitRequestFullscreen||function(){}).call(el); a.innerHTML = '\\u2715'; }
+        else { (document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document); a.innerHTML = '\\u26f6'; }
       });
       d.appendChild(a); return d;
     };
     fsCtrl.addTo(mapObj);
 
-    // ── 3. DISTANCE MEASUREMENT BUTTON ───────────────────────────────────
+    // ── RULER (topright) ─────────────────────────────────────────────────
     var measuring = false, mpoints = [], mlines = [], mlabels = [], mtotal = null;
     function hkm(la1,lo1,la2,lo2) {
       var R=6371, dLa=(la2-la1)*Math.PI/180, dLo=(lo2-lo1)*Math.PI/180;
@@ -2072,18 +2037,18 @@ if mode == MODE_ISRAEL:
       return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
     }
     function fmt(km){ return km<1?(km*1000).toFixed(0)+' m':km.toFixed(2)+' km'; }
-    function clearMeas() {
+    function clearMeas(){
       mlines.forEach(function(l){mapObj.removeLayer(l);});
       mlabels.forEach(function(l){mapObj.removeLayer(l);});
       if(mtotal){mapObj.removeLayer(mtotal);mtotal=null;}
       mlines=[]; mlabels=[]; mpoints=[];
     }
-    function onMeasClick(e) {
+    function onMeasClick(e){
       if(!measuring) return;
       var ll=e.latlng; mpoints.push(ll);
       var dot=L.circleMarker(ll,{radius:4,color:'#00c8c8',fillColor:'#00c8c8',fillOpacity:1,weight:2}).addTo(mapObj);
       mlabels.push(dot);
-      if(mpoints.length>=2) {
+      if(mpoints.length>=2){
         var prev=mpoints[mpoints.length-2];
         var segKm=hkm(prev.lat,prev.lng,ll.lat,ll.lng);
         var line=L.polyline([prev,ll],{color:'#00c8c8',weight:2,dashArray:'6 4',opacity:0.9}).addTo(mapObj);
@@ -2093,16 +2058,16 @@ if mode == MODE_ISRAEL:
         mlabels.push(sl);
         var tot=0; for(var i=1;i<mpoints.length;i++) tot+=hkm(mpoints[i-1].lat,mpoints[i-1].lng,mpoints[i].lat,mpoints[i].lng);
         if(mtotal) mapObj.removeLayer(mtotal);
-        if(mpoints.length>2) {
-          mtotal=L.marker(ll,{icon:L.divIcon({html:'<div style="background:rgba(2,13,24,0.95);color:#fff;border:1px solid #00c8c8;border-radius:3px;padding:2px 7px;font-size:11px;font-family:monospace;white-space:nowrap;margin-top:12px;">\u03a3 '+fmt(tot)+'</div>',className:'',iconAnchor:[0,0]})}).addTo(mapObj);
+        if(mpoints.length>2){
+          mtotal=L.marker(ll,{icon:L.divIcon({html:'<div style="background:rgba(2,13,24,0.95);color:#fff;border:1px solid #00c8c8;border-radius:3px;padding:2px 7px;font-size:11px;font-family:monospace;white-space:nowrap;margin-top:12px;">\\u03a3 '+fmt(tot)+'</div>',className:'',iconAnchor:[0,0]})}).addTo(mapObj);
         }
       }
     }
     var rulerCtrl = L.control({position:'topright'});
-    rulerCtrl.onAdd = function() {
+    rulerCtrl.onAdd = function(){
       var d=L.DomUtil.create('div','leaflet-bar leaflet-control'); d.style.marginTop='4px';
       var a=document.createElement('a'); a.href='#'; a.title='Measure Distance';
-      a.style.cssText=BTN_STYLE; a.innerHTML='\ud83d\udccf';
+      a.style.cssText=BTN_STYLE; a.innerHTML='\\ud83d\\udccf';
       L.DomEvent.disableClickPropagation(d);
       a.addEventListener('click',function(e){
         e.preventDefault(); measuring=!measuring;
@@ -2112,22 +2077,27 @@ if mode == MODE_ISRAEL:
       d.appendChild(a); return d;
     };
     rulerCtrl.addTo(mapObj);
-  }
-  // Start trying after DOM ready
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function(){ setTimeout(_tryInit, 200); });
-  } else {
-    setTimeout(_tryInit, 200);
+    console.log('[MEDI] All controls added successfully');
+  } catch(err) {
+    console.error('[MEDI] Control init failed:', err);
   }
 })();
-</script>
 """
-        _ctrl_html = (_ctrl_html
-                      .replace("__RL_JSON__", _rl_json)
-                      .replace("__SEL_DATE__", _sel_date_js)
-                      .replace("__BM_JSON__", _bm_json)
-                      .replace("__ACTIVE_BM__", _active_bm_js))
-        m.get_root().html.add_child(folium.Element(_ctrl_html))
+        _js_body = (_js_body
+                    .replace("__RL_JSON__", _rl_json)
+                    .replace("__SEL_DATE__", _sel_date_js)
+                    .replace("__BM_JSON__", _bm_json)
+                    .replace("__ACTIVE_BM__", _active_bm_js))
+
+        class MEDIControls(MacroElement):
+            def __init__(self, body):
+                super().__init__()
+                self._body = body
+                self._template = Template("{% macro script(this, kwargs) %}\n" +
+                                          body.replace("__MAP_VAR__", "{{this._parent.get_name()}}") +
+                                          "\n{% endmacro %}")
+
+        m.add_child(MEDIControls(_js_body))
 
         m.add_child(folium.Element('<!-- WQI legend removed -->'))
         if st.session_state.get("show_zones_on_map", True):
