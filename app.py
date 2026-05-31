@@ -1668,13 +1668,25 @@ if mode == MODE_ISRAEL:
 
 
 
-    # Basemap definitions
+    # Basemap definitions — full URL templates for both folium and L.tileLayer
+    # 'sub' is the subdomains string for tiles using {s}; None = no subdomains.
     BASEMAPS = {
-        "Street":    {"tile": "OpenStreetMap",          "attr": "OSM"},
-        "Dark":      {"tile": "CartoDB dark_matter",    "attr": "CartoDB"},
-        "Light":     {"tile": "CartoDB positron",       "attr": "CartoDB"},
-        "Satellite": {"tile": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", "attr": "Esri"},
-        "Ocean":     {"tile": "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}", "attr": "Esri"},
+        "Satellite":  {"tile": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                       "attr": "Esri", "sub": None},
+        "Ocean":      {"tile": "https://server.arcgisonline.com/ArcGIS/rest/services/Ocean/World_Ocean_Base/MapServer/tile/{z}/{y}/{x}",
+                       "attr": "Esri Ocean Base", "sub": None},
+        "Bathymetry": {"tile": "https://tiles.emodnet-bathymetry.eu/2020/baselayer/web_mercator/{z}/{x}/{y}.png",
+                       "attr": "EMODnet Bathymetry", "sub": None},
+        "Terrain":    {"tile": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Terrain_Base/MapServer/tile/{z}/{y}/{x}",
+                       "attr": "Esri Terrain", "sub": None},
+        "NatGeo":     {"tile": "https://server.arcgisonline.com/ArcGIS/rest/services/NatGeo_World_Map/MapServer/tile/{z}/{y}/{x}",
+                       "attr": "Esri / National Geographic", "sub": None},
+        "Street":     {"tile": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                       "attr": "OpenStreetMap", "sub": None},
+        "Dark":       {"tile": "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png",
+                       "attr": "CartoDB Dark", "sub": "abcd"},
+        "Light":      {"tile": "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+                       "attr": "CartoDB Positron", "sub": "abcd"},
     }
     if "basemap" not in st.session_state:
         st.session_state.basemap = "Satellite"
@@ -1857,7 +1869,8 @@ if mode == MODE_ISRAEL:
         import json as _cjson
         _rl_json = _cjson.dumps(_raster_layers)
         _sel_date_js = sel_date
-        _bm_list_js = [{"id": name, "name": name, "url": data["tile"], "attr": data["attr"]}
+        _bm_list_js = [{"id": name, "name": name, "url": data["tile"], "attr": data["attr"],
+                        "sub": data.get("sub")}
                        for name, data in BASEMAPS.items()]
         _bm_json = _cjson.dumps(_bm_list_js)
         _active_bm_js = st.session_state.get("basemap", "Satellite")
@@ -1906,7 +1919,9 @@ if mode == MODE_ISRAEL:
       var bm = null;
       for (var i=0;i<_basemaps.length;i++) { if (_basemaps[i].id === id) { bm = _basemaps[i]; break; } }
       if (!bm) return;
-      var nl = L.tileLayer(bm.url, {attribution: bm.attr, zIndex: 1});
+      var opts = {attribution: bm.attr, zIndex: 1};
+      if (bm.sub) opts.subdomains = bm.sub;
+      var nl = L.tileLayer(bm.url, opts);
       nl.addTo(mapObj); nl.bringToBack();
       if (_bmLayerRef && _bmLayerRef !== nl) { try { mapObj.removeLayer(_bmLayerRef); } catch(e){} }
       _bmLayerRef = nl; _activeBasemapId = id;
