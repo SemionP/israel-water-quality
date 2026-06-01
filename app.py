@@ -2637,8 +2637,27 @@ if mode == MODE_ISRAEL:
     </div>
     <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:flex-start;gap:4px;overflow-y:auto;min-width:170px;max-width:180px;padding:4px 6px;max-height:calc(100vh - 170px);"></div>
   </div>
+  <!-- Chart axis controls -->
+  <div id="chartControls" style="display:flex;align-items:center;gap:12px;padding:4px 8px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.12);border-radius:5px;flex-shrink:0;">
+    <label style="display:flex;align-items:center;gap:5px;color:#7fb3d3;font-size:11px;white-space:nowrap;">
+      Days: <span id="daysVal" style="color:#00c8c8;font-weight:600;min-width:20px;text-align:center;">{history_days}</span>
+      <input id="daysSlider" type="range" min="3" max="{history_days}" value="{history_days}" style="width:100px;accent-color:#00c8c8;cursor:pointer;">
+    </label>
+    <span style="color:rgba(0,200,200,0.2);">|</span>
+    <label style="display:flex;align-items:center;gap:4px;color:#7fb3d3;font-size:11px;white-space:nowrap;">
+      Y min: <input id="yMinIn" type="number" min="0" max="100" step="5" style="width:42px;background:#041e33;color:#d6eaf8;border:1px solid rgba(0,200,200,0.3);border-radius:3px;padding:2px 4px;font-size:11px;text-align:center;">
+    </label>
+    <label style="display:flex;align-items:center;gap:4px;color:#7fb3d3;font-size:11px;white-space:nowrap;">
+      Y max: <input id="yMaxIn" type="number" min="0" max="100" step="5" style="width:42px;background:#041e33;color:#d6eaf8;border:1px solid rgba(0,200,200,0.3);border-radius:3px;padding:2px 4px;font-size:11px;text-align:center;">
+    </label>
+    <span style="color:rgba(0,200,200,0.2);">|</span>
+    <span style="color:#7fb3d3;font-size:10px;">🖱️ scroll=zoom · drag=pan</span>
+    <button id="chartResetBtn" style="background:rgba(0,200,200,0.1);border:1px solid rgba(0,200,200,0.35);border-radius:4px;color:#00c8c8;cursor:pointer;font-size:11px;padding:2px 8px;white-space:nowrap;margin-left:auto;">↺ Reset</button>
+  </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
 <script>
 (function(){{
   var ds    = {chart_json};
@@ -2764,6 +2783,21 @@ if mode == MODE_ISRAEL:
               return c.dataset.label + ': ' + c.parsed.y + srcLabel;
             }}
           }}
+        }},
+        zoom: {{
+          pan: {{
+            enabled: true,
+            mode: 'xy'
+          }},
+          zoom: {{
+            wheel: {{ enabled: true, speed: 0.05 }},
+            pinch: {{ enabled: true }},
+            mode: 'xy'
+          }},
+          limits: {{
+            x: {{ minRange: 3 }},
+            y: {{ min: 0, max: 100, minRange: 10 }}
+          }}
         }}
       }},
       scales: {{
@@ -2865,10 +2899,55 @@ if mode == MODE_ISRAEL:
     }}
   }}
 
+  // ── Chart axis controls ──────────────────────────────────────────────────────
+  var _origYMin = yMin, _origYMax = yMax;
+  var _totalLabels = ls.length;
+  var daysSlider = document.getElementById('daysSlider');
+  var daysVal    = document.getElementById('daysVal');
+  var yMinIn     = document.getElementById('yMinIn');
+  var yMaxIn     = document.getElementById('yMaxIn');
+  var resetBtn   = document.getElementById('chartResetBtn');
+
+  if (yMinIn) yMinIn.value = yMin;
+  if (yMaxIn) yMaxIn.value = yMax;
+
+  // Days slider → windowing X axis
+  if (daysSlider) daysSlider.addEventListener('input', function() {{
+    var days = parseInt(this.value);
+    daysVal.textContent = days;
+    var startIdx = Math.max(0, _totalLabels - days);
+    chartRef.options.scales.x.min = ls[startIdx];
+    chartRef.options.scales.x.max = ls[_totalLabels - 1];
+    chartRef.update('none');
+  }});
+
+  // Y axis min/max inputs
+  if (yMinIn) yMinIn.addEventListener('change', function() {{
+    var v = parseInt(this.value);
+    if (!isNaN(v)) {{ chartRef.options.scales.y.min = v; chartRef.update('none'); }}
+  }});
+  if (yMaxIn) yMaxIn.addEventListener('change', function() {{
+    var v = parseInt(this.value);
+    if (!isNaN(v)) {{ chartRef.options.scales.y.max = v; chartRef.update('none'); }}
+  }});
+
+  // Reset button
+  if (resetBtn) resetBtn.addEventListener('click', function() {{
+    chartRef.resetZoom();
+    chartRef.options.scales.x.min = undefined;
+    chartRef.options.scales.x.max = undefined;
+    chartRef.options.scales.y.min = _origYMin;
+    chartRef.options.scales.y.max = _origYMax;
+    if (yMinIn) yMinIn.value = _origYMin;
+    if (yMaxIn) yMaxIn.value = _origYMax;
+    if (daysSlider) {{ daysSlider.value = daysSlider.max; daysVal.textContent = daysSlider.max; }}
+    chartRef.update();
+  }});
+
 }})();
 </script></body></html>
 """
-                    components.html(chart_html, height=740, scrolling=False)
+                    components.html(chart_html, height=780, scrolling=False)
                 else:
                     if st.session_state.user_zones:
                         st.info(f"⏳ Loading history for {len(st.session_state.user_zones)} zones...")
