@@ -1907,11 +1907,10 @@ if mode == MODE_ISRAEL:
         _active_layer = s3_layer if _src_abbr=="S3" else s2_layer if _src_abbr=="S2" else mod_layer
 
         # ── Only show products for the ACTIVE sensor ────────────────────────────
-        # 1. WQI composite
+        # 1. WQI composite — use cached _get_wqi_tile (fresh GEE tile URL)
         try:
-            if _active_layer is not None:
-                _wqi_mid = ee.Image(_active_layer).getMapId(vis)
-                _wqi_url = _wqi_mid['tile_fetcher'].url_format
+            _wqi_url = _get_wqi_tile(_src_abbr, sel_date)
+            if _wqi_url:
                 _wqi_vis = {"palette":["#d73027","#f46d43","#fdae61","#fee090","#e0f3f8","#abd9e9","#74add1","#4575b4"],"min":30,"max":90,"unit":"WQI","minLabel":"Polluted","maxLabel":"Clean"}
                 _raster_layers.append({"id":"wqi_active","label":"WQI \u00b7 "+data_source,"date":_active_date,"url":_wqi_url,"visible":True,"vis":_wqi_vis})
                 wqi_tile_url = _wqi_url
@@ -1942,13 +1941,9 @@ if mode == MODE_ISRAEL:
         except Exception:
             pass
 
-        # Add only the active (visible) rasters to folium map; JS panel controls the rest
-        for _rl in _raster_layers:
-            if _rl["visible"]:
-                folium.TileLayer(
-                    tiles=_rl["url"], attr=f'GEE {_rl["label"]}',
-                    name=_rl["label"], overlay=True, control=False, opacity=0.75,
-                ).add_to(m)
+        # All raster layers managed exclusively by JS (no folium TileLayer for rasters)
+        # The folium.Map only has the basemap. JS pre-creates all tile layers and
+        # adds/removes them based on checkbox state.
 
         # ── Custom Leaflet controls via MacroElement (script macro = runs AFTER map exists) ──
         # Topleft: 🗂 Basemaps | Topright: 🛰 Satellite Products | ⛶ Fullscreen | 📏 Ruler
