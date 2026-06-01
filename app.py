@@ -1762,6 +1762,88 @@ if mode == MODE_ISRAEL:
         except Exception:
             return None
 
+    @st.cache_data(ttl=7200)
+    def _get_spectral_index_tiles(source: str, target_date_str: str):
+        """Return dict of {index_name: tile_url} for spectral indices of a given source."""
+        DISPLAY_BOX = ee.Geometry.Rectangle([33.5, 29.5, 36.5, 33.5])
+        wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(10)
+        t  = ee.Date(target_date_str)
+        result = {}
+        try:
+            if source == "S3":
+                coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-3, "day"), t.advance(1, "day")))
+                if coll.size().getInfo() == 0:
+                    return result
+                img = coll.median().clip(DISPLAY_BOX)
+                # NDWI
+                ndwi = img.normalizedDifference(["Oa06_radiance", "Oa17_radiance"]).updateMask(wm)
+                mid = ndwi.getMapId({"min": -0.3, "max": 0.5, "palette": ["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"]})
+                result["NDWI"] = mid["tile_fetcher"].url_format
+                # MCI (Maximum Chlorophyll Index)
+                mci = img.select("Oa10_radiance").subtract(img.select("Oa09_radiance")).updateMask(wm)
+                mid = mci.getMapId({"min": -2, "max": 12, "palette": ["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"]})
+                result["MCI (Chlorophyll)"] = mid["tile_fetcher"].url_format
+                # Turbidity (Oa08)
+                turb = img.select("Oa08_radiance").updateMask(wm)
+                mid = turb.getMapId({"min": 10, "max": 80, "palette": ["#4575b4","#74add1","#fee090","#f46d43","#8B4513"]})
+                result["Turbidity"] = mid["tile_fetcher"].url_format
+
+            elif source == "S2":
+                coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-8, "day"), t.advance(1, "day"))
+                        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
+                        .sort("system:time_start", False))
+                if coll.size().getInfo() == 0:
+                    return result
+                img = coll.mosaic().clip(DISPLAY_BOX)
+                b3 = img.select("B3").divide(10000)
+                b4 = img.select("B4").divide(10000)
+                b5 = img.select("B5").divide(10000)
+                b8 = img.select("B8").divide(10000)
+                b8a = img.select("B8A").divide(10000)
+                # NDWI
+                ndwi = b3.subtract(b8).divide(b3.add(b8)).updateMask(wm)
+                mid = ndwi.getMapId({"min": -0.3, "max": 0.5, "palette": ["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"]})
+                result["NDWI"] = mid["tile_fetcher"].url_format
+                # CHL proxy (B5/B4)
+                chl = b5.divide(b4.add(0.000001)).updateMask(wm)
+                mid = chl.getMapId({"min": 1.0, "max": 3.5, "palette": ["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"]})
+                result["CHL Proxy"] = mid["tile_fetcher"].url_format
+                # Turbidity
+                turb = b4.add(b8a).divide(2).updateMask(wm)
+                mid = turb.getMapId({"min": 0, "max": 0.15, "palette": ["#4575b4","#74add1","#fee090","#f46d43","#8B4513"]})
+                result["Turbidity"] = mid["tile_fetcher"].url_format
+
+            else:  # MODIS
+                terra = (ee.ImageCollection("MODIS/061/MOD09GA")
+                         .filterBounds(DISPLAY_BOX)
+                         .filterDate(t.advance(-3, "day"), t.advance(1, "day"))
+                         .sort("system:time_start", False))
+                if terra.size().getInfo() == 0:
+                    return result
+                img = terra.mosaic().clip(DISPLAY_BOX)
+                b1 = img.select("sur_refl_b01")
+                b2 = img.select("sur_refl_b02")
+                b4 = img.select("sur_refl_b04")
+                # NDWI
+                ndwi = b4.subtract(b2).divide(b4.add(b2)).updateMask(wm)
+                mid = ndwi.getMapId({"min": -0.3, "max": 0.3, "palette": ["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"]})
+                result["NDWI"] = mid["tile_fetcher"].url_format
+                # CHL proxy (B4/B1)
+                chl = b4.divide(b1.add(1)).updateMask(wm)
+                mid = chl.getMapId({"min": 0.8, "max": 2.5, "palette": ["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"]})
+                result["CHL Proxy"] = mid["tile_fetcher"].url_format
+                # Turbidity (inverse B1)
+                turb = b1.updateMask(wm)
+                mid = turb.getMapId({"min": 0, "max": 1500, "palette": ["#4575b4","#74add1","#fee090","#f46d43","#8B4513"]})
+                result["Turbidity"] = mid["tile_fetcher"].url_format
+        except Exception:
+            pass
+        return result
+
     # Shared map builder
     def _build_map(selected_beach=None):
         bm      = st.session_state.get("basemap", "Satellite")
@@ -1803,67 +1885,38 @@ if mode == MODE_ISRAEL:
             except Exception:
                 return ""
 
-        _s3_date_str  = _age_to_date(s3_age)
-        _s2_date_str  = _age_to_date(s2_age)
-        _mod_date_str = _age_to_date(mod_age)
+        # ── Determine active sensor and its date ────────────────────────────────
+        _src_abbr = "S3" if data_source in ("S3","Sentinel-3") else \
+                    "S2" if data_source in ("S2","Sentinel-2") else "MODIS"
+        _active_age = s3_age if _src_abbr=="S3" else s2_age if _src_abbr=="S2" else mod_age
+        _active_date = _age_to_date(_active_age)
+        _active_layer = s3_layer if _src_abbr=="S3" else s2_layer if _src_abbr=="S2" else mod_layer
 
-        # Sentinel-3 WQI
+        # ── Only show products for the ACTIVE sensor ────────────────────────────
+        # 1. WQI composite
         try:
-            if s3_layer is not None:
-                _s3_mid = ee.Image(s3_layer).getMapId(vis)
-                _s3_url = _s3_mid['tile_fetcher'].url_format
-                is_active_s3 = (data_source in ("S3", "Sentinel-3"))
-                _raster_layers.append({"id":"wqi_s3","label":"WQI \u00b7 Sentinel-3","date":_s3_date_str,"url":_s3_url,"visible":is_active_s3})
-                if is_active_s3:
-                    wqi_tile_url = _s3_url
+            if _active_layer is not None:
+                _wqi_mid = ee.Image(_active_layer).getMapId(vis)
+                _wqi_url = _wqi_mid['tile_fetcher'].url_format
+                _raster_layers.append({"id":"wqi_active","label":"WQI \u00b7 "+data_source,"date":_active_date,"url":_wqi_url,"visible":True})
+                wqi_tile_url = _wqi_url
         except Exception:
             pass
 
-        # Sentinel-3 True Color
+        # 2. True Color (raw satellite image)
         try:
-            _s3_tc = _get_true_color_tile("S3", sel_date)
-            if _s3_tc:
-                _raster_layers.append({"id":"tc_s3","label":"True Color \u00b7 Sentinel-3","date":_s3_date_str,"url":_s3_tc,"visible":False})
+            _tc_url = _get_true_color_tile(_src_abbr, sel_date)
+            if _tc_url:
+                _raster_layers.append({"id":"tc_active","label":"True Color \u00b7 "+data_source,"date":_active_date,"url":_tc_url,"visible":False})
         except Exception:
             pass
 
-        # Sentinel-2 WQI
+        # 3. Spectral indices (NDWI, CHL/MCI, Turbidity)
         try:
-            if s2_layer is not None:
-                _s2_mid = ee.Image(s2_layer).getMapId(vis)
-                _s2_url = _s2_mid['tile_fetcher'].url_format
-                is_active_s2 = (data_source in ("S2", "Sentinel-2"))
-                _raster_layers.append({"id":"wqi_s2","label":"WQI \u00b7 Sentinel-2","date":_s2_date_str,"url":_s2_url,"visible":is_active_s2})
-                if is_active_s2:
-                    wqi_tile_url = _s2_url
-        except Exception:
-            pass
-
-        # Sentinel-2 True Color
-        try:
-            _s2_tc = _get_true_color_tile("S2", sel_date)
-            if _s2_tc:
-                _raster_layers.append({"id":"tc_s2","label":"True Color \u00b7 Sentinel-2","date":_s2_date_str,"url":_s2_tc,"visible":False})
-        except Exception:
-            pass
-
-        # MODIS WQI
-        try:
-            if mod_layer is not None:
-                _mod_mid = ee.Image(mod_layer).getMapId(vis)
-                _mod_url = _mod_mid['tile_fetcher'].url_format
-                is_active_mod = (data_source not in ("S3", "Sentinel-3", "S2", "Sentinel-2"))
-                _raster_layers.append({"id":"wqi_mod","label":"WQI \u00b7 MODIS","date":_mod_date_str,"url":_mod_url,"visible":is_active_mod})
-                if is_active_mod:
-                    wqi_tile_url = _mod_url
-        except Exception:
-            pass
-
-        # MODIS True Color
-        try:
-            _mod_tc = _get_true_color_tile("MODIS", sel_date)
-            if _mod_tc:
-                _raster_layers.append({"id":"tc_mod","label":"True Color \u00b7 MODIS","date":_mod_date_str,"url":_mod_tc,"visible":False})
+            _idx_tiles = _get_spectral_index_tiles(_src_abbr, sel_date)
+            for idx_name, idx_url in _idx_tiles.items():
+                safe_id = "idx_" + idx_name.lower().replace(" ","_").replace("(","").replace(")","")
+                _raster_layers.append({"id":safe_id,"label":idx_name+" \u00b7 "+data_source,"date":_active_date,"url":idx_url,"visible":False})
         except Exception:
             pass
 
@@ -1880,6 +1933,7 @@ if mode == MODE_ISRAEL:
         import json as _cjson
         _rl_json = _cjson.dumps(_raster_layers)
         _sel_date_js = sel_date
+        _active_src_js = f"{data_source} \u00b7 {_active_date}"
         _bm_list_js = [{"id": name, "name": name, "url": data["tile"], "attr": data["attr"],
                         "sub": data.get("sub")}
                        for name, data in BASEMAPS.items()]
@@ -1895,6 +1949,7 @@ if mode == MODE_ISRAEL:
 
     var _rasterLayers = __RL_JSON__;
     var _sel_date = "__SEL_DATE__";
+    var _activeSrc = "__ACTIVE_SRC__";
     var _basemaps = __BM_JSON__;
     var _activeBasemapId = "__ACTIVE_BM__";
     var _bmLayerRef = null;
@@ -2026,7 +2081,7 @@ if mode == MODE_ISRAEL:
             '<span style="font-size:12px;color:#d6eaf8;flex:1;min-width:0;">' + rl.label + '</span>' + dateBadge + '</label>';
         });
       }
-      p.innerHTML = '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">\\ud83d\\udef0 Satellite Products</div>' + rows + '<div style="border-top:1px solid rgba(0,200,200,0.15);margin-top:6px;padding-top:7px;"><label style="display:block;color:#7fb3d3;font-size:11px;margin-bottom:3px;">Opacity: <span id="satOpVal">' + Math.round(_opacity*100) + '%</span></label><input id="satOpSlider" type="range" min="10" max="100" value="' + Math.round(_opacity*100) + '" style="width:100%;accent-color:#00c8c8;"></div>';
+      p.innerHTML = '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">\\ud83d\\udef0 ' + _activeSrc + '</div>' + rows + '<div style="border-top:1px solid rgba(0,200,200,0.15);margin-top:6px;padding-top:7px;"><label style="display:block;color:#7fb3d3;font-size:11px;margin-bottom:3px;">Opacity: <span id="satOpVal">' + Math.round(_opacity*100) + '%</span></label><input id="satOpSlider" type="range" min="10" max="100" value="' + Math.round(_opacity*100) + '" style="width:100%;accent-color:#00c8c8;"></div>';
       L.DomEvent.disableClickPropagation(p);
       setTimeout(function() {
         _rasterLayers.forEach(function(rl) {
@@ -2171,6 +2226,7 @@ if mode == MODE_ISRAEL:
         _js_body = (_js_body
                     .replace("__RL_JSON__", _rl_json)
                     .replace("__SEL_DATE__", _sel_date_js)
+                    .replace("__ACTIVE_SRC__", _active_src_js)
                     .replace("__BM_JSON__", _bm_json)
                     .replace("__ACTIVE_BM__", _active_bm_js))
 
