@@ -2637,23 +2637,6 @@ if mode == MODE_ISRAEL:
     </div>
     <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:flex-start;gap:4px;overflow-y:auto;min-width:170px;max-width:180px;padding:4px 6px;max-height:calc(100vh - 170px);"></div>
   </div>
-  <!-- Chart axis controls -->
-  <div id="chartControls" style="display:flex;align-items:center;gap:12px;padding:4px 8px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.12);border-radius:5px;flex-shrink:0;">
-    <label style="display:flex;align-items:center;gap:5px;color:#7fb3d3;font-size:11px;white-space:nowrap;">
-      Days: <span id="daysVal" style="color:#00c8c8;font-weight:600;min-width:20px;text-align:center;">{history_days}</span>
-      <input id="daysSlider" type="range" min="3" max="{history_days}" value="{history_days}" style="width:100px;accent-color:#00c8c8;cursor:pointer;">
-    </label>
-    <span style="color:rgba(0,200,200,0.2);">|</span>
-    <label style="display:flex;align-items:center;gap:4px;color:#7fb3d3;font-size:11px;white-space:nowrap;">
-      Y min: <input id="yMinIn" type="number" min="0" max="100" step="5" style="width:42px;background:#041e33;color:#d6eaf8;border:1px solid rgba(0,200,200,0.3);border-radius:3px;padding:2px 4px;font-size:11px;text-align:center;">
-    </label>
-    <label style="display:flex;align-items:center;gap:4px;color:#7fb3d3;font-size:11px;white-space:nowrap;">
-      Y max: <input id="yMaxIn" type="number" min="0" max="100" step="5" style="width:42px;background:#041e33;color:#d6eaf8;border:1px solid rgba(0,200,200,0.3);border-radius:3px;padding:2px 4px;font-size:11px;text-align:center;">
-    </label>
-    <span style="color:rgba(0,200,200,0.2);">|</span>
-    <span style="color:#7fb3d3;font-size:10px;">🖱️ scroll=zoom · drag=pan</span>
-    <button id="chartResetBtn" style="background:rgba(0,200,200,0.1);border:1px solid rgba(0,200,200,0.35);border-radius:4px;color:#00c8c8;cursor:pointer;font-size:11px;padding:2px 8px;white-space:nowrap;margin-left:auto;">↺ Reset</button>
-  </div>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
@@ -2725,6 +2708,41 @@ if mode == MODE_ISRAEL:
   }}
 
   // ── Task 5: end-of-line label plugin ───────────────────────────────────────
+  // ── WQI Quality Bands Background Plugin ──────────────────────────────────────
+  var wqiBandsPlugin = {{
+    id: 'wqiBands',
+    beforeDraw: function(chart) {{
+      var ctx = chart.ctx;
+      var yScale = chart.scales.y;
+      var ca = chart.chartArea;
+      if (!ca) return;
+      var bands = [
+        {{ min:80, max:100, color:'rgba(69,117,180,0.20)',  label:'\u05de\u05e6\u05d5\u05d9\u05df  80\u201310' + '0' }},
+        {{ min:60, max:80,  color:'rgba(171,217,233,0.20)', label:'\u05d8\u05d5\u05d1  60\u201380' }},
+        {{ min:40, max:60,  color:'rgba(254,224,144,0.20)', label:'\u05d1\u05d9\u05e0\u05d5\u05e0\u05d9  40\u201360' }},
+        {{ min:20, max:40,  color:'rgba(244,109,67,0.20)',  label:'\u05d2\u05e8\u05d5\u05e2  20\u201340' }},
+        {{ min:0,  max:20,  color:'rgba(215,48,39,0.20)',   label:'\u05de\u05e1\u05d5\u05db\u05df  0\u201320' }}
+      ];
+      bands.forEach(function(b) {{
+        var yT = yScale.getPixelForValue(b.max);
+        var yB = yScale.getPixelForValue(b.min);
+        yT = Math.max(yT, ca.top);
+        yB = Math.min(yB, ca.bottom);
+        if (yB <= yT) return;
+        ctx.save();
+        ctx.fillStyle = b.color;
+        ctx.fillRect(ca.left, yT, ca.right - ca.left, yB - yT);
+        // Label with 40% transparency
+        ctx.fillStyle = 'rgba(255,255,255,0.40)';
+        ctx.font = 'bold 12px Arial';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText(b.label, ca.right - 8, yT + 3);
+        ctx.restore();
+      }});
+    }}
+  }};
+
   var endLabelPlugin = {{
     id: 'endLabel',
     afterDatasetsDraw: function(chart) {{
@@ -2767,7 +2785,7 @@ if mode == MODE_ISRAEL:
   chartRef = new Chart(document.getElementById('beachTrend'), {{
     type: 'line',
     data: {{ labels: ls, datasets: ds }},
-    plugins: [endLabelPlugin],
+    plugins: [wqiBandsPlugin, endLabelPlugin],
     options: {{
       responsive: true,
       maintainAspectRatio: false,
@@ -2854,18 +2872,49 @@ if mode == MODE_ISRAEL:
       '<span style="font-size:13px;color:#7fb3d3;flex:1;" class="leg-name">'+(isTW?'<b>'+item.name+'</b>':item.name)+'</span>' +
       '<span style="font-size:13px;font-weight:600;color:'+item.wqiColor+';" class="leg-wqi">'+item.wqi+'</span>';
 
-    r.addEventListener('click', function() {{
+    // Single-click (delayed) vs double-click detection
+    var _clickTimer = null;
+    r.addEventListener('click', function(ev) {{
+      var self = this;
+      if (_clickTimer) {{ clearTimeout(_clickTimer); _clickTimer = null; return; }}
+      _clickTimer = setTimeout(function() {{
+        _clickTimer = null;
+        var label = self.dataset.label;
+        var dsIdx = getDatasetIdx(label);
+        if (dsIdx === -1) return;
+        var meta  = chartRef.getDatasetMeta(dsIdx);
+        meta.hidden = !meta.hidden;
+        hiddenMap[label] = meta.hidden;
+        self.style.opacity = meta.hidden ? '0.35' : '1.0';
+        self.querySelector('.leg-line').style.opacity = meta.hidden ? '0.3' : '1';
+        chartRef.update();
+      }}, 250);
+    }});
+
+    // Double-click → cycle line style (solid → dashed → dotted → dash-dot)
+    r.addEventListener('dblclick', function(e) {{
+      e.preventDefault();
+      if (_clickTimer) {{ clearTimeout(_clickTimer); _clickTimer = null; }}
       var label = this.dataset.label;
       var dsIdx = getDatasetIdx(label);
       if (dsIdx === -1) return;
-      var meta  = chartRef.getDatasetMeta(dsIdx);
-      meta.hidden = !meta.hidden;
-      hiddenMap[label] = meta.hidden;
-      // Visual feedback on legend row
-      this.style.opacity = meta.hidden ? '0.35' : '1.0';
-      this.querySelector('.leg-line').style.opacity = meta.hidden ? '0.3' : '1';
+      var ds2 = chartRef.data.datasets[dsIdx];
+      if (!_dsLineStyleIdx[label]) _dsLineStyleIdx[label] = 0;
+      _dsLineStyleIdx[label] = (_dsLineStyleIdx[label] + 1) % _lineStyles.length;
+      var sIdx = _dsLineStyleIdx[label];
+      ds2.borderDash = _lineStyles[sIdx];
+      // Update the legend line indicator
+      var legLine = this.querySelector('.leg-line');
+      if (legLine) {{
+        var dashMap = ['solid', 'dashed', 'dotted', 'dashed'];
+        legLine.style.borderTop = '2px ' + dashMap[sIdx] + ' ' + ds2.borderColor;
+        legLine.style.background = sIdx === 0 ? ds2.borderColor : 'transparent';
+        legLine.style.height = sIdx === 0 ? '2px' : '0px';
+      }}
       chartRef.update();
     }});
+
+    r.title = 'click: toggle \u00b7 double-click: line style';
 
     el.appendChild(r);
   }});
@@ -2899,55 +2948,21 @@ if mode == MODE_ISRAEL:
     }}
   }}
 
-  // ── Chart axis controls ──────────────────────────────────────────────────────
-  var _origYMin = yMin, _origYMax = yMax;
-  var _totalLabels = ls.length;
-  var daysSlider = document.getElementById('daysSlider');
-  var daysVal    = document.getElementById('daysVal');
-  var yMinIn     = document.getElementById('yMinIn');
-  var yMaxIn     = document.getElementById('yMaxIn');
-  var resetBtn   = document.getElementById('chartResetBtn');
-
-  if (yMinIn) yMinIn.value = yMin;
-  if (yMaxIn) yMaxIn.value = yMax;
-
-  // Days slider → windowing X axis
-  if (daysSlider) daysSlider.addEventListener('input', function() {{
-    var days = parseInt(this.value);
-    daysVal.textContent = days;
-    var startIdx = Math.max(0, _totalLabels - days);
-    chartRef.options.scales.x.min = ls[startIdx];
-    chartRef.options.scales.x.max = ls[_totalLabels - 1];
-    chartRef.update('none');
-  }});
-
-  // Y axis min/max inputs
-  if (yMinIn) yMinIn.addEventListener('change', function() {{
-    var v = parseInt(this.value);
-    if (!isNaN(v)) {{ chartRef.options.scales.y.min = v; chartRef.update('none'); }}
-  }});
-  if (yMaxIn) yMaxIn.addEventListener('change', function() {{
-    var v = parseInt(this.value);
-    if (!isNaN(v)) {{ chartRef.options.scales.y.max = v; chartRef.update('none'); }}
-  }});
-
-  // Reset button
-  if (resetBtn) resetBtn.addEventListener('click', function() {{
+  // ── Double-click to reset zoom ───────────────────────────────────────────────
+  document.getElementById('beachTrend').addEventListener('dblclick', function() {{
     chartRef.resetZoom();
-    chartRef.options.scales.x.min = undefined;
-    chartRef.options.scales.x.max = undefined;
-    chartRef.options.scales.y.min = _origYMin;
-    chartRef.options.scales.y.max = _origYMax;
-    if (yMinIn) yMinIn.value = _origYMin;
-    if (yMaxIn) yMaxIn.value = _origYMax;
-    if (daysSlider) {{ daysSlider.value = daysSlider.max; daysVal.textContent = daysSlider.max; }}
     chartRef.update();
   }});
+
+  // ── Legend: double-click to cycle line style (solid → dashed → dotted → dash-dot) ──
+  var _lineStyles = [[], [8,4], [3,3], [8,4,3,4]];  // solid, dashed, dotted, dash-dot
+  var _lineStyleNames = ['solid', 'dashed', 'dotted', 'dash-dot'];
+  var _dsLineStyleIdx = {{}};  // dataset label → current style index
 
 }})();
 </script></body></html>
 """
-                    components.html(chart_html, height=780, scrolling=False)
+                    components.html(chart_html, height=740, scrolling=False)
                 else:
                     if st.session_state.user_zones:
                         st.info(f"⏳ Loading history for {len(st.session_state.user_zones)} zones...")
