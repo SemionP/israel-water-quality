@@ -2259,7 +2259,12 @@ if mode == MODE_ISRAEL:
 
         m.add_child(folium.Element('<!-- WQI legend removed -->'))
         if st.session_state.get("show_zones_on_map", True):
+            _vis_grps = st.session_state.get("visible_groups", {""})
             for zname, zdata in st.session_state.get("user_zones", {}).items():
+                # Skip zones from hidden groups
+                zgrp = zdata.get("group", "")
+                if zgrp not in _vis_grps:
+                    continue
                 ztype  = zdata.get("type", "polygon")
                 coords = zdata.get("coords", [])
                 # Detect territorial waters zone for special styling
@@ -2428,6 +2433,13 @@ if mode == MODE_ISRAEL:
                 for zname in st.session_state.user_zones:
                     if zname not in visible_beaches:
                         visible_beaches.append(zname)
+
+                # Filter by visible groups
+                _vis_grps = st.session_state.get("visible_groups", {""})
+                visible_beaches = [
+                    vb for vb in visible_beaches
+                    if st.session_state.user_zones.get(vb, {}).get("group", "") in _vis_grps
+                ]
 
                 # Pre-merge zone history into beach_history so all_dates is correct
                 for zname, zhistory in user_zone_history.items():
@@ -3101,6 +3113,37 @@ if mode == MODE_ISRAEL:
                             z.get("group","") for z in st.session_state.user_zones.values()
                             if z.get("group","")
                         ))
+
+                        # ── Group visibility toggles ──────────────────────────────
+                        if "visible_groups" not in st.session_state:
+                            st.session_state.visible_groups = set(all_zone_groups) | {""}  # all visible incl. ungrouped
+                        # Ensure new groups are visible by default
+                        for g in all_zone_groups:
+                            if g not in st.session_state.visible_groups:
+                                st.session_state.visible_groups.add(g)
+
+                        if all_zone_groups:
+                            st.markdown("<div style='font-size:13px;color:#00c8c8;font-weight:bold;margin:8px 0 4px;'>🏷️ Groups</div>", unsafe_allow_html=True)
+                            gcols = st.columns(min(len(all_zone_groups) + 1, 4))
+                            # "All" toggle
+                            with gcols[0]:
+                                all_on = len(st.session_state.visible_groups) >= len(all_zone_groups) + 1
+                                if st.checkbox("All", value=all_on, key="grp_toggle_all"):
+                                    st.session_state.visible_groups = set(all_zone_groups) | {""}
+                                else:
+                                    if all_on:  # was all, now unchecked = hide all
+                                        st.session_state.visible_groups = set()
+                            for gi, gname in enumerate(all_zone_groups):
+                                col_idx = (gi + 1) % len(gcols)
+                                with gcols[col_idx]:
+                                    is_vis = gname in st.session_state.visible_groups
+                                    n_zones = sum(1 for z in st.session_state.user_zones.values() if z.get("group","") == gname)
+                                    if st.checkbox(f"{gname} ({n_zones})", value=is_vis, key=f"grp_toggle_{gname}"):
+                                        st.session_state.visible_groups.add(gname)
+                                    else:
+                                        st.session_state.visible_groups.discard(gname)
+
+                        # Chart view selector
                         if all_zone_groups:
                             st.markdown("<div style='font-size:13px;color:#7fb3d3;margin:6px 0 2px;'>📊 Chart view</div>",
                                         unsafe_allow_html=True)
@@ -3115,7 +3158,12 @@ if mode == MODE_ISRAEL:
                                 st.session_state.chart_view_mode = new_view
                                 st.rerun()
 
+                        _vis_grps = st.session_state.get("visible_groups", {""})
                         for zname in list(st.session_state.user_zones.keys()):
+                            zgrp  = st.session_state.user_zones[zname].get("group", "")
+                            # Skip zones from hidden groups
+                            if zgrp not in _vis_grps:
+                                continue
                             zwqi  = user_zone_wqi.get(zname)
                             zwqi_str = f"{zwqi:.1f}" if zwqi is not None else "..."
                             ztype = st.session_state.user_zones[zname].get("type", "polygon")
