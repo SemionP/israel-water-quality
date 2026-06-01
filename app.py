@@ -1764,30 +1764,39 @@ if mode == MODE_ISRAEL:
 
     @st.cache_data(ttl=7200)
     def _get_spectral_index_tiles(source: str, target_date_str: str):
-        """Return dict of {index_name: tile_url} for spectral indices of a given source."""
+        """Return dict of {index_name: tile_url} for normalized spectral indices.
+        Uses the SAME normalization as the WQI pipeline so values are meaningful 0-1."""
         DISPLAY_BOX = ee.Geometry.Rectangle([33.5, 29.5, 36.5, 33.5])
         wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(10)
         t  = ee.Date(target_date_str)
+        # Shared palettes for normalized 0→1 indices
+        PAL_WATER = ["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"]  # brown→blue (0=land, 1=water)
+        PAL_CHL   = ["#4575b4","#91bfdb","#ffffbf","#fc8d59","#d73027"]  # blue→red (0=low, 1=high CHL)
+        PAL_TURB  = ["#4575b4","#74add1","#ffffbf","#f46d43","#8B4513"]  # blue→brown (0=clear, 1=turbid)
         result = {}
         try:
             if source == "S3":
                 coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
                         .filterBounds(DISPLAY_BOX)
-                        .filterDate(t.advance(-3, "day"), t.advance(1, "day")))
+                        .filterDate(t.advance(-3, "day"), t.advance(1, "day"))
+                        .sort("system:time_start", False))
                 if coll.size().getInfo() == 0:
                     return result
-                img = coll.median().clip(DISPLAY_BOX)
-                # NDWI
-                ndwi = img.normalizedDifference(["Oa06_radiance", "Oa17_radiance"]).updateMask(wm)
-                mid = ndwi.getMapId({"min": -0.3, "max": 0.5, "palette": ["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"]})
+                img = coll.first().clip(DISPLAY_BOX)
+                # NDWI (normalized exactly like WQI pipeline)
+                ndwi = img.normalizedDifference(["Oa06_radiance", "Oa17_radiance"])
+                ndwi_n = ndwi.unitScale(-0.2, 0.5).clamp(0, 1).updateMask(wm)
+                mid = ndwi_n.getMapId({"min": 0, "max": 1, "palette": PAL_WATER})
                 result["NDWI"] = mid["tile_fetcher"].url_format
-                # MCI (Maximum Chlorophyll Index)
-                mci = img.select("Oa10_radiance").subtract(img.select("Oa09_radiance")).updateMask(wm)
-                mid = mci.getMapId({"min": -2, "max": 12, "palette": ["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"]})
+                # MCI (Oa10-Oa09, normalized as in WQI: unitScale -2 to 12)
+                mci = img.select("Oa10_radiance").subtract(img.select("Oa09_radiance"))
+                mci_n = mci.unitScale(-2, 12).clamp(0, 1).updateMask(wm)
+                mid = mci_n.getMapId({"min": 0, "max": 1, "palette": PAL_CHL})
                 result["MCI (Chlorophyll)"] = mid["tile_fetcher"].url_format
-                # Turbidity (Oa08)
-                turb = img.select("Oa08_radiance").updateMask(wm)
-                mid = turb.getMapId({"min": 10, "max": 80, "palette": ["#4575b4","#74add1","#fee090","#f46d43","#8B4513"]})
+                # Turbidity (Oa08, normalized as in WQI: unitScale 10 to 80)
+                turb = img.select("Oa08_radiance")
+                turb_n = turb.unitScale(10, 80).clamp(0, 1).updateMask(wm)
+                mid = turb_n.getMapId({"min": 0, "max": 1, "palette": PAL_TURB})
                 result["Turbidity"] = mid["tile_fetcher"].url_format
 
             elif source == "S2":
@@ -1798,23 +1807,26 @@ if mode == MODE_ISRAEL:
                         .sort("system:time_start", False))
                 if coll.size().getInfo() == 0:
                     return result
-                img = coll.mosaic().clip(DISPLAY_BOX)
+                img = coll.first().clip(DISPLAY_BOX)
                 b3 = img.select("B3").divide(10000)
                 b4 = img.select("B4").divide(10000)
                 b5 = img.select("B5").divide(10000)
                 b8 = img.select("B8").divide(10000)
                 b8a = img.select("B8A").divide(10000)
-                # NDWI
-                ndwi = b3.subtract(b8).divide(b3.add(b8)).updateMask(wm)
-                mid = ndwi.getMapId({"min": -0.3, "max": 0.5, "palette": ["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"]})
+                # NDWI (normalized as in WQI: unitScale -0.3 to 0.5)
+                ndwi = b3.subtract(b8).divide(b3.add(b8))
+                ndwi_n = ndwi.unitScale(-0.3, 0.5).clamp(0, 1).updateMask(wm)
+                mid = ndwi_n.getMapId({"min": 0, "max": 1, "palette": PAL_WATER})
                 result["NDWI"] = mid["tile_fetcher"].url_format
-                # CHL proxy (B5/B4)
-                chl = b5.divide(b4.add(0.000001)).updateMask(wm)
-                mid = chl.getMapId({"min": 1.0, "max": 3.5, "palette": ["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"]})
+                # CHL proxy (B5/B4, normalized: unitScale 1.0 to 3.5)
+                chl = b5.divide(b4.add(0.000001))
+                chl_n = chl.unitScale(1.0, 3.5).clamp(0, 1).updateMask(wm)
+                mid = chl_n.getMapId({"min": 0, "max": 1, "palette": PAL_CHL})
                 result["CHL Proxy"] = mid["tile_fetcher"].url_format
-                # Turbidity
-                turb = b4.add(b8a).divide(2).updateMask(wm)
-                mid = turb.getMapId({"min": 0, "max": 0.15, "palette": ["#4575b4","#74add1","#fee090","#f46d43","#8B4513"]})
+                # Turbidity ((B4+B8A)/2, normalized: unitScale 0 to 0.15)
+                turb = b4.add(b8a).divide(2)
+                turb_n = turb.unitScale(0, 0.15).clamp(0, 1).updateMask(wm)
+                mid = turb_n.getMapId({"min": 0, "max": 1, "palette": PAL_TURB})
                 result["Turbidity"] = mid["tile_fetcher"].url_format
 
             else:  # MODIS
@@ -1824,21 +1836,23 @@ if mode == MODE_ISRAEL:
                          .sort("system:time_start", False))
                 if terra.size().getInfo() == 0:
                     return result
-                img = terra.mosaic().clip(DISPLAY_BOX)
+                img = terra.first().clip(DISPLAY_BOX)
                 b1 = img.select("sur_refl_b01")
                 b2 = img.select("sur_refl_b02")
                 b4 = img.select("sur_refl_b04")
-                # NDWI
-                ndwi = b4.subtract(b2).divide(b4.add(b2)).updateMask(wm)
-                mid = ndwi.getMapId({"min": -0.3, "max": 0.3, "palette": ["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"]})
+                # NDWI (normalized: unitScale -0.3 to 0.3)
+                ndwi = b4.subtract(b2).divide(b4.add(b2))
+                ndwi_n = ndwi.unitScale(-0.3, 0.3).clamp(0, 1).updateMask(wm)
+                mid = ndwi_n.getMapId({"min": 0, "max": 1, "palette": PAL_WATER})
                 result["NDWI"] = mid["tile_fetcher"].url_format
-                # CHL proxy (B4/B1)
-                chl = b4.divide(b1.add(1)).updateMask(wm)
-                mid = chl.getMapId({"min": 0.8, "max": 2.5, "palette": ["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"]})
+                # CHL proxy (B4/B1, normalized: unitScale 0.8 to 2.5)
+                chl = b4.divide(b1.add(1))
+                chl_n = chl.unitScale(0.8, 2.5).clamp(0, 1).updateMask(wm)
+                mid = chl_n.getMapId({"min": 0, "max": 1, "palette": PAL_CHL})
                 result["CHL Proxy"] = mid["tile_fetcher"].url_format
-                # Turbidity (inverse B1)
-                turb = b1.updateMask(wm)
-                mid = turb.getMapId({"min": 0, "max": 1500, "palette": ["#4575b4","#74add1","#fee090","#f46d43","#8B4513"]})
+                # Turbidity (B1, normalized: unitScale 0 to 1500)
+                turb_n = b1.unitScale(0, 1500).clamp(0, 1).updateMask(wm)
+                mid = turb_n.getMapId({"min": 0, "max": 1, "palette": PAL_TURB})
                 result["Turbidity"] = mid["tile_fetcher"].url_format
         except Exception:
             pass
@@ -1914,10 +1928,10 @@ if mode == MODE_ISRAEL:
 
         # 3. Spectral indices with vis metadata
         _idx_vis_map = {
-            "NDWI": {"palette":["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"],"min":-0.3,"max":0.5,"unit":"NDWI","minLabel":"Land/Dry","maxLabel":"Water"},
-            "MCI (Chlorophyll)": {"palette":["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"],"min":-2,"max":12,"unit":"MCI","minLabel":"Low","maxLabel":"High"},
-            "CHL Proxy": {"palette":["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"],"min":0.8,"max":3.5,"unit":"CHL","minLabel":"Low","maxLabel":"High"},
-            "Turbidity": {"palette":["#4575b4","#74add1","#fee090","#f46d43","#8B4513"],"min":0,"max":80,"unit":"Turbidity","minLabel":"Clear","maxLabel":"Turbid"},
+            "NDWI": {"palette":["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"],"min":0,"max":1,"unit":"NDWI (normalized)","minLabel":"Land/Dry","maxLabel":"Water"},
+            "MCI (Chlorophyll)": {"palette":["#4575b4","#91bfdb","#ffffbf","#fc8d59","#d73027"],"min":0,"max":1,"unit":"MCI (normalized)","minLabel":"Low CHL","maxLabel":"High CHL"},
+            "CHL Proxy": {"palette":["#4575b4","#91bfdb","#ffffbf","#fc8d59","#d73027"],"min":0,"max":1,"unit":"CHL (normalized)","minLabel":"Low","maxLabel":"High"},
+            "Turbidity": {"palette":["#4575b4","#74add1","#ffffbf","#f46d43","#8B4513"],"min":0,"max":1,"unit":"Turbidity (normalized)","minLabel":"Clear","maxLabel":"Turbid"},
         }
         try:
             _idx_tiles = _get_spectral_index_tiles(_src_abbr, sel_date)
