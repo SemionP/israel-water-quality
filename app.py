@@ -2675,6 +2675,39 @@ if mode == MODE_ISRAEL:
                     cst_nmod    = sum(1 for v in cst_valid.values() if 50<=v<70)
                     cst_npoll   = sum(1 for v in cst_valid.values() if v<50)
 
+                    # ── Health Status Strip: trends + anomalies ──────────────
+                    _health_items = []  # list of {name, wqi, trend, trend_val, category}
+                    for _hn, _hv in sorted(cst_valid.items(), key=lambda x: x[1]):
+                        # 7-day average from history
+                        _hist = beach_history.get(_hn, [])
+                        _recent7 = [e["wqi"] for e in _hist if e.get("wqi") is not None][-7:]
+                        _avg7 = sum(_recent7)/len(_recent7) if _recent7 else _hv
+                        _trend_val = round(_hv - _avg7, 1)
+                        _trend = "↑" if _trend_val > 3 else "↓" if _trend_val < -3 else "→"
+                        _cat = "critical" if _hv < 30 else "poor" if _hv < 50 else "moderate" if _hv < 70 else "good" if _hv < 85 else "excellent"
+                        _health_items.append({"name":_hn,"wqi":round(_hv,1),"trend":_trend,"trend_val":_trend_val,"cat":_cat})
+
+                    _improving = [h for h in _health_items if h["trend_val"] > 5]
+                    _degrading = [h for h in _health_items if h["trend_val"] < -5]
+                    _critical  = [h for h in _health_items if h["cat"] == "critical"]
+
+                    # Build health strip HTML
+                    _health_html = ""
+                    if _health_items:
+                        _trend_parts = []
+                        if _degrading:
+                            _dnames = ", ".join(f'{d["name"]} ({d["trend_val"]:+.1f})' for d in _degrading[:3])
+                            _trend_parts.append(f'<span style="color:#f46d43;">📉 {_dnames}</span>')
+                        if _improving:
+                            _inames = ", ".join(f'{i["name"]} ({i["trend_val"]:+.1f})' for i in _improving[:3])
+                            _trend_parts.append(f'<span style="color:#74add1;">📈 {_inames}</span>')
+                        if _critical:
+                            _cnames = ", ".join(f'{c["name"]}' for c in _critical)
+                            _trend_parts.append(f'<span style="color:#d73027;">⚠️ Critical: {_cnames}</span>')
+
+                        _trend_html = " &nbsp;|&nbsp; ".join(_trend_parts) if _trend_parts else '<span style="color:#7fb3d3;">All stations stable</span>'
+                        _health_html = f'''<div style="display:flex;align-items:center;gap:8px;padding:3px 8px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.12);border-radius:4px;margin-bottom:6px;font-size:11px;overflow-x:auto;white-space:nowrap;">{_trend_html}</div>'''
+
                     chart_html = f"""
 <!DOCTYPE html><html style="height:100%;"><body style="margin:0;padding:0;background:#020d18;overflow:hidden;height:100%;">
 <div style="padding:0.4rem 0.5rem 0.25rem;height:100vh;box-sizing:border-box;display:flex;flex-direction:column;gap:0;">
@@ -2716,6 +2749,7 @@ if mode == MODE_ISRAEL:
       <span style="font-size:12px;color:#7fb3d3;"> מזוהמים</span>
     </div>
   </div>
+  {_health_html}
   <div style="display:flex;gap:0;align-items:flex-start;flex:1;min-height:0;">
     <div style="position:relative;flex:1;min-height:0;height:100%;padding-bottom:40px;overflow:hidden;">
       <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches" style="width:100%;height:100%;"></canvas>
@@ -3048,6 +3082,74 @@ if mode == MODE_ISRAEL:
 </script></body></html>
 """
                     components.html(chart_html, height=740, scrolling=False)
+
+                    # ── AI Analysis Button ─────────────────────────────────
+                    if st.button("🤖 AI Water Quality Analysis", key="ai_analysis_btn",
+                                 help="Generate AI-powered analysis of current water quality data"):
+                        _gemini_key = st.secrets.get("gemini_api_key", "")
+                        if not _gemini_key:
+                            st.warning("⚠️ Gemini API key not configured. Add `gemini_api_key` to Streamlit secrets.")
+                        else:
+                            with st.spinner("🤖 Analyzing water quality data..."):
+                                # Build data context for AI
+                                _ai_data_lines = []
+                                for _hn in sorted(cst_valid.keys(), key=lambda k: cst_valid.get(k, 0)):
+                                    _hv2 = cst_valid[_hn]
+                                    _hist2 = beach_history.get(_hn, [])
+                                    _r7 = [e["wqi"] for e in _hist2 if e.get("wqi") is not None][-7:]
+                                    _avg7_2 = round(sum(_r7)/len(_r7),1) if _r7 else _hv2
+                                    _zgrp = st.session_state.user_zones.get(_hn, {}).get("group", "")
+                                    _ai_data_lines.append(f"  {_hn} (group: {_zgrp or 'none'}): current WQI={round(_hv2,1)}, 7d avg={_avg7_2}, trend={'improving' if _hv2>_avg7_2+3 else 'degrading' if _hv2<_avg7_2-3 else 'stable'}")
+
+                                _ai_prompt = f"""You are MEDI, a maritime environmental intelligence system monitoring water quality along Israel's Mediterranean coast (Haifa Bay area). Analyze this data and provide actionable insights.
+
+MONITORING DATA ({len(cst_valid)} stations, date: {sel_date}):
+{chr(10).join(_ai_data_lines)}
+
+STATISTICS:
+- Coast average WQI: {cst_avg}
+- Cleanest: {cst_best} ({cst_best_v})
+- Most polluted: {cst_worst} ({cst_worst_v})
+- Clean (≥70): {cst_nclean} | Moderate (50-70): {cst_nmod} | Polluted (<50): {cst_npoll}
+
+WQI Scale: 0=severely polluted, 100=pristine. Based on NDWI, chlorophyll (MCI), and turbidity indices from satellite remote sensing.
+
+Provide analysis in this EXACT format (use English):
+
+## Executive Summary
+2-3 sentences summarizing overall water quality status.
+
+## Spatial Analysis
+- Identify pollution hotspots and clean zones
+- Explain spatial gradients (nearshore vs offshore, port area vs open water)
+- Note any point-source pollution indicators
+
+## Temporal Trends
+- Which stations are improving or degrading?
+- Any sudden changes or anomalies?
+- Weekly/periodic patterns if visible
+
+## Risk Assessment
+| Zone | WQI | Risk Level | Key Driver |
+For the 5 most concerning stations.
+
+## Recommended Actions
+3-5 specific, actionable recommendations for port/environmental authorities.
+"""
+                                try:
+                                    _ai_client = genai_client.Client(api_key=_gemini_key)
+                                    _ai_resp = _ai_client.models.generate_content(
+                                        model="gemini-2.0-flash",
+                                        contents=_ai_prompt
+                                    )
+                                    st.session_state["ai_analysis_result"] = _ai_resp.text.strip()
+                                except Exception as _ai_err:
+                                    st.error(f"AI analysis failed: {_ai_err}")
+
+                    # Display cached AI result
+                    if st.session_state.get("ai_analysis_result"):
+                        with st.expander("🤖 AI Analysis Report", expanded=True):
+                            st.markdown(st.session_state["ai_analysis_result"])
                 else:
                     if st.session_state.user_zones:
                         st.info(f"⏳ Loading history for {len(st.session_state.user_zones)} zones...")
