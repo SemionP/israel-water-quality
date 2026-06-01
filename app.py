@@ -1898,25 +1898,33 @@ if mode == MODE_ISRAEL:
             if _active_layer is not None:
                 _wqi_mid = ee.Image(_active_layer).getMapId(vis)
                 _wqi_url = _wqi_mid['tile_fetcher'].url_format
-                _raster_layers.append({"id":"wqi_active","label":"WQI \u00b7 "+data_source,"date":_active_date,"url":_wqi_url,"visible":True})
+                _wqi_vis = {"palette":["#d73027","#f46d43","#fdae61","#fee090","#e0f3f8","#abd9e9","#74add1","#4575b4"],"min":30,"max":90,"unit":"WQI","minLabel":"Polluted","maxLabel":"Clean"}
+                _raster_layers.append({"id":"wqi_active","label":"WQI \u00b7 "+data_source,"date":_active_date,"url":_wqi_url,"visible":True,"vis":_wqi_vis})
                 wqi_tile_url = _wqi_url
         except Exception:
             pass
 
-        # 2. True Color (raw satellite image)
+        # 2. True Color (raw satellite image) — no legend
         try:
             _tc_url = _get_true_color_tile(_src_abbr, sel_date)
             if _tc_url:
-                _raster_layers.append({"id":"tc_active","label":"True Color \u00b7 "+data_source,"date":_active_date,"url":_tc_url,"visible":False})
+                _raster_layers.append({"id":"tc_active","label":"True Color \u00b7 "+data_source,"date":_active_date,"url":_tc_url,"visible":False,"vis":None})
         except Exception:
             pass
 
-        # 3. Spectral indices (NDWI, CHL/MCI, Turbidity)
+        # 3. Spectral indices with vis metadata
+        _idx_vis_map = {
+            "NDWI": {"palette":["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"],"min":-0.3,"max":0.5,"unit":"NDWI","minLabel":"Land/Dry","maxLabel":"Water"},
+            "MCI (Chlorophyll)": {"palette":["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"],"min":-2,"max":12,"unit":"MCI","minLabel":"Low","maxLabel":"High"},
+            "CHL Proxy": {"palette":["#4575b4","#91bfdb","#fee090","#fc8d59","#d73027"],"min":0.8,"max":3.5,"unit":"CHL","minLabel":"Low","maxLabel":"High"},
+            "Turbidity": {"palette":["#4575b4","#74add1","#fee090","#f46d43","#8B4513"],"min":0,"max":80,"unit":"Turbidity","minLabel":"Clear","maxLabel":"Turbid"},
+        }
         try:
             _idx_tiles = _get_spectral_index_tiles(_src_abbr, sel_date)
             for idx_name, idx_url in _idx_tiles.items():
                 safe_id = "idx_" + idx_name.lower().replace(" ","_").replace("(","").replace(")","")
-                _raster_layers.append({"id":safe_id,"label":idx_name+" \u00b7 "+data_source,"date":_active_date,"url":idx_url,"visible":False})
+                idx_vis = _idx_vis_map.get(idx_name)
+                _raster_layers.append({"id":safe_id,"label":idx_name+" \u00b7 "+data_source,"date":_active_date,"url":idx_url,"visible":False,"vis":idx_vis})
         except Exception:
             pass
 
@@ -2183,36 +2191,36 @@ if mode == MODE_ISRAEL:
 
     function updateLegend() {
       if (!legendDiv) return;
-      // Show legend if any WQI layer is visible (check both checkbox state and tile registry)
-      var anyWqi = false;
+      // Collect vis params for all currently visible layers
+      var visibleVis = [];
       _rasterLayers.forEach(function(rl) {
-        if (rl.id.indexOf('wqi_') === 0) {
-          var cb = document.getElementById('rl_cb_' + rl.id);
-          var isOn = cb ? cb.checked : rl.visible;
-          var tl = _tileRegistry[rl.id];
-          if (isOn || (tl && mapObj.hasLayer(tl))) { anyWqi = true; }
+        if (!rl.vis) return;  // skip True Color (no legend)
+        var cb = document.getElementById('rl_cb_' + rl.id);
+        var isOn = cb ? cb.checked : rl.visible;
+        var tl = _tileRegistry[rl.id];
+        if (isOn || (tl && mapObj.hasLayer(tl))) {
+          visibleVis.push({label: rl.label, vis: rl.vis});
         }
       });
-      if (!anyWqi) { legendDiv.innerHTML = ''; legendDiv.style.display = 'none'; return; }
+      if (visibleVis.length === 0) {
+        legendDiv.innerHTML = ''; legendDiv.style.display = 'none'; return;
+      }
       legendDiv.style.display = 'block';
-      legendDiv.innerHTML =
-        '<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:8px 12px;font-family:Arial,sans-serif;min-width:180px;">' +
-          '<div style="color:#00c8c8;font-size:11px;font-weight:bold;margin-bottom:6px;letter-spacing:0.5px;">WQI</div>' +
-          '<div style="display:flex;height:14px;border-radius:3px;overflow:hidden;">' +
-            '<div style="flex:1;background:#d73027;"></div>' +
-            '<div style="flex:1;background:#f46d43;"></div>' +
-            '<div style="flex:1;background:#fdae61;"></div>' +
-            '<div style="flex:1;background:#fee090;"></div>' +
-            '<div style="flex:1;background:#e0f3f8;"></div>' +
-            '<div style="flex:1;background:#abd9e9;"></div>' +
-            '<div style="flex:1;background:#74add1;"></div>' +
-            '<div style="flex:1;background:#4575b4;"></div>' +
-          '</div>' +
-          '<div style="display:flex;justify-content:space-between;margin-top:3px;">' +
-            '<span style="color:#f46d43;font-size:10px;">30 \\u2014 Polluted</span>' +
-            '<span style="color:#74add1;font-size:10px;">Clean \\u2014 90</span>' +
-          '</div>' +
-        '</div>';
+      var html = '';
+      visibleVis.forEach(function(item) {
+        var v = item.vis;
+        var gradColors = v.palette.join(',');
+        html +=
+          '<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:8px 12px;font-family:Arial,sans-serif;min-width:180px;margin-bottom:4px;">' +
+            '<div style="color:#00c8c8;font-size:11px;font-weight:bold;margin-bottom:5px;letter-spacing:0.5px;">' + v.unit + '</div>' +
+            '<div style="height:14px;border-radius:3px;background:linear-gradient(to right,' + gradColors + ');"></div>' +
+            '<div style="display:flex;justify-content:space-between;margin-top:3px;">' +
+              '<span style="color:#d6eaf8;font-size:10px;">' + v.min + ' \\u2014 ' + (v.minLabel||'') + '</span>' +
+              '<span style="color:#d6eaf8;font-size:10px;">' + (v.maxLabel||'') + ' \\u2014 ' + v.max + '</span>' +
+            '</div>' +
+          '</div>';
+      });
+      legendDiv.innerHTML = html;
     }
     // Initial legend check
     updateLegend();
