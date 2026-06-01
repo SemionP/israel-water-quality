@@ -1938,28 +1938,54 @@ if mode == MODE_ISRAEL:
       _bmLayerRef = nl; _activeBasemapId = id;
     }
 
-    // ── BASEMAP BUTTON (topleft) ─────────────────────────────────────────
+    // ── COMBINED LAYERS CONTROL (topleft) ── basemap + satellite in one bar ──
     var bmOpen = false, bmPanel = null;
-    var bmCtrl = L.control({position: 'topleft'});
-    bmCtrl.onAdd = function() {
+    var satOpen = false, satPanel = null;
+    var layersCtrl = L.control({position: 'topleft'});
+    layersCtrl.onAdd = function() {
       var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
       d.style.marginTop = '4px';
-      var a = document.createElement('a');
-      a.href = '#'; a.title = 'Background Maps';
-      a.style.cssText = BTN_STYLE;
-      a.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00c8c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>';
-      L.DomEvent.disableClickPropagation(d);
-      a.addEventListener('click', function(e) {
-        e.preventDefault(); bmOpen = !bmOpen;
+
+      // -- Basemap button --
+      var bmBtn = document.createElement('a');
+      bmBtn.href = '#'; bmBtn.title = 'Background Maps';
+      bmBtn.style.cssText = BTN_STYLE;
+      bmBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00c8c8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>';
+      bmBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        if (satOpen) { satOpen = false; satBtn.style.background = 'rgba(2,13,24,0.92)'; if (satPanel) { d.removeChild(satPanel); satPanel = null; } }
+        bmOpen = !bmOpen;
         if (bmOpen) {
-          a.style.background = 'rgba(0,200,200,0.25)';
+          bmBtn.style.background = 'rgba(0,200,200,0.25)';
           bmPanel = buildBmPanel(); d.appendChild(bmPanel);
         } else {
-          a.style.background = 'rgba(2,13,24,0.92)';
+          bmBtn.style.background = 'rgba(2,13,24,0.92)';
           if (bmPanel) { d.removeChild(bmPanel); bmPanel = null; }
         }
       });
-      d.appendChild(a); return d;
+      d.appendChild(bmBtn);
+
+      // -- Satellite button (below basemap in same bar) --
+      var satBtn = document.createElement('a');
+      satBtn.href = '#'; satBtn.title = 'Satellite Products';
+      satBtn.style.cssText = BTN_STYLE + 'border-top:none;';
+      satBtn.innerHTML = '\\ud83d\\udef0';
+      satBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        if (bmOpen) { bmOpen = false; bmBtn.style.background = 'rgba(2,13,24,0.92)'; if (bmPanel) { d.removeChild(bmPanel); bmPanel = null; } }
+        satOpen = !satOpen;
+        if (satOpen) {
+          satBtn.style.background = 'rgba(0,200,200,0.25)';
+          satPanel = buildSatPanel(); d.appendChild(satPanel);
+        } else {
+          satBtn.style.background = 'rgba(2,13,24,0.92)';
+          if (satPanel) { d.removeChild(satPanel); satPanel = null; }
+        }
+      });
+      d.appendChild(satBtn);
+
+      L.DomEvent.disableClickPropagation(d);
+      return d;
     };
     function buildBmPanel() {
       var p = document.createElement('div');
@@ -1979,43 +2005,25 @@ if mode == MODE_ISRAEL:
       }, 60);
       return p;
     }
-    bmCtrl.addTo(mapObj);
-
-    // ── SATELLITE PRODUCTS BUTTON (topright) ─────────────────────────────
-    var satOpen = false, satPanel = null;
-    var satCtrl = L.control({position: 'topright'});
-    satCtrl.onAdd = function() {
-      var d = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-      d.style.marginTop = '4px';
-      var a = document.createElement('a');
-      a.href = '#'; a.title = 'Satellite Products';
-      a.style.cssText = BTN_STYLE; a.innerHTML = '\\ud83d\\udef0';
-      L.DomEvent.disableClickPropagation(d);
-      a.addEventListener('click', function(e) {
-        e.preventDefault(); satOpen = !satOpen;
-        if (satOpen) {
-          a.style.background = 'rgba(0,200,200,0.25)';
-          satPanel = buildSatPanel(); d.appendChild(satPanel);
-        } else {
-          a.style.background = 'rgba(2,13,24,0.92)';
-          if (satPanel) { d.removeChild(satPanel); satPanel = null; }
-        }
-      });
-      d.appendChild(a); return d;
-    };
+    layersCtrl.addTo(mapObj);
     function buildSatPanel() {
       var p = document.createElement('div');
-      p.style.cssText = PANEL_RIGHT;
+      p.style.cssText = PANEL_LEFT.replace('width:200px', 'width:300px');
+      // Sort: active sensor's products first
+      var srt = _rasterLayers.slice().sort(function(a, b){
+        return (b.visible ? 1 : 0) - (a.visible ? 1 : 0);
+      });
       var rows = '';
-      if (_rasterLayers.length === 0) {
+      if (srt.length === 0) {
         rows = '<div style="color:#7fb3d3;font-size:11px;padding:4px 0;">No raster data for this date</div>';
       } else {
-        _rasterLayers.forEach(function(rl) {
+        srt.forEach(function(rl) {
           var chk = rl.visible ? 'checked' : '';
-          var dateBadge = rl.date ? ' <span style="font-size:10px;color:#7fb3d3;background:rgba(0,200,200,0.08);padding:1px 5px;border-radius:3px;margin-left:auto;">' + rl.date + '</span>' : '';
-          rows += '<label style="display:flex;align-items:center;gap:7px;margin-bottom:7px;cursor:pointer;">' +
+          var dateBadge = rl.date ? '<span style="font-size:10px;color:#7fb3d3;background:rgba(0,200,200,0.08);padding:1px 5px;border-radius:3px;margin-left:auto;flex-shrink:0;">' + rl.date + '</span>' : '';
+          var rowBg = rl.visible ? 'background:rgba(0,200,200,0.10);border-left:2px solid #00c8c8;' : 'border-left:2px solid transparent;';
+          rows += '<label style="display:flex;align-items:center;gap:7px;margin-bottom:4px;padding:4px 6px;cursor:pointer;border-radius:3px;' + rowBg + '">' +
             '<input type="checkbox" id="rl_cb_' + rl.id + '" ' + chk + ' style="accent-color:#00c8c8;width:14px;height:14px;cursor:pointer;flex-shrink:0;">' +
-            '<span style="font-size:12px;color:#d6eaf8;flex:1;">' + rl.label + '</span>' + dateBadge + '</label>';
+            '<span style="font-size:12px;color:#d6eaf8;flex:1;min-width:0;">' + rl.label + '</span>' + dateBadge + '</label>';
         });
       }
       p.innerHTML = '<div style="font-weight:bold;color:#00c8c8;font-size:12px;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:8px;border-bottom:1px solid rgba(0,200,200,0.18);padding-bottom:5px;">\\ud83d\\udef0 Satellite Products</div>' + rows + '<div style="border-top:1px solid rgba(0,200,200,0.15);margin-top:6px;padding-top:7px;"><label style="display:block;color:#7fb3d3;font-size:11px;margin-bottom:3px;">Opacity: <span id="satOpVal">' + Math.round(_opacity*100) + '%</span></label><input id="satOpSlider" type="range" min="10" max="100" value="' + Math.round(_opacity*100) + '" style="width:100%;accent-color:#00c8c8;"></div>';
@@ -2023,7 +2031,10 @@ if mode == MODE_ISRAEL:
       setTimeout(function() {
         _rasterLayers.forEach(function(rl) {
           var cb = document.getElementById('rl_cb_' + rl.id);
-          if (cb) cb.addEventListener('change', function() { setLayerVisible(rl.id, cb.checked); });
+          if (cb) cb.addEventListener('change', function() {
+            setLayerVisible(rl.id, cb.checked);
+            updateLegend();
+          });
         });
         var sld = document.getElementById('satOpSlider');
         var lbl = document.getElementById('satOpVal');
@@ -2036,7 +2047,6 @@ if mode == MODE_ISRAEL:
       }, 60);
       return p;
     }
-    satCtrl.addTo(mapObj);
 
     // ── FULLSCREEN (topright) ────────────────────────────────────────────
     var fsCtrl = L.control({position: 'topright'});
@@ -2104,6 +2114,54 @@ if mode == MODE_ISRAEL:
       d.appendChild(a); return d;
     };
     rulerCtrl.addTo(mapObj);
+
+    // ── WQI LEGEND (bottomleft) ──────────────────────────────────────────
+    var legendDiv = null;
+    var legendCtrl = L.control({position: 'bottomleft'});
+    legendCtrl.onAdd = function() {
+      legendDiv = L.DomUtil.create('div', '');
+      legendDiv.id = 'wqi-legend';
+      L.DomEvent.disableClickPropagation(legendDiv);
+      return legendDiv;
+    };
+    legendCtrl.addTo(mapObj);
+
+    function updateLegend() {
+      if (!legendDiv) return;
+      // Show legend if any WQI layer is visible (check both checkbox state and tile registry)
+      var anyWqi = false;
+      _rasterLayers.forEach(function(rl) {
+        if (rl.id.indexOf('wqi_') === 0) {
+          var cb = document.getElementById('rl_cb_' + rl.id);
+          var isOn = cb ? cb.checked : rl.visible;
+          var tl = _tileRegistry[rl.id];
+          if (isOn || (tl && mapObj.hasLayer(tl))) { anyWqi = true; }
+        }
+      });
+      if (!anyWqi) { legendDiv.innerHTML = ''; legendDiv.style.display = 'none'; return; }
+      legendDiv.style.display = 'block';
+      legendDiv.innerHTML =
+        '<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.4);border-radius:6px;padding:8px 12px;font-family:Arial,sans-serif;min-width:180px;">' +
+          '<div style="color:#00c8c8;font-size:11px;font-weight:bold;margin-bottom:6px;letter-spacing:0.5px;">WQI</div>' +
+          '<div style="display:flex;height:14px;border-radius:3px;overflow:hidden;">' +
+            '<div style="flex:1;background:#d73027;"></div>' +
+            '<div style="flex:1;background:#f46d43;"></div>' +
+            '<div style="flex:1;background:#fdae61;"></div>' +
+            '<div style="flex:1;background:#fee090;"></div>' +
+            '<div style="flex:1;background:#e0f3f8;"></div>' +
+            '<div style="flex:1;background:#abd9e9;"></div>' +
+            '<div style="flex:1;background:#74add1;"></div>' +
+            '<div style="flex:1;background:#4575b4;"></div>' +
+          '</div>' +
+          '<div style="display:flex;justify-content:space-between;margin-top:3px;">' +
+            '<span style="color:#f46d43;font-size:10px;">30 \\u2014 Polluted</span>' +
+            '<span style="color:#74add1;font-size:10px;">Clean \\u2014 90</span>' +
+          '</div>' +
+        '</div>';
+    }
+    // Initial legend check
+    updateLegend();
+
     console.log('[MEDI] All controls added successfully');
   } catch(err) {
     console.error('[MEDI] Control init failed:', err);
