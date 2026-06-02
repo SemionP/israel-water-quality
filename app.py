@@ -1980,18 +1980,18 @@ if mode == MODE_ISRAEL:
       }
     });
 
-    // Pre-create all raster tile layers (only add visible ones)
+    // Pre-create ALL raster tile layers and add ALL to map (hidden ones at opacity 0)
+    // This prevents st_folium from detecting layer changes and triggering reruns
     _rasterLayers.forEach(function(rl) {
-      var l = L.tileLayer(rl.url, {opacity: _opacity, attribution: 'GEE', zIndex: 500});
+      var l = L.tileLayer(rl.url, {opacity: rl.visible ? _opacity : 0, attribution: 'GEE', zIndex: 500});
       l._isSatLayer = true;
       _tileRegistry[rl.id] = l;
-      if (rl.visible) l.addTo(mapObj);
+      l.addTo(mapObj);  // Always add — use opacity for visibility
     });
 
     function setLayerVisible(id, on) {
       var l = _tileRegistry[id]; if (!l) return;
-      if (on) { if (!mapObj.hasLayer(l)) l.addTo(mapObj); l.setOpacity(_opacity); }
-      else    { if (mapObj.hasLayer(l)) mapObj.removeLayer(l); }
+      l.setOpacity(on ? _opacity : 0);  // Opacity toggle only — no add/remove
     }
 
     var BTN_STYLE = 'display:flex;align-items:center;justify-content:center;width:30px;height:30px;font-size:16px;text-decoration:none;background:rgba(2,13,24,0.92);color:#00c8c8;border:1px solid rgba(0,200,200,0.4);cursor:pointer;box-sizing:border-box;';
@@ -2113,7 +2113,9 @@ if mode == MODE_ISRAEL:
         if (sld) sld.addEventListener('input', function() {
           _opacity = sld.value / 100; lbl.textContent = sld.value + '%';
           Object.keys(_tileRegistry).forEach(function(k) {
-            var l = _tileRegistry[k]; if (l && mapObj.hasLayer(l)) l.setOpacity(_opacity);
+            var l = _tileRegistry[k];
+            // Only update opacity for layers that are toggled ON (opacity > 0)
+            if (l && l.options.opacity > 0) l.setOpacity(_opacity);
           });
         });
       }, 60);
@@ -2207,7 +2209,7 @@ if mode == MODE_ISRAEL:
         var cb = document.getElementById('rl_cb_' + rl.id);
         var isOn = cb ? cb.checked : rl.visible;
         var tl = _tileRegistry[rl.id];
-        if (isOn || (tl && mapObj.hasLayer(tl))) {
+        if (isOn || (tl && tl.options.opacity > 0)) {
           visibleVis.push({label: rl.label, vis: rl.vis});
         }
       });
