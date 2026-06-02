@@ -3139,14 +3139,39 @@ For the 5 most concerning stations.
 3-5 specific, actionable recommendations for port/environmental authorities.
 """
                                 try:
-                                    _ai_client = genai_client.Client(api_key=_gemini_key)
-                                    _ai_resp = _ai_client.models.generate_content(
-                                        model="gemini-2.0-flash",
-                                        contents=_ai_prompt
-                                    )
-                                    st.session_state["ai_analysis_result"] = _ai_resp.text.strip()
+                                    _ai_result = None
+                                    _ai_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+                                    for _model in _ai_models:
+                                        try:
+                                            _ai_client = genai_client.Client(api_key=_gemini_key)
+                                            _ai_resp = _ai_client.models.generate_content(
+                                                model=_model,
+                                                contents=_ai_prompt
+                                            )
+                                            _ai_result = _ai_resp.text.strip()
+                                            break
+                                        except Exception as _model_err:
+                                            if "429" not in str(_model_err) and "RESOURCE_EXHAUSTED" not in str(_model_err):
+                                                raise _model_err
+                                            continue
+
+                                    if not _ai_result:
+                                        # Fallback: REST API call with urllib
+                                        import urllib.request, json as _rjson
+                                        _rest_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={_gemini_key}"
+                                        _rest_body = _rjson.dumps({"contents": [{"parts": [{"text": _ai_prompt}]}]}).encode()
+                                        _req = urllib.request.Request(_rest_url, data=_rest_body, headers={"Content-Type": "application/json"})
+                                        _resp = urllib.request.urlopen(_req, timeout=30)
+                                        _rdata = _rjson.loads(_resp.read())
+                                        _ai_result = _rdata["candidates"][0]["content"]["parts"][0]["text"]
+
+                                    st.session_state["ai_analysis_result"] = _ai_result
                                 except Exception as _ai_err:
-                                    st.error(f"AI analysis failed: {_ai_err}")
+                                    _err_str = str(_ai_err)
+                                    if "429" in _err_str or "RESOURCE_EXHAUSTED" in _err_str:
+                                        st.error("⏳ Gemini API quotas are still provisioning (this can take up to 30 min for new keys). Please wait a few minutes and try again.")
+                                    else:
+                                        st.error(f"AI analysis failed: {_ai_err}")
 
                     # Display cached AI result
                     if st.session_state.get("ai_analysis_result"):
@@ -3273,17 +3298,49 @@ For the 5 most concerning stations.
                             ztype = st.session_state.user_zones[zname].get("type", "polygon")
                             zgrp  = st.session_state.user_zones[zname].get("group", "")
                             icon  = "📍" if ztype == "point" else "🟦"
-                            grp_badge = f' <span style="font-size:12px;background:rgba(0,200,200,0.15);color:#00c8c8;border-radius:3px;padding:1px 5px;">{zgrp}</span>' if zgrp else ""
-                            zc, zd = st.columns([3, 1])
-                            with zc:
-                                st.markdown(f'<div style="font-size:14px;color:#d6eaf8;padding:2px 0;">{icon} {zname}{grp_badge} <span style="color:#7fb3d3;">WQI: {zwqi_str}</span></div>',
-                                            unsafe_allow_html=True)
-                            with zd:
-                                if st.button("🗑", key=f"del_zone_{zname}"):
-                                    del st.session_state.user_zones[zname]
-                                    save_zones(st.session_state.user_zones)
-                                    compute_zone_history_range.clear()
-                                    st.rerun()
+
+                            # Check if this zone is being edited
+                            _editing = st.session_state.get("editing_zone") == zname
+                            if _editing:
+                                # Edit mode: show text inputs
+                                ec1, ec2 = st.columns([3, 1])
+                                with ec1:
+                                    _new_name = st.text_input("Name", value=zname, key=f"edit_name_{zname}", label_visibility="collapsed")
+                                    _new_grp = st.text_input("Group", value=zgrp, key=f"edit_grp_{zname}", label_visibility="collapsed", placeholder="Group name (optional)")
+                                with ec2:
+                                    if st.button("💾", key=f"save_edit_{zname}", help="Save"):
+                                        _new_name = _new_name.strip()
+                                        _new_grp = _new_grp.strip()
+                                        if _new_name and _new_name != zname:
+                                            # Rename zone
+                                            _zdata = st.session_state.user_zones.pop(zname)
+                                            _zdata["group"] = _new_grp
+                                            st.session_state.user_zones[_new_name] = _zdata
+                                        else:
+                                            st.session_state.user_zones[zname]["group"] = _new_grp
+                                        st.session_state.pop("editing_zone", None)
+                                        save_zones(st.session_state.user_zones)
+                                        st.rerun()
+                                    if st.button("✕", key=f"cancel_edit_{zname}", help="Cancel"):
+                                        st.session_state.pop("editing_zone", None)
+                                        st.rerun()
+                            else:
+                                # Display mode
+                                grp_badge = f' <span style="font-size:12px;background:rgba(0,200,200,0.15);color:#00c8c8;border-radius:3px;padding:1px 5px;">{zgrp}</span>' if zgrp else ""
+                                zc, ze, zd = st.columns([3, 0.5, 0.5])
+                                with zc:
+                                    st.markdown(f'<div style="font-size:14px;color:#d6eaf8;padding:2px 0;">{icon} {zname}{grp_badge} <span style="color:#7fb3d3;">WQI: {zwqi_str}</span></div>',
+                                                unsafe_allow_html=True)
+                                with ze:
+                                    if st.button("✏️", key=f"edit_zone_{zname}", help="Edit name/group"):
+                                        st.session_state["editing_zone"] = zname
+                                        st.rerun()
+                                with zd:
+                                    if st.button("🗑", key=f"del_zone_{zname}"):
+                                        del st.session_state.user_zones[zname]
+                                        save_zones(st.session_state.user_zones)
+                                        compute_zone_history_range.clear()
+                                        st.rerun()
 
                         # ── Export ──────────────────────────────────────────
                         import json as _jex
