@@ -21,90 +21,9 @@ import ee
 from branca.element import MacroElement
 from jinja2 import Template
 
-# =============================================================================
-# MEDI Risk Engine
-# =============================================================================
-_T = {
-    "wqi":             {"low": 70, "mid": 50, "high": 35},
-    "turbidity":       {"low": 0.3, "mid": 0.55, "high": 0.75},
-    "chlorophyll":     {"low": 0.25, "mid": 0.5, "high": 0.7},
-    "sst_anomaly":     {"low": 1.5,  "mid": 3.0, "high": 5.0},
-}
-
-PROFILES = {
-    "Port Operations":       {"signals": ["wqi","turbidity"], "weights": [0.5,0.5], "description": "Vessel traffic, discharge risk, and water intake quality."},
-    "Beach Safety":          {"signals": ["wqi","chlorophyll"], "weights": [0.6,0.4], "description": "Bathing water quality and algae/bloom risk."},
-    "Aquaculture":           {"signals": ["wqi","chlorophyll","sst_anomaly"], "weights": [0.35,0.40,0.25], "description": "Bloom conditions, oxygen stress, feed disruption."},
-    "ESG Compliance":        {"signals": ["wqi","turbidity","chlorophyll"], "weights": [0.4,0.3,0.3], "description": "Broad environmental footprint monitoring."},
-    "Maritime Surveillance": {"signals": ["wqi","turbidity"], "weights": [0.4,0.6], "description": "Discharge events and water anomalies."},
-}
-
-@dataclass
-class SignalReading:
-    name: str; value: float
-    raw_value: Optional[float] = None; unit: str = ""
-    age_days: float = 0.0; confidence: float = 1.0
-
-@dataclass
-class MEDIResult:
-    risk_score: float; risk_level: str; risk_color: str; trend: str
-    trend_delta: Optional[float] = None; confidence: float = 0.0
-    drivers: list = field(default_factory=list)
-    profile: str = ""; explanation: str = ""; recommendation: str = ""; zone: str = ""
-
-def _normalize_wqi(v): return max(0.0, min(1.0, 1.0 - v/100.0))
-
-def _signal_risk(value, t):
-    lo, mid, hi = t["low"], t["mid"], t["high"]
-    if value <= lo:   return value/lo*0.33
-    elif value <= mid: return 0.33+(value-lo)/(mid-lo)*0.34
-    elif value <= hi:  return 0.67+(value-mid)/(hi-mid)*0.20
-    else:
-        excess=(value-hi)/(1.0-hi+1e-6)
-        return 0.87+0.13*(1-math.exp(-3*excess))
-
-def _confidence_from_signals(signals):
-    if not signals: return 0.0
-    return round(sum(s.confidence*math.exp(-0.2*s.age_days) for s in signals)/len(signals), 2)
-
-def _detect_drivers(signal_risks, threshold=0.45):
-    labels = {"wqi":"water quality degradation","turbidity":"turbidity anomaly",
-              "chlorophyll":"algae/bloom signal","sst_anomaly":"SST anomaly"}
-    drivers = [(labels.get(k,k),v) for k,v in signal_risks.items() if v>=threshold]
-    drivers.sort(key=lambda x: x[1], reverse=True)
-    return [d[0] for d in drivers]
-
-def compute_medi(signals, profile_name, previous_score=None, zone=""):
-    profile = PROFILES.get(profile_name, PROFILES["Beach Safety"])
-    ps, pw  = profile["signals"], profile["weights"]
-    signal_risks = {}; active = []
-    for sn, w in zip(ps, pw):
-        r = signals.get(sn)
-        if r is None: continue
-        val = _normalize_wqi(r.value) if sn=="wqi" else r.value
-        val = max(0.0, min(1.0, val))
-        signal_risks[sn] = _signal_risk(val, _T.get(sn, {"low":0.3,"mid":0.55,"high":0.75}))
-        active.append(r)
-    if not signal_risks:
-        return MEDIResult(0,"UNKNOWN","#888888","STABLE",confidence=0.0,profile=profile_name,zone=zone)
-    tw = sum(w for sn,w in zip(ps,pw) if sn in signal_risks)
-    ws = sum(signal_risks[sn]*w for sn,w in zip(ps,pw) if sn in signal_risks)
-    base = ws/tw if tw>0 else 0.0
-    mx = max(signal_risks.values())
-    if mx>0.85: base=base*0.6+mx*0.4
-    score = round(base*100, 1)
-    if score<25:   level,color="LOW","#1ecb7b"
-    elif score<45: level,color="MODERATE","#7ecb1e"
-    elif score<62: level,color="ELEVATED","#f0a500"
-    elif score<78: level,color="HIGH","#e07b00"
-    else:          level,color="CRITICAL","#e03c3c"
-    if previous_score is None: trend,delta="STABLE",None
-    else:
-        delta=round(score-previous_score,1)
-        trend="RISING" if delta>4 else "FALLING" if delta<-4 else "STABLE"
-    return MEDIResult(score,level,color,trend,delta,
-                      _confidence_from_signals(active),
-                      _detect_drivers(signal_risks),profile_name,"","",zone)
+from config import (_T, PROFILES, SignalReading, MEDIResult, _normalize_wqi,
+                    _signal_risk, _confidence_from_signals, _detect_drivers, compute_medi,
+                    BEACHES, HAIFA_BBOX_COORDS, ISRAEL_CLIP_COORDS, PALETTE)
 
 def generate_medi_explanation(result: MEDIResult, api_key: str) -> MEDIResult:
     if not result.drivers:
@@ -392,253 +311,33 @@ if "ga_loaded" not in st.session_state:
 # =============================================================================
 # GEE Auth
 # =============================================================================
-@st.cache_resource
-def init_gee():
-    creds=dict(st.secrets["gee_credentials"])
-    with tempfile.NamedTemporaryFile(mode="w",suffix=".json",delete=False) as f:
-        f.write(json.dumps(creds)); tmp=f.name
-    ee.Initialize(ee.ServiceAccountCredentials(creds["client_email"],tmp))
-    os.unlink(tmp)
+from gee_processing import (init_gee, get_atm, get_sst, get_available_s3_dates,
+    get_modis_sst_anomaly, process_modis_wqi, process_israel_s2,
+    get_available_dates_combined, process_israel_wqi, compute_beach_history_7d,
+    process_port_medi, get_global_wqi_layer, get_bbox_from_map, haversine_km,
+    compute_point_wqi, compute_city_wqi, compute_beach_history_range,
+    compute_zone_history_range, _empty_atm)
 init_gee()
 
-# =============================================================================
-# Persistent Zone Storage — Google Drive (primary) + /tmp fallback
-# =============================================================================
-ZONES_KEY       = "medi-zones-v1"
-GDRIVE_FILENAME = "medi_zones.json"
-GDRIVE_FOLDER   = "1VU11P0UCzeMiVsn0k1RiIHuEu8bBLUFH"
-GDRIVE_FILE_ID  = "1KTI_oRHIrvRJNtfZYrWMkhNi2D-34Y9v"  # hardcoded for fast startup load
 
-@st.cache_resource
-def _gdrive_token():
-    """Get OAuth2 access token for service account using only stdlib."""
-    try:
-        import time, json as _j, base64, urllib.request, urllib.parse
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import padding as _pad
-        creds    = dict(st.secrets["gee_credentials"])
-        sa_email = creds["client_email"]
-        priv_key = creds["private_key"]
-        now = int(time.time())
-        def b64(d): return base64.urlsafe_b64encode(d).rstrip(b"=")
-        hdr = b64(_j.dumps({"alg":"RS256","typ":"JWT"}).encode())
-        pay = b64(_j.dumps({"iss":sa_email,
-            "scope":"https://www.googleapis.com/auth/drive",
-            "aud":"https://oauth2.googleapis.com/token",
-            "iat":now,"exp":now+3600}).encode())
-        msg = hdr + b"." + pay
-        key = serialization.load_pem_private_key(priv_key.encode(), password=None)
-        sig = b64(key.sign(msg, _pad.PKCS1v15(), hashes.SHA256()))
-        jwt = (msg + b"." + sig).decode()
-        body = urllib.parse.urlencode({
-            "grant_type":"urn:ietf:params:oauth:grant-type:jwt-bearer",
-            "assertion":jwt}).encode()
-        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=body,
-            headers={"Content-Type":"application/x-www-form-urlencoded"})
-        return _j.loads(urllib.request.urlopen(req, timeout=10).read())["access_token"]
-    except:
-        return None
-
-def _gdrive_file_id(token) -> str | None:
-    import urllib.request, urllib.parse, json as _j
-    q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
-    url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode(
-        {"q":q,"fields":"files(id)","pageSize":"1"})
-    req = urllib.request.Request(url, headers={"Authorization":f"Bearer {token}"})
-    try:
-        res = _j.loads(urllib.request.urlopen(req, timeout=10).read())
-        return res["files"][0]["id"] if res.get("files") else None
-    except:
-        return None
-
-def load_zones() -> dict:
-    import json as _j, urllib.request, urllib.parse
-    try:
-        token = _gdrive_token()
-        if not token:
-            return {}
-        q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
-        url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode(
-            {"q": q, "fields": "files(id,name)", "pageSize": "5",
-             "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        res = _j.loads(urllib.request.urlopen(req, timeout=10).read())
-        files = res.get("files", [])
-        if files:
-            fid = files[0]["id"]
-            req2 = urllib.request.Request(
-                f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true",
-                headers={"Authorization": f"Bearer {token}"})
-            raw = urllib.request.urlopen(req2, timeout=10).read().decode()
-            return _j.loads(raw)
-    except:
-        pass
-    # fallbacks
-    try:
-        raw = st.secrets.get("saved_zones", None)
-        if raw: return _j.loads(raw)
-    except:
-        pass
-    try:
-        return _j.loads(open("/tmp/medi_zones.json").read())
-    except:
-        return {}
-
-def save_zones(zones: dict):
-    import json as _j, urllib.request, urllib.error
-    data = _j.dumps(zones, ensure_ascii=False).encode()
-    # Always save to /tmp
-    try:
-        with open("/tmp/medi_zones.json","w") as f: f.write(data.decode())
-    except:
-        pass
-    # Save to Google Drive — SA can only UPDATE files you own, not create new ones
-    try:
-        token = _gdrive_token()
-        if not token:
-            return
-        import urllib.parse
-        q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
-        url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode(
-            {"q": q, "fields": "files(id)", "pageSize": "5",
-             "supportsAllDrives": "true", "includeItemsFromAllDrives": "true"})
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        res = _j.loads(urllib.request.urlopen(req, timeout=10).read())
-        files = res.get("files", [])
-        if not files:
-            return
-        fid = files[0]["id"]
-        url2 = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
-        req2 = urllib.request.Request(url2, data=data, method="PATCH", headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type":  "application/json"})
-        urllib.request.urlopen(req2, timeout=15)
-    except:
-        pass
-
-def load_zones_from_all() -> dict: return load_zones()
-def load_points() -> dict: return {}
-def save_points(points: dict): pass
+from storage import (load_zones, save_zones, load_zones_from_all, load_points, save_points)
 
 
 
 
 
 
-# =============================================================================
-# Geometries & Beaches
-# =============================================================================
-HAIFA_BBOX       = ee.Geometry.Rectangle([34.20,31.20,35.20,33.20])
+
+# Geometries initialized in gee_processing.py
+import ee
+HAIFA_BBOX = ee.Geometry.Rectangle(HAIFA_BBOX_COORDS)
+ISRAEL_CLIP = ee.Geometry.Polygon([ISRAEL_CLIP_COORDS])
+
 ISRAEL_CLIP      = ee.Geometry.Polygon([[[34.95,33.10],[34.55,33.10],[34.15,32.50],[34.10,32.00],
     [34.15,31.50],[34.50,31.25],[34.75,31.25],[34.95,31.30],[35.02,31.60],[35.00,32.10],[35.05,32.60],[35.10,33.10],[34.95,33.10]]])
 
-BEACHES = [
-    {"name":"Rosh HaNikra","lat":33.0765,"lon":35.0983},
-    {"name":"Nahariya","lat":33.0048,"lon":35.0832},
-    {"name":"Acre","lat":32.9280,"lon":35.0680},
-    {"name":"Haifa North","lat":32.8380,"lon":34.9820},
-    {"name":"Atlit","lat":32.6892,"lon":34.9368},
-    {"name":"Caesarea","lat":32.4948,"lon":34.8912},
-    {"name":"Netanya","lat":32.3318,"lon":34.8512},
-    {"name":"Herzliya","lat":32.1648,"lon":34.7962},
-    {"name":"Tel Aviv Center","lat":32.0798,"lon":34.7618},
-    {"name":"Ashdod","lat":31.7848,"lon":34.6248},
-    {"name":"Ashkelon","lat":31.6548,"lon":34.5448},
-    {"name":"Zikim","lat":31.6098,"lon":34.5198},
-]
+# BEACHES imported from config.py
 
-# =============================================================================
-# Port Zones - for MEDI Port Analysis
-# =============================================================================
-PORTS = {
-    "🚢 Haifa Port": {
-        "lat": 32.8230, "lon": 35.0020,
-        "bbox": ee.Geometry.Rectangle([34.94, 32.78, 35.06, 32.87]),
-        "radius_km": 5,
-        "description": "Major Mediterranean cargo & passenger port",
-        "atm_coords": (32.82, 35.00),
-    },
-    "⚓ Ashdod Port": {
-        "lat": 31.8167, "lon": 34.6500,
-        "bbox": ee.Geometry.Rectangle([34.60, 31.77, 34.70, 31.86]),
-        "radius_km": 4,
-        "description": "Israel's largest cargo port",
-        "atm_coords": (31.82, 34.65),
-    },
-    "🐠 Eilat Port": {
-        "lat": 29.5510, "lon": 34.9480,
-        "bbox": ee.Geometry.Rectangle([34.91, 29.51, 34.99, 29.59]),
-        "radius_km": 3,
-        "description": "Red Sea port - coral reef proximity",
-        "atm_coords": (29.55, 34.95),
-    },
-}
-
-
-# =============================================================================
-# Maritime Zone Polygons - Offshore areas per city (sea only)
-# Each polygon: ~3-5km offshore, covers city coastal stretch
-# =============================================================================
-MARITIME_ZONES = {
-    "Nahariya":  ee.Geometry.Polygon([[
-        [34.88, 33.00], [34.95, 33.00], [34.95, 33.05], [34.88, 33.05]
-    ]]),
-    "Acre":      ee.Geometry.Polygon([[
-        [34.90, 32.90], [34.97, 32.90], [34.97, 32.95], [34.90, 32.95]
-    ]]),
-    "Krayot":    ee.Geometry.Polygon([[
-        [34.92, 32.83], [34.98, 32.83], [34.98, 32.89], [34.92, 32.89]
-    ]]),
-    "Haifa":     ee.Geometry.Polygon([[
-        [34.88, 32.78], [34.97, 32.78], [34.97, 32.84], [34.88, 32.84]
-    ]]),
-    "Atlit":     ee.Geometry.Polygon([[
-        [34.88, 32.67], [34.95, 32.67], [34.95, 32.72], [34.88, 32.72]
-    ]]),
-    "Caesarea":  ee.Geometry.Polygon([[
-        [34.85, 32.47], [34.93, 32.47], [34.93, 32.53], [34.85, 32.53]
-    ]]),
-    "Hadera":    ee.Geometry.Polygon([[
-        [34.84, 32.42], [34.92, 32.42], [34.92, 32.47], [34.84, 32.47]
-    ]]),
-    "Netanya":   ee.Geometry.Polygon([[
-        [34.82, 32.28], [34.90, 32.28], [34.90, 32.35], [34.82, 32.35]
-    ]]),
-    "Herzliya":  ee.Geometry.Polygon([[
-        [34.77, 32.14], [34.85, 32.14], [34.85, 32.20], [34.77, 32.20]
-    ]]),
-    "Tel Aviv":  ee.Geometry.Polygon([[
-        [34.73, 32.04], [34.81, 32.04], [34.81, 32.12], [34.73, 32.12]
-    ]]),
-    "Palmahim":  ee.Geometry.Polygon([[
-        [34.68, 31.90], [34.76, 31.90], [34.76, 31.96], [34.68, 31.96]
-    ]]),
-    "Ashdod":    ee.Geometry.Polygon([[
-        [34.60, 31.77], [34.68, 31.77], [34.68, 31.84], [34.60, 31.84]
-    ]]),
-    "Ashkelon":  ee.Geometry.Polygon([[
-        [34.52, 31.63], [34.60, 31.63], [34.60, 31.69], [34.52, 31.69]
-    ]]),
-}
-
-# Representative point for each city (for map marker)
-CITY_POINTS = {
-    "Nahariya": {"lat": 33.020, "lon": 34.915},
-    "Acre":     {"lat": 32.924, "lon": 34.935},
-    "Krayot":   {"lat": 32.860, "lon": 34.950},
-    "Haifa":    {"lat": 32.810, "lon": 34.925},
-    "Atlit":    {"lat": 32.690, "lon": 34.915},
-    "Caesarea": {"lat": 32.500, "lon": 34.890},
-    "Hadera":   {"lat": 32.445, "lon": 34.880},
-    "Netanya":  {"lat": 32.315, "lon": 34.860},
-    "Herzliya": {"lat": 32.170, "lon": 34.810},
-    "Tel Aviv": {"lat": 32.080, "lon": 34.770},
-    "Palmahim": {"lat": 31.930, "lon": 34.720},
-    "Ashdod":   {"lat": 31.805, "lon": 34.640},
-    "Ashkelon": {"lat": 31.660, "lon": 34.560},
-}
-
-# =============================================================================
 # Map Components
 # =============================================================================
 class OnMapWaterLegend(MacroElement):
@@ -673,901 +372,13 @@ ac.addTo({{this._parent.get_name()}});{% endmacro %}""")
 # =============================================================================
 # Data Functions
 # =============================================================================
-def _empty_atm():
-    return {"wind_speed":None,"wind_dir_deg":None,"temp_c":None,"humidity":None,
-            "precip_mm":None,"_error":None}
+# GEE processing functions imported from gee_processing.py
 
-@st.cache_data(ttl=3600)
-def get_atm(lat, lon):
-    try:
-        import requests as _req
-        r=_req.get("https://api.open-meteo.com/v1/forecast",params={
-            "latitude":round(lat,4),"longitude":round(lon,4),
-            "current":"temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m,precipitation,weather_code",
-            "wind_speed_unit":"ms","forecast_days":1},timeout=10)
-        r.raise_for_status(); cur=r.json().get("current",{})
-        ws,wd,tc=cur.get("wind_speed_10m"),cur.get("wind_direction_10m"),cur.get("temperature_2m")
-        rh,pr=cur.get("relative_humidity_2m"),cur.get("precipitation")
-        return {"wind_speed":round(ws,1) if ws else None,"wind_dir_deg":round(wd,1) if wd else None,
-                "temp_c":round(tc,1) if tc else None,"humidity":round(rh,0) if rh else None,
-                "precip_mm":round(pr,2) if pr else None,"_error":None}
-    except Exception as e:
-        return {**_empty_atm(),"_error":str(e)}
-
-@st.cache_data(ttl=3600)
-def get_sst(lat, lon):
-    try:
-        import requests as _req
-        r=_req.get("https://marine-api.open-meteo.com/v1/marine",params={
-            "latitude":lat,"longitude":lon,"current":"sea_surface_temperature","forecast_days":1},timeout=10)
-        return r.json().get("current",{}).get("sea_surface_temperature")
-    except: return None
-
-@st.cache_data(ttl=14400)
-def get_available_s3_dates(days_back=60):
-    end   = datetime.utcnow()
-    start = end - timedelta(days=days_back)
-    # Use wider bbox to catch all S3 passes over Israel
-    wide_bbox = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
-    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-            .filterBounds(wide_bbox)
-            .filterDate(start.strftime('%Y-%m-%d'), end.strftime('%Y-%m-%d')))
-    dl = coll.aggregate_array("system:time_start").getInfo()
-    dates = sorted(list(set([
-        datetime.utcfromtimestamp(d/1000).strftime("%Y-%m-%d") for d in dl
-    ])), reverse=True)
-    return dates
-
-@st.cache_data(ttl=10800)
-def get_modis_sst_anomaly(target_date_str):
-    """
-    MODIS MOD11A1 - Sea Surface Temperature anomaly.
-    anomaly = today SST - 30-day mean SST
-    Returns: ee.Image with band 'SST_anomaly' (degrees C) + scalar mean anomaly
-    """
-    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    t   = ee.Date(target_date_str)
-
-    # Today SST (LST_Day_1km in Kelvin × 0.02 → Celsius)
-    today_coll = (ee.ImageCollection("MODIS/061/MOD11A1")
-                  .filterBounds(HAIFA_BBOX)
-                  .filterDate(t.advance(-2,"day"), t.advance(1,"day"))
-                  .select("LST_Day_1km"))
-    if today_coll.size().getInfo() == 0:
-        return None, None
-
-    sst_today = today_coll.mean().multiply(0.02).subtract(273.15).updateMask(wm)
-
-    # 30-day baseline
-    baseline_coll = (ee.ImageCollection("MODIS/061/MOD11A1")
-                     .filterBounds(HAIFA_BBOX)
-                     .filterDate(t.advance(-31,"day"), t.advance(-1,"day"))
-                     .select("LST_Day_1km"))
-    sst_baseline  = baseline_coll.mean().multiply(0.02).subtract(273.15).updateMask(wm)
-
-    anomaly_img = sst_today.subtract(sst_baseline).rename("SST_anomaly").clip(HAIFA_BBOX)
-
-    # Scalar mean anomaly for MEDI engine
-    try:
-        val = anomaly_img.reduceRegion(
-            reducer   = ee.Reducer.mean(),
-            geometry  = HAIFA_BBOX,
-            scale     = 1000,
-            bestEffort= True,
-        ).getInfo()
-        mean_anomaly = val.get("SST_anomaly")
-        mean_anomaly = round(float(mean_anomaly), 2) if mean_anomaly is not None else None
-    except Exception:
-        mean_anomaly = None
-
-    return anomaly_img, mean_anomaly
-
-
-@st.cache_data(ttl=7200)
-def process_modis_wqi(target_date_str):
-    """
-    MODIS MOD09GA - daily 250-500m WQI for Israel coast.
-    Used as fallback when S3 not available, or as supplement.
-    Returns: (wqi_layer, df_beaches, error, age_hours, source_label)
-    """
-    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    t  = ee.Date(target_date_str)
-    # Merge Terra (MOD) + Aqua (MYD) for better daily coverage
-    now_m = datetime.utcnow()
-    end_m = ee.Date(now_m.strftime("%Y-%m-%d")).advance(1,"day")
-    start_m = ee.Date((now_m - timedelta(days=3)).strftime("%Y-%m-%d"))
-    terra = (ee.ImageCollection("MODIS/061/MOD09GA")
-             .filterBounds(HAIFA_BBOX)
-             .filterDate(start_m, end_m))
-    aqua  = (ee.ImageCollection("MODIS/061/MYD09GA")
-             .filterBounds(HAIFA_BBOX)
-             .filterDate(start_m, end_m))
-    coll  = terra.merge(aqua).sort("system:time_start", False)
-
-    if coll.size().getInfo() == 0:
-        return None, None, "No MODIS data for this date.", None, "MODIS Terra+Aqua"
-
-    img_first   = coll.first()
-    img_time_ms = img_first.get("system:time_start").getInfo()
-    img_dt      = datetime.utcfromtimestamp(img_time_ms / 1000)
-    age_hours   = (datetime.utcnow() - img_dt).total_seconds() / 3600
-
-    # Cloud mask: bits 0-1 of state_1km == 0 (clear)
-    qa    = img_first.select("state_1km")
-    clear = qa.bitwiseAnd(0b11).eq(0)
-    img   = img_first.updateMask(clear).updateMask(wm)
-
-    b1 = img.select("sur_refl_b01")  # 645nm red
-    b2 = img.select("sur_refl_b02")  # 859nm NIR
-    b4 = img.select("sur_refl_b04")  # 545nm green
-
-    ndwi_n = b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3, 0.3).clamp(0, 1)
-    chl_n  = b4.divide(b1.add(1e-6)).unitScale(0.8, 2.5).clamp(0, 1)
-    turb_n = ee.Image(1).subtract(b1.unitScale(0, 1500)).clamp(0, 1)
-
-    raw = ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).rename("WQI")
-    wqi = raw.clip(ISRAEL_CLIP).updateMask(wm)
-
-    def _pt(pt):
-        try:
-            v  = wqi.reduceRegion(
-                reducer=ee.Reducer.mean(),
-                geometry=ee.Geometry.Point([pt["lon"], pt["lat"]]).buffer(500),
-                scale=500, bestEffort=True).getInfo()
-            wv = v.get("WQI")
-            return {**pt, "wqi": round(wv, 1) if wv else None}
-        except:
-            return {**pt, "wqi": None}
-
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        pts = list(ex.map(_pt, BEACHES))
-
-    return wqi, pd.DataFrame(pts), None, round(age_hours, 1), "MODIS"
-
-
-
-@st.cache_data(ttl=21600)
-def process_israel_s2(target_date_str):
-    """Sentinel-2 MSI SR - 10m WQI for Israel coast. Always uses latest available."""
-    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    now  = datetime.utcnow()
-    end  = ee.Date(now.strftime("%Y-%m-%d")).advance(1,"day")
-    start= ee.Date((now - timedelta(days=10)).strftime("%Y-%m-%d"))
-    coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-            .filterBounds(HAIFA_BBOX)
-            .filterDate(start, end)
-            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
-            .sort("system:time_start", False))
-    if coll.size().getInfo() == 0:
-        return None, None, "No Sentinel-2 data.", None, "Sentinel-2"
-    img_first   = coll.first()
-    img_time_ms = img_first.get("system:time_start").getInfo()
-    img_dt      = datetime.utcfromtimestamp(img_time_ms/1000)
-    age_hours   = (datetime.utcnow()-img_dt).total_seconds()/3600
-    water = img_first.select("SCL").eq(6)
-    img   = img_first.updateMask(water).updateMask(wm)
-    b3,b4,b5,b8,b8a = (img.select("B3").divide(10000), img.select("B4").divide(10000),
-                        img.select("B5").divide(10000), img.select("B8").divide(10000),
-                        img.select("B8A").divide(10000))
-    ndwi_n = b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
-    chl_n  = b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1)
-    turb_n = ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1)
-    wqi    = ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).clip(ISRAEL_CLIP).updateMask(wm).rename("WQI")
-    def _pt(pt):
-        try:
-            v  = wqi.reduceRegion(reducer=ee.Reducer.mean(),
-                geometry=ee.Geometry.Point([pt["lon"],pt["lat"]]).buffer(300),
-                scale=10,bestEffort=True).getInfo()
-            wv = v.get("WQI")
-            return {**pt,"wqi":round(wv,1) if wv else None}
-        except: return {**pt,"wqi":None}
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        pts = list(ex.map(_pt,BEACHES))
-    return wqi, pd.DataFrame(pts), None, round(age_hours,1), "Sentinel-2"
-
-
-
-
-
-
-
-
-
-@st.cache_data(ttl=21600)
-def get_available_dates_combined(days_back=7):
-    """Returns list of dicts: {date, source} - S3 dates + daily MODIS fallback."""
-    end      = datetime.utcnow()
-    start    = end - timedelta(days=days_back)
-    wide     = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
-    date_fmt = "%Y-%m-%d"
-
-    # S3 dates only (one GEE call)
-    s3_coll  = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                .filterBounds(wide)
-                .filterDate(start.strftime(date_fmt), end.strftime(date_fmt)))
-    s3_ts    = s3_coll.aggregate_array("system:time_start").getInfo()
-    s3_dates = set(datetime.utcfromtimestamp(d/1000).strftime(date_fmt) for d in s3_ts)
-
-    # MODIS: assume available every day (no extra GEE call)
-    all_dates = [(end - timedelta(days=i)).strftime(date_fmt) for i in range(days_back)]
-
-    result = []
-    for d in all_dates:
-        if d in s3_dates:
-            result.append({"date": d, "source": "S3",    "label": f"🛰️ {d} · S3"})
-        else:
-            result.append({"date": d, "source": "MODIS", "label": f"📡 {d} · MODIS"})
-    return result
-
-
-@st.cache_data(ttl=7200)
-def process_israel_wqi(target_date_str):
-    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    t=ee.Date(target_date_str)
-    coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(HAIFA_BBOX)
-          .filterDate(t.advance(-2,'day'),t.advance(1,'day')))
-    if coll.size().getInfo()==0: return None,None,"No Sentinel-3 data for this date.",None
-    # Get actual image acquisition time
-    img_first = coll.sort("system:time_start", False).first()
-    img_time_ms = img_first.get("system:time_start").getInfo()
-    img_dt = datetime.utcfromtimestamp(img_time_ms / 1000)
-    age_hours = (datetime.utcnow() - img_dt).total_seconds() / 3600
-
-    img=coll.median().clip(ISRAEL_CLIP).updateMask(wm)
-    ndwi=img.normalizedDifference(['Oa06_radiance','Oa17_radiance'])
-    b10,b11,b12=img.select('Oa10_radiance'),img.select('Oa11_radiance'),img.select('Oa12_radiance')
-    mci=b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
-    turb=img.select('Oa08_radiance')
-    raw=ndwi.unitScale(-0.2,0.5).clamp(0,1).add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1)).add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1)).divide(3).multiply(100).rename('WQI')
-    wqi=raw.reduceNeighborhood(reducer=ee.Reducer.mean(),kernel=ee.Kernel.square(radius=1,units='pixels')).rename('WQI').updateMask(wm)
-    def _pt(pt):
-        try:
-            v=wqi.reduceRegion(reducer=ee.Reducer.mean(),geometry=ee.Geometry.Point([pt["lon"],pt["lat"]]).buffer(450),scale=300,bestEffort=True).getInfo()
-            wv=v.get('WQI'); return {**pt,"wqi":round(wv,1) if wv else None}
-        except: return {**pt,"wqi":None}
-    with ThreadPoolExecutor(max_workers=4) as ex: pts=list(ex.map(_pt,BEACHES))
-    return wqi, pd.DataFrame(pts), None, round(age_hours, 1)
-
-@st.cache_data(ttl=14400)
-def compute_beach_history_7d():
-    """
-    Compute WQI for each beach for each available date in last 14 days.
-    Returns dict: {beach_name: [{date, wqi}, ...]}
-    All dates computed in parallel per-beach via ThreadPoolExecutor.
-    """
-    end   = datetime.utcnow()
-    start = end - timedelta(days=15)
-    wide  = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
-    wm_gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    # Ocean-only: exclude inland water (use SRTM elevation > 0 as land proxy)
-    # Keep only pixels where distance to ocean shoreline is small
-    # Simple: use GSW "transition" band - permanent sea water
-    gsw_full = ee.Image("JRC/GSW1_4/GlobalSurfaceWater")
-    # type 1,2 = ocean/sea in some datasets; use permanent water near coast
-    # Practical: exclude Kinneret, Dead Sea using bbox
-    inland_mask = ee.Image(1).clip(ee.Geometry.Rectangle([35.3,32.6,35.7,33.0])).unmask(0)  # Kinneret
-    inland_mask2= ee.Image(1).clip(ee.Geometry.Rectangle([35.3,31.0,35.6,31.9])).unmask(0)  # Dead Sea
-    wm = wm_gsw.And(inland_mask.Not()).And(inland_mask2.Not())
-
-    # Get S3 dates
-    s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-               .filterBounds(wide)
-               .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-               .sort("system:time_start", False))
-    s3_ts_list = s3_coll.aggregate_array("system:time_start").getInfo()
-    s3_dates = set()
-    for ts in s3_ts_list:
-        s3_dates.add(datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d"))
-
-    # S2 dates
-    s2_coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-               .filterBounds(wide)
-               .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-               .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
-               .sort("system:time_start", False))
-    s2_ts_list = s2_coll.aggregate_array("system:time_start").getInfo()
-    s2_dates = set()
-    for ts in s2_ts_list:
-        s2_dates.add(datetime.utcfromtimestamp(ts/1000).strftime("%Y-%m-%d"))
-
-    # All dates = S3 + S2 + every day in range (MODIS fallback)
-    days_back = 15
-    all_day_dates = [(end - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_back)]
-    seen_dates = set()
-    date_ts = []
-    for d in all_day_dates:
-        if d not in seen_dates:
-            seen_dates.add(d)
-            src = "S3" if d in s3_dates else "S2" if d in s2_dates else "MODIS"
-            date_ts.append((d, src))
-
-    if not date_ts:
-        return {}
-
-    def _wqi_for_date(args):
-        """Compute WQI image for one date - S3 preferred, MODIS fallback."""
-        date_str, source = args
-        try:
-            t = ee.Date(date_str)
-            if source == "S2":
-                try:
-                    s2c = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                           .filterBounds(HAIFA_BBOX)
-                           .filterDate(t.advance(-5,"day"),t.advance(1,"day"))
-                           .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",30))
-                           .sort("system:time_start",False))
-                    if s2c.size().getInfo() == 0: return date_str, None
-                    im2 = s2c.first().updateMask(ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30))
-                    b3,b4,b5,b8,b8a=(im2.select("B3").divide(10000),im2.select("B4").divide(10000),
-                                     im2.select("B5").divide(10000),im2.select("B8").divide(10000),im2.select("B8A").divide(10000))
-                    ndwi_n=b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
-                    chl_n=b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1)
-                    turb_n=ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1)
-                    wqi=ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP)
-                    return date_str, wqi
-                except: return date_str, None
-            if source == "S3":
-                coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                        .filterBounds(HAIFA_BBOX)
-                        .filterDate(t.advance(-1,"day"), t.advance(1,"day")))
-                if coll.size().getInfo() == 0:
-                    source = "MODIS"
-                else:
-                    img  = coll.median().clip(ISRAEL_CLIP).updateMask(wm)
-                    ndwi = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
-                    b10,b11,b12 = img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
-                    mci  = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
-                    turb = img.select("Oa08_radiance")
-                    raw  = (ndwi.unitScale(-0.2,0.5).clamp(0,1)
-                            .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
-                            .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
-                            .divide(3).multiply(100).rename("WQI"))
-                    wqi  = raw.reduceNeighborhood(
-                        reducer=ee.Reducer.mean(),
-                        kernel=ee.Kernel.square(radius=1,units="pixels")
-                    ).rename("WQI").updateMask(wm)
-                    return date_str, wqi
-            if source == "MODIS":
-                terra_h = ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(HAIFA_BBOX).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
-                aqua_h  = ee.ImageCollection("MODIS/061/MYD09GA").filterBounds(HAIFA_BBOX).filterDate(t.advance(-1,"day"),t.advance(1,"day"))
-                qa      = terra_h.merge(aqua_h).sort("system:time_start",False)
-                if qa.size().getInfo() == 0:
-                    return date_str, None
-                img_m = qa.first()
-                clear = img_m.select("state_1km").bitwiseAnd(0b11).eq(0)
-                img_m = img_m.updateMask(clear).updateMask(wm)
-                b1,b2,b4 = img_m.select("sur_refl_b01"),img_m.select("sur_refl_b02"),img_m.select("sur_refl_b04")
-                ndwi_n = b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3,0.3).clamp(0,1)
-                chl_n  = b4.divide(b1.add(1e-6)).unitScale(0.8,2.5).clamp(0,1)
-                turb_n = ee.Image(1).subtract(b1.unitScale(0,1500)).clamp(0,1)
-                wqi    = ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm)
-                return date_str, wqi
-        except:
-            return date_str, None
-
-    def _sample_beach_on_wqi(args):
-        beach, date_str, wqi = args
-        if wqi is None:
-            return beach["name"], date_str, None
-        try:
-            v  = wqi.reduceRegion(
-                reducer=ee.Reducer.mean(),
-                geometry=ee.Geometry.Point([beach["lon"], beach["lat"]]).buffer(450),
-                scale=300, bestEffort=True).getInfo()
-            wv = v.get("WQI")
-            return beach["name"], date_str, round(wv, 1) if wv else None
-        except:
-            return beach["name"], date_str, None
-
-    # Compute WQI images for all dates (up to 4 in parallel)
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        wqi_images = dict(ex.map(_wqi_for_date, date_ts))
-
-    # Sample all beaches × all dates
-    tasks = [(b, d, wqi_images.get(d)) for b in BEACHES for d, _ in date_ts]
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        results = list(ex.map(_sample_beach_on_wqi, tasks))
-
-    # Organize into dict
-    history = {b["name"]: [] for b in BEACHES}
-    for beach_name, date_str, wqi_val in results:
-        history[beach_name].append({"date": date_str, "wqi": wqi_val})
-
-    # Sort by date
-    for name in history:
-        history[name] = sorted(history[name], key=lambda x: x["date"])
-
-    return history
-
-
-@st.cache_data(ttl=7200)
-def process_port_medi(port_key, target_date_str):
-    """Compute WQI + SST anomaly for a specific port zone."""
-    port = PORTS[port_key]
-    bbox = port["bbox"]
-    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    t    = ee.Date(target_date_str)
-
-    # S3 WQI
-    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-            .filterBounds(bbox)
-            .filterDate(t.advance(-2,"day"), t.advance(1,"day")))
-    if coll.size().getInfo() == 0:
-        wqi_val, age_h = None, 48.0
-    else:
-        img_first  = coll.sort("system:time_start", False).first()
-        img_time   = img_first.get("system:time_start").getInfo()
-        age_h      = (datetime.utcnow() - datetime.utcfromtimestamp(img_time/1000)).total_seconds() / 3600
-        img        = coll.median().clip(bbox).updateMask(wm)
-        ndwi       = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
-        b10,b11,b12= img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
-        mci        = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
-        turb       = img.select("Oa08_radiance")
-        raw        = ndwi.unitScale(-0.2,0.5).clamp(0,1).add(
-                        ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1)).add(
-                        ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1)
-                     ).divide(3).multiply(100).rename("WQI")
-        try:
-            val     = raw.reduceRegion(reducer=ee.Reducer.mean(), geometry=bbox, scale=300, bestEffort=True).getInfo()
-            wqi_val = round(val.get("WQI"), 1) if val.get("WQI") else None
-        except:
-            wqi_val = None
-
-    # MODIS SST anomaly
-    try:
-        today_sst  = (ee.ImageCollection("MODIS/061/MOD11A1")
-                      .filterBounds(bbox)
-                      .filterDate(t.advance(-2,"day"), t.advance(1,"day"))
-                      .select("LST_Day_1km").mean().multiply(0.02).subtract(273.15).updateMask(wm))
-        base_sst   = (ee.ImageCollection("MODIS/061/MOD11A1")
-                      .filterBounds(bbox)
-                      .filterDate(t.advance(-31,"day"), t.advance(-1,"day"))
-                      .select("LST_Day_1km").mean().multiply(0.02).subtract(273.15).updateMask(wm))
-        anom_val   = today_sst.subtract(base_sst).reduceRegion(
-                        reducer=ee.Reducer.mean(), geometry=bbox, scale=1000, bestEffort=True).getInfo()
-        sst_anom   = round(float(anom_val.get("LST_Day_1km")), 2) if anom_val.get("LST_Day_1km") else None
-    except:
-        sst_anom = None
-
-    return wqi_val, sst_anom, round(age_h, 1)
-
-
-@st.cache_data(ttl=14400)
-def get_global_wqi_layer(target_date_str, bbox_rect):
-    lon_min,lat_min,lon_max,lat_max=bbox_rect
-    bbox=ee.Geometry.Rectangle([lon_min,lat_min,lon_max,lat_max])
-    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    t=ee.Date(target_date_str)
-    coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(bbox)
-          .filterDate(t.advance(-1,'day'),t.advance(1,'day')))
-    if coll.size().getInfo()==0: return None,"No data for this area/date."
-    img=coll.median().clip(bbox).updateMask(wm)
-    ndwi=img.normalizedDifference(['Oa06_radiance','Oa17_radiance'])
-    b10,b11,b12=img.select('Oa10_radiance'),img.select('Oa11_radiance'),img.select('Oa12_radiance')
-    mci=b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
-    turb=img.select('Oa08_radiance')
-    raw=ndwi.unitScale(-0.2,0.5).clamp(0,1).add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1)).add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1)).divide(3).multiply(100).rename('WQI')
-    return raw.reduceNeighborhood(reducer=ee.Reducer.mean(),kernel=ee.Kernel.square(radius=1,units='pixels')).rename('WQI').updateMask(wm), None
-
-def get_bbox_from_map(map_data, zoom):
-    if not map_data or not map_data.get("center"): return None
-    lat=map_data["center"]["lat"]; lon=map_data["center"]["lng"]
-    dp=360.0/(256*(2**zoom)); hw=dp*400; hh=dp*275
-    return (max(-180,lon-hw),max(-85,lat-hh),min(180,lon+hw),min(85,lat+hh))
-
-def haversine_km(lat1,lon1,lat2,lon2):
-    R=6371.0; p1,p2=math.radians(lat1),math.radians(lat2)
-    a=math.sin(math.radians(lat2-lat1)/2)**2+math.cos(p1)*math.cos(p2)*math.sin(math.radians(lon2-lon1)/2)**2
-    return R*2*math.atan2(math.sqrt(a),math.sqrt(1-a))
-
-# =============================================================================
-# UI
-# =============================================================================
-MODE_ISRAEL = "🏖️ Israel Coast"
-MODE_GLOBAL = "🌍 Global"
-mode = MODE_ISRAEL  # Default to Israel Coast
-
-# Risk profile shown in MEDI tab only - initialized here for session state
 medi_profile = "Beach Safety"  # default
 
-# ── Israel Coast ──────────────────────────────────────────────────────────────
+# compute_point_wqi, compute_city_wqi, compute_beach_history_range,
+# compute_zone_history_range imported from gee_processing.py
 
-
-
-@st.cache_data(ttl=7200)
-def compute_point_wqi(lat: float, lon: float, target_date_str: str, source: str = "S3") -> float | None:
-    """
-    WQI at nearest water pixel to (lat, lon).
-    Uses a small buffer (500m) and takes only pixels where GSW >= 30%.
-    Returns scalar WQI or None.
-    """
-    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    pt    = ee.Geometry.Point([lon, lat])
-    buf   = pt.buffer(500)
-    t     = ee.Date(target_date_str)
-
-    try:
-        if source == "S2":
-            coll  = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                     .filterBounds(buf)
-                     .filterDate(t.advance(-5,"day"), t.advance(1,"day"))
-                     .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
-                     .sort("system:time_start", False))
-            if coll.size().getInfo() == 0: return None
-            img   = coll.first().updateMask(wm)
-            b3,b4,b5,b8,b8a = (img.select("B3").divide(10000), img.select("B4").divide(10000),
-                                img.select("B5").divide(10000), img.select("B8").divide(10000),
-                                img.select("B8A").divide(10000))
-            wqi   = (b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
-                     .add(b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1))
-                     .add(ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1))
-                     .divide(3).multiply(100).rename("WQI").updateMask(wm))
-        else:
-            coll  = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                     .filterBounds(buf)
-                     .filterDate(t.advance(-2,"day"), t.advance(1,"day")))
-            if coll.size().getInfo() == 0: return None
-            img   = coll.median().updateMask(wm)
-            ndwi  = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
-            b10,b11,b12 = img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
-            mci   = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
-            turb  = img.select("Oa08_radiance")
-            wqi   = (ndwi.unitScale(-0.2,0.5).clamp(0,1)
-                     .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
-                     .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
-                     .divide(3).multiply(100).rename("WQI").updateMask(wm))
-
-        val = wqi.reduceRegion(
-            reducer   = ee.Reducer.mean(),
-            geometry  = buf,
-            scale     = 300,
-            bestEffort= True
-        ).getInfo()
-        wv = val.get("WQI")
-        return round(float(wv), 1) if wv is not None else None
-    except:
-        return None
-
-
-@st.cache_data(ttl=7200)
-def compute_city_wqi(target_date_str, source="S3"):
-    """
-    Compute WQI for each city's maritime zone polygon.
-    Returns dict: {city_name: wqi_value}
-    """
-    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    t  = ee.Date(target_date_str)
-
-    def _get_wqi_image():
-        if source == "S2":
-            coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                    .filterBounds(HAIFA_BBOX)
-                    .filterDate(t.advance(-5,"day"),t.advance(1,"day"))
-                    .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",30))
-                    .sort("system:time_start",False))
-            if coll.size().getInfo() == 0: return None
-            img   = coll.first().updateMask(wm)
-            b3,b4,b5,b8,b8a = (img.select("B3").divide(10000),img.select("B4").divide(10000),
-                                img.select("B5").divide(10000),img.select("B8").divide(10000),
-                                img.select("B8A").divide(10000))
-            return (b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
-                    .add(b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1))
-                    .add(ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1))
-                    .divide(3).multiply(100).rename("WQI").updateMask(wm))
-        else:
-            coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                    .filterBounds(HAIFA_BBOX)
-                    .filterDate(t.advance(-2,"day"),t.advance(1,"day")))
-            if coll.size().getInfo() == 0: return None
-            img  = coll.median().clip(ISRAEL_CLIP).updateMask(wm)
-            ndwi = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
-            b10,b11,b12 = img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
-            mci  = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
-            turb = img.select("Oa08_radiance")
-            raw  = (ndwi.unitScale(-0.2,0.5).clamp(0,1)
-                    .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
-                    .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
-                    .divide(3).multiply(100).rename("WQI"))
-            return raw.reduceNeighborhood(
-                reducer=ee.Reducer.mean(),
-                kernel=ee.Kernel.square(radius=1,units="pixels")
-            ).rename("WQI").updateMask(wm)
-
-    wqi_img = _get_wqi_image()
-    if wqi_img is None:
-        return {city: None for city in MARITIME_ZONES}
-
-    results = {}
-    for city, polygon in MARITIME_ZONES.items():
-        try:
-            val = wqi_img.reduceRegion(
-                reducer  = ee.Reducer.mean(),
-                geometry = polygon,
-                scale    = 300,
-                bestEffort=True
-            ).getInfo()
-            wv = val.get("WQI")
-            results[city] = round(float(wv), 1) if wv else None
-        except:
-            results[city] = None
-
-    return results
-
-
-@st.cache_data(ttl=86400)
-def compute_beach_history_range(days_back: int):
-    """Compute WQI history for N days. S3+S2+MODIS for all ranges."""
-    end   = datetime.utcnow()
-    start = end - timedelta(days=days_back+1)
-    wide  = ee.Geometry.Rectangle([34.0,29.0,36.0,33.5])
-    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    fmt   = "%Y-%m-%d"
-
-    s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-               .filterBounds(wide)
-               .filterDate(start.strftime(fmt), end.strftime(fmt))
-               .sort("system:time_start",False))
-    s3_ts  = s3_coll.aggregate_array("system:time_start").getInfo()
-    s3_set = set(datetime.utcfromtimestamp(ts/1000).strftime(fmt) for ts in s3_ts)
-
-    s2_coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-               .filterBounds(wide)
-               .filterDate(start.strftime(fmt), end.strftime(fmt))
-               .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
-               .sort("system:time_start",False))
-    s2_ts  = s2_coll.aggregate_array("system:time_start").getInfo()
-    s2_set = set(datetime.utcfromtimestamp(ts/1000).strftime(fmt) for ts in s2_ts)
-
-    # Every calendar day in window, best sensor priority S3>S2>MODIS
-    all_days = [(end-timedelta(days=i)).strftime(fmt) for i in range(days_back+1)]
-    seen=set(); date_ts=[]
-    for d in all_days:
-        if d not in seen:
-            seen.add(d)
-            if d in s3_set:   date_ts.append((d,"S3"))
-            elif d in s2_set: date_ts.append((d,"S2"))
-            else:             date_ts.append((d,"MODIS"))
-
-    if not date_ts: return {}
-
-    def _wqi_for_date(args):
-        date_str,source=args
-        try:
-            t=ee.Date(date_str)
-            if source=="S3":
-                coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(wide)
-                      .filterDate(t,t.advance(1,"day")))
-                if coll.size().getInfo()==0:
-                    coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(wide)
-                          .filterDate(t.advance(-1,"day"),t.advance(2,"day")))
-                    if coll.size().getInfo()==0: return date_str,source,None
-                img=coll.median().clip(ISRAEL_CLIP).updateMask(wm)
-                ndwi=img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
-                b10,b11,b12=img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
-                mci=b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
-                turb=img.select("Oa08_radiance")
-                raw=(ndwi.unitScale(-0.2,0.5).clamp(0,1)
-                     .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
-                     .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
-                     .divide(3).multiply(100).rename("WQI"))
-                wqi=raw.reduceNeighborhood(reducer=ee.Reducer.mean(),
-                    kernel=ee.Kernel.square(radius=1,units="pixels")).rename("WQI").updateMask(wm)
-                return date_str,source,wqi
-            elif source=="S2":
-                coll=(ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED").filterBounds(wide)
-                      .filterDate(t,t.advance(1,"day"))
-                      .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",40))
-                      .sort("system:time_start",False))
-                if coll.size().getInfo()==0: return date_str,source,None
-                img=coll.first().updateMask(wm)
-                b3,b4,b5,b8,b8a=(img.select("B3").divide(10000),img.select("B4").divide(10000),
-                                  img.select("B5").divide(10000),img.select("B8").divide(10000),
-                                  img.select("B8A").divide(10000))
-                wqi=(b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
-                     .add(b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1))
-                     .add(ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1))
-                     .divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm))
-                return date_str,source,wqi
-            else:
-                t2=ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(wide).filterDate(t,t.advance(1,"day"))
-                a2=ee.ImageCollection("MODIS/061/MYD09GA").filterBounds(wide).filterDate(t,t.advance(1,"day"))
-                qa=t2.merge(a2).sort("system:time_start",False)
-                if qa.size().getInfo()==0: return date_str,source,None
-                im=qa.first(); cl=im.select("state_1km").bitwiseAnd(0b11).eq(0)
-                im=im.updateMask(cl).updateMask(wm)
-                b1,b2,b4=im.select("sur_refl_b01"),im.select("sur_refl_b02"),im.select("sur_refl_b04")
-                wqi=(b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3,0.3).clamp(0,1)
-                     .add(b4.divide(b1.add(1e-6)).unitScale(0.8,2.5).clamp(0,1))
-                     .add(ee.Image(1).subtract(b1.unitScale(0,1500)).clamp(0,1))
-                     .divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm))
-                return date_str,source,wqi
-        except: return date_str,source,None
-
-    def _sample(args):
-        beach,date_str,source,wqi=args
-        if wqi is None: return beach["name"],date_str,source,None
-        try:
-            v=wqi.reduceRegion(reducer=ee.Reducer.mean(),
-              geometry=ee.Geometry.Point([beach["lon"],beach["lat"]]).buffer(450),
-              scale=300,bestEffort=True).getInfo()
-            wv=v.get("WQI")
-            return beach["name"],date_str,source,round(wv,1) if wv else None
-        except: return beach["name"],date_str,source,None
-
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        wqi_images=list(ex.map(_wqi_for_date,date_ts))  # list of (date,source,img)
-    img_map={(d,s):img for d,s,img in wqi_images}
-    tasks=[(b,d,s,img_map.get((d,s))) for b in BEACHES for d,s in date_ts]
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        results=list(ex.map(_sample,tasks))
-
-    history={b["name"]:[] for b in BEACHES}
-    for bn,ds,src,wv in results:
-        if wv is not None:
-            history[bn].append({"date":ds,"wqi":wv,"source":src})
-    for n in history:
-        history[n]=sorted(history[n],key=lambda x:x["date"])
-    return history
-
-
-
-
-
-
-
-@st.cache_data(ttl=3600)
-def compute_zone_history_range(zones_json: str, days_back: int):
-    """
-    Compute WQI history for user-defined polygon zones over N days.
-    Uses S3 + S2 + MODIS. Stores source (S3/S2/MODIS) per data point for tooltip.
-    zones_json: JSON string of {name: {coords: [...]}} to make it cache-friendly.
-    Returns dict: {zone_name: [{date, wqi, source}, ...]}
-    """
-    import json as _j
-    zones = _j.loads(zones_json)
-    if not zones:
-        return {}
-
-    end   = datetime.utcnow()
-    start = end - timedelta(days=days_back+1)
-    wide  = ee.Geometry.Rectangle([34.0, 29.0, 36.0, 33.5])
-    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-    fmt   = "%Y-%m-%d"
-
-    # ── Discover available dates per sensor ──────────────────────────────────
-    s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-               .filterBounds(wide)
-               .filterDate(start.strftime(fmt), end.strftime(fmt))
-               .sort("system:time_start", False))
-    s3_ts  = s3_coll.aggregate_array("system:time_start").getInfo()
-    # Keep individual timestamps so we can build one image per exact day
-    s3_dates = {}  # date_str -> list of timestamps
-    for ts in s3_ts:
-        d = datetime.utcfromtimestamp(ts/1000).strftime(fmt)
-        s3_dates.setdefault(d, []).append(ts)
-
-    s2_coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-               .filterBounds(wide)
-               .filterDate(start.strftime(fmt), end.strftime(fmt))
-               .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
-               .sort("system:time_start", False))
-    s2_ts  = s2_coll.aggregate_array("system:time_start").getInfo()
-    s2_dates = {}
-    for ts in s2_ts:
-        d = datetime.utcfromtimestamp(ts/1000).strftime(fmt)
-        s2_dates.setdefault(d, []).append(ts)
-
-    # Every calendar day in window: S3 > S2 > MODIS priority
-    all_days = [(end - timedelta(days=i)).strftime(fmt) for i in range(days_back + 1)]
-    seen = set(); date_ts = []
-    for d in all_days:
-        if d not in seen:
-            seen.add(d)
-            if d in s3_dates:
-                date_ts.append((d, "S3"))
-            elif d in s2_dates:
-                date_ts.append((d, "S2"))
-            else:
-                date_ts.append((d, "MODIS"))
-
-    if not date_ts:
-        return {name: [] for name in zones}
-
-    def _wqi_for_date(args):
-        date_str, source = args
-        try:
-            t = ee.Date(date_str)
-            if source == "S3":
-                # Filter to the exact calendar day only (not ±2) to avoid merging adjacent days
-                day_start = t
-                day_end   = t.advance(1, "day")
-                coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                        .filterBounds(wide)
-                        .filterDate(day_start, day_end))
-                if coll.size().getInfo() == 0:
-                    # Fallback: try ±1 day in case of UTC boundary shift
-                    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                            .filterBounds(wide)
-                            .filterDate(t.advance(-1,"day"), t.advance(2,"day")))
-                    if coll.size().getInfo() == 0:
-                        return date_str, source, None
-                img  = coll.median().clip(ISRAEL_CLIP).updateMask(wm)
-                ndwi = img.normalizedDifference(["Oa06_radiance","Oa17_radiance"])
-                b10,b11,b12 = img.select("Oa10_radiance"),img.select("Oa11_radiance"),img.select("Oa12_radiance")
-                mci  = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75-681.25)/(753.75-681.25))))
-                turb = img.select("Oa08_radiance")
-                raw  = (ndwi.unitScale(-0.2,0.5).clamp(0,1)
-                        .add(ee.Image(1).subtract(mci.unitScale(-2,12)).clamp(0,1))
-                        .add(ee.Image(1).subtract(turb.unitScale(10,80)).clamp(0,1))
-                        .divide(3).multiply(100).rename("WQI"))
-                wqi  = raw.reduceNeighborhood(
-                    reducer=ee.Reducer.mean(),
-                    kernel=ee.Kernel.square(radius=1, units="pixels")
-                ).rename("WQI").updateMask(wm)
-                return date_str, source, wqi
-            elif source == "S2":
-                coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                        .filterBounds(wide)
-                        .filterDate(t, t.advance(1,"day"))
-                        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
-                        .sort("system:time_start", False))
-                if coll.size().getInfo() == 0:
-                    return date_str, source, None
-                img   = coll.first().updateMask(wm)
-                b3,b4,b5,b8,b8a = (img.select("B3").divide(10000), img.select("B4").divide(10000),
-                                    img.select("B5").divide(10000), img.select("B8").divide(10000),
-                                    img.select("B8A").divide(10000))
-                wqi = (b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
-                       .add(b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1))
-                       .add(ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1))
-                       .divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm))
-                return date_str, source, wqi
-            else:  # MODIS
-                t2 = ee.ImageCollection("MODIS/061/MOD09GA").filterBounds(wide).filterDate(t, t.advance(1,"day"))
-                a2 = ee.ImageCollection("MODIS/061/MYD09GA").filterBounds(wide).filterDate(t, t.advance(1,"day"))
-                qa = t2.merge(a2).sort("system:time_start", False)
-                if qa.size().getInfo() == 0:
-                    return date_str, source, None
-                im = qa.first(); cl = im.select("state_1km").bitwiseAnd(0b11).eq(0)
-                im = im.updateMask(cl).updateMask(wm)
-                b1,b2,b4 = im.select("sur_refl_b01"),im.select("sur_refl_b02"),im.select("sur_refl_b04")
-                wqi = (b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3,0.3).clamp(0,1)
-                       .add(b4.divide(b1.add(1e-6)).unitScale(0.8,2.5).clamp(0,1))
-                       .add(ee.Image(1).subtract(b1.unitScale(0,1500)).clamp(0,1))
-                       .divide(3).multiply(100).rename("WQI").clip(ISRAEL_CLIP).updateMask(wm))
-                return date_str, source, wqi
-        except:
-            return date_str, source, None
-
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        raw_results = list(ex.map(_wqi_for_date, date_ts))
-
-    # Sample each zone polygon on each date's WQI image
-    history = {name: [] for name in zones}
-    for date_str, source, wqi_img in raw_results:
-        if wqi_img is None:
-            continue
-        for zname, zdata in zones.items():
-            try:
-                poly = ee.Geometry.Polygon([zdata["coords"]])
-                val  = wqi_img.reduceRegion(
-                    reducer=ee.Reducer.mean(),
-                    geometry=poly, scale=300, bestEffort=True
-                ).getInfo()
-                wv = val.get("WQI")
-                if wv is not None:
-                    history[zname].append({
-                        "date": date_str,
-                        "wqi": round(float(wv), 1),
-                        "source": source   # ← stored for tooltip
-                    })
-            except:
-                pass
-
-    for name in history:
-        history[name] = sorted(history[name], key=lambda x: x["date"])
-
-    return history
 
 
 # Session state initialization
@@ -1857,6 +668,202 @@ if mode == MODE_ISRAEL:
         except Exception:
             pass
         return result
+
+    # ── MEDI Confidence Score (MCS) ─────────────────────────────────────────────
+    @st.cache_data(ttl=7200)
+    def compute_confidence_scores(source: str, date_str: str, zones_json: str,
+                                  img_age_hours: float,
+                                  s3_wqi_json: str, s2_wqi_json: str, mod_wqi_json: str,
+                                  history_json: str):
+        """Compute 0-100 confidence score per zone with 7 factor breakdown.
+        Uses ONE reduceRegions GEE call for satellite quality factors + Python for the rest."""
+        import json as _cj
+
+        zones = _cj.loads(zones_json)
+        s3_wqi = _cj.loads(s3_wqi_json) if s3_wqi_json else {}
+        s2_wqi = _cj.loads(s2_wqi_json) if s2_wqi_json else {}
+        mod_wqi = _cj.loads(mod_wqi_json) if mod_wqi_json else {}
+        history = _cj.loads(history_json) if history_json else {}
+
+        results = {}
+        DISPLAY_BOX = ee.Geometry.Rectangle([33.5, 29.5, 36.5, 33.5])
+        wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(10)
+        t = ee.Date(date_str)
+
+        # ── 1. Build FeatureCollection from zones ──────────────────────────
+        features = []
+        zone_names_ordered = []
+        for name, zdata in zones.items():
+            try:
+                if zdata.get("type") == "point":
+                    lat = zdata.get("lat", zdata.get("coords", [0,0])[1] if isinstance(zdata.get("coords"), list) else 0)
+                    lon = zdata.get("lon", zdata.get("coords", [0,0])[0] if isinstance(zdata.get("coords"), list) else 0)
+                    geom = ee.Geometry.Point([lon, lat]).buffer(500)
+                else:
+                    coords = zdata.get("coords", [])
+                    if not coords:
+                        continue
+                    geom = ee.Geometry.Polygon([[[c[0], c[1]] for c in coords]])
+                features.append(ee.Feature(geom, {"name": name}))
+                zone_names_ordered.append(name)
+            except Exception:
+                continue
+
+        if not features:
+            return results
+
+        fc = ee.FeatureCollection(features)
+
+        # ── 2. Get satellite image + quality bands ─────────────────────────
+        sun_zenith_score = 0.8  # default
+        try:
+            if source in ("S3", "Sentinel-3"):
+                coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-3, "day"), t.advance(1, "day"))
+                        .sort("system:time_start", False))
+                img = coll.first()
+                # Valid water: NOT cloud (bit 27) AND water mask
+                qf = img.select("quality_flags")
+                cloud = qf.bitwiseAnd(1 << 27).gt(0)
+                valid = wm.And(cloud.Not()).rename("valid")
+                # QA: also check sun glint (bit 22)
+                glint = qf.bitwiseAnd(1 << 22).gt(0)
+                qa_good = valid.And(glint.Not()).rename("qa")
+                # Sun angle from metadata
+                try:
+                    sza = img.getNumber("SZA").getInfo()
+                    sun_zenith_score = max(0, min(1, 1.0 - (sza - 20) / 60))  # 20°=best, 80°=worst
+                except Exception:
+                    pass
+
+            elif source in ("S2", "Sentinel-2"):
+                coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-8, "day"), t.advance(1, "day"))
+                        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
+                        .sort("system:time_start", False))
+                img = coll.first()
+                scl = img.select("SCL")
+                water = scl.eq(6)
+                cloud = scl.eq(3).Or(scl.eq(8)).Or(scl.eq(9)).Or(scl.eq(10))
+                valid = wm.And(cloud.Not()).rename("valid")
+                qa_good = water.And(cloud.Not()).rename("qa")
+                try:
+                    sza = img.get("MEAN_SOLAR_ZENITH_ANGLE").getInfo()
+                    sun_zenith_score = max(0, min(1, 1.0 - (sza - 20) / 60))
+                except Exception:
+                    pass
+
+            else:  # MODIS
+                coll = (ee.ImageCollection("MODIS/061/MOD09GA")
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-3, "day"), t.advance(1, "day"))
+                        .sort("system:time_start", False))
+                img = coll.first()
+                state = img.select("state_1km")
+                cloud = state.bitwiseAnd(3).gt(0)  # bits 0-1: cloud state
+                shadow = state.bitwiseAnd(4).gt(0)  # bit 2: cloud shadow
+                valid = wm.And(cloud.Not()).And(shadow.Not()).rename("valid")
+                qa_good = valid.rename("qa")  # MODIS QA is simpler
+                try:
+                    sza = img.get("SolarZenith").getInfo()
+                    if sza: sun_zenith_score = max(0, min(1, 1.0 - (float(sza)/100 - 20) / 60))
+                except Exception:
+                    pass
+
+            # ── 3. ONE reduceRegions call for all zones ────────────────────
+            stack = valid.addBands(qa_good).addBands(ee.Image.constant(1).rename("total"))
+            scale = 300 if source not in ("S2", "Sentinel-2") else 100
+
+            stats = stack.reduceRegions(
+                collection=fc,
+                reducer=ee.Reducer.sum().forEachBand(stack),
+                scale=scale
+            ).getInfo()
+
+        except Exception:
+            # If GEE fails, return basic scores from Python-only factors
+            stats = {"features": []}
+
+        # ── 4. Parse GEE results + compute all 7 factors ──────────────────
+        gee_stats = {}
+        for feat in stats.get("features", []):
+            props = feat.get("properties", {})
+            name = props.get("name", "")
+            valid_px = props.get("valid", 0) or 0
+            qa_px = props.get("qa", 0) or 0
+            total_px = props.get("total", 0) or 0
+            gee_stats[name] = {"valid_px": valid_px, "qa_px": qa_px, "total_px": total_px}
+
+        for name in zone_names_ordered:
+            gs = gee_stats.get(name, {"valid_px": 0, "qa_px": 0, "total_px": 1})
+            total = max(gs["total_px"], 1)
+
+            # Factor 1: Cloud-free ratio (25%)
+            cloud_free = min(1.0, gs["valid_px"] / total)
+
+            # Factor 2: Image age (20%) — exponential decay: 0h=1.0, 24h=0.7, 72h=0.3, 120h=0.1
+            age_score = max(0, min(1, math.exp(-0.012 * img_age_hours)))
+
+            # Factor 3: QA flag ratio (20%)
+            qa_ratio = min(1.0, gs["qa_px"] / total)
+
+            # Factor 4: Pixel count (15%) — log scale: 1px=0.1, 10px=0.5, 50px=0.85, 100+=1.0
+            px_count = gs["valid_px"]
+            px_score = min(1.0, math.log10(max(px_count, 1) + 1) / 2.0)
+
+            # Factor 5: Sun angle (10%)
+            sun_score = sun_zenith_score
+
+            # Factor 6: Cross-sensor consistency (5%)
+            vals = []
+            if name in s3_wqi and s3_wqi[name] is not None: vals.append(s3_wqi[name])
+            if name in s2_wqi and s2_wqi[name] is not None: vals.append(s2_wqi[name])
+            if name in mod_wqi and mod_wqi[name] is not None: vals.append(mod_wqi[name])
+            if len(vals) >= 2:
+                spread = max(vals) - min(vals)
+                cross_score = max(0, 1.0 - spread / 30.0)  # 0 spread=1.0, 30+ spread=0
+            else:
+                cross_score = 0.5  # unknown, neutral
+
+            # Factor 7: Temporal consistency (5%)
+            hist_vals = history.get(name, [])
+            recent = [h for h in hist_vals if h is not None][-7:]
+            if len(recent) >= 3:
+                avg7 = sum(recent) / len(recent)
+                std7 = (sum((v - avg7)**2 for v in recent) / len(recent)) ** 0.5
+                current = s3_wqi.get(name) or s2_wqi.get(name) or mod_wqi.get(name)
+                if current is not None and std7 > 0:
+                    z_score = abs(current - avg7) / max(std7, 1)
+                    temporal_score = max(0, 1.0 - z_score / 3.0)  # 0σ=1.0, 3σ=0
+                else:
+                    temporal_score = 0.5
+            else:
+                temporal_score = 0.5  # not enough history
+
+            # Weighted MCS
+            mcs = (cloud_free * 0.25 + age_score * 0.20 + qa_ratio * 0.20 +
+                   px_score * 0.15 + sun_score * 0.10 + cross_score * 0.05 +
+                   temporal_score * 0.05)
+            mcs_pct = round(mcs * 100)
+
+            results[name] = {
+                "score": mcs_pct,
+                "grade": "🟢" if mcs_pct >= 75 else "🟡" if mcs_pct >= 50 else "🔴",
+                "factors": {
+                    "cloud_free": round(cloud_free * 100),
+                    "age": round(age_score * 100),
+                    "qa_flags": round(qa_ratio * 100),
+                    "pixels": int(px_count),
+                    "px_score": round(px_score * 100),
+                    "sun_angle": round(sun_score * 100),
+                    "cross_sensor": round(cross_score * 100),
+                    "temporal": round(temporal_score * 100),
+                }
+            }
+
+        return results
 
     # Shared map builder
     def _build_map(selected_beach=None):
@@ -2443,6 +1450,28 @@ if mode == MODE_ISRAEL:
                     if st.session_state.user_zones.get(vb, {}).get("group", "") in _vis_grps
                 ]
 
+                # ── Compute MEDI Confidence Scores ─────────────────────────────
+                _conf_scores = {}
+                try:
+                    import json as _cjconf
+                    _zones_j = _cjconf.dumps(st.session_state.user_zones)
+                    # Build per-sensor WQI dicts from current_vals or df
+                    _s3_wqi_j = _cjconf.dumps({n: float(current_vals.get(n)) for n in st.session_state.user_zones if current_vals.get(n) is not None}) if s3_df is not None else "{}"
+                    _s2_wqi_j = _cjconf.dumps({n: float(current_vals.get(n)) for n in st.session_state.user_zones if current_vals.get(n) is not None}) if s2_df is not None else "{}"
+                    _mod_wqi_j = _cjconf.dumps({n: float(current_vals.get(n)) for n in st.session_state.user_zones if current_vals.get(n) is not None}) if mod_df is not None else "{}"
+                    # History: extract just WQI values per zone for the function
+                    _hist_j = _cjconf.dumps({
+                        n: [e.get("wqi") for e in beach_history.get(n, []) if e.get("wqi") is not None]
+                        for n in st.session_state.user_zones
+                    })
+                    _conf_scores = compute_confidence_scores(
+                        data_source, sel_date, _zones_j,
+                        img_age_hours,
+                        _s3_wqi_j, _s2_wqi_j, _mod_wqi_j, _hist_j
+                    )
+                except Exception:
+                    pass  # Confidence scores are optional — don't break the dashboard
+
                 # Pre-merge zone history into beach_history so all_dates is correct
                 for zname, zhistory in user_zone_history.items():
                     if zname not in beach_history:
@@ -2489,7 +1518,7 @@ if mode == MODE_ISRAEL:
                         hist_vals = [e["wqi"] for e in beach_history.get(name,[]) if e["wqi"] and str(e["wqi"]) != "nan"]
                         return hist_vals[-1] if hist_vals else None
 
-                    PALETTE = ["#1D9E75","#378ADD","#7F77DD","#BA7517","#D4537E","#E24B4A","#639922","#D85A30"]
+                    # PALETTE imported from config
 
                     # ── Task 8: Group-aware chart building ────────────────────
                     chart_view_mode = st.session_state.get("chart_view_mode", "All zones (individual)")
@@ -3327,6 +2356,11 @@ For the 5 most concerning stations.
                             else:
                                 # Display mode
                                 grp_badge = f' <span style="font-size:12px;background:rgba(0,200,200,0.15);color:#00c8c8;border-radius:3px;padding:1px 5px;">{zgrp}</span>' if zgrp else ""
+                                # Confidence badge
+                                _zconf = _conf_scores.get(zname, {})
+                                _cscore = _zconf.get("score", "")
+                                _cgrade = _zconf.get("grade", "")
+                                conf_badge = f' <span style="font-size:11px;color:#7fb3d3;" title="Cloud:{_zconf.get("factors",{}).get("cloud_free","")}% | Age:{_zconf.get("factors",{}).get("age","")}% | QA:{_zconf.get("factors",{}).get("qa_flags","")}% | Px:{_zconf.get("factors",{}).get("pixels","")} | Sun:{_zconf.get("factors",{}).get("sun_angle","")}% | XSensor:{_zconf.get("factors",{}).get("cross_sensor","")}% | Temporal:{_zconf.get("factors",{}).get("temporal","")}%">{_cgrade}{_cscore}%</span>' if _cscore else ""
                                 zc, ze, zd = st.columns([3, 0.5, 0.5])
                                 with zc:
                                     st.markdown(f'<div style="font-size:14px;color:#d6eaf8;padding:2px 0;">{icon} {zname}{grp_badge} <span style="color:#7fb3d3;">WQI: {zwqi_str}</span></div>',
