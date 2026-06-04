@@ -593,7 +593,7 @@ if mode == MODE_ISRAEL:
                         .sort("system:time_start", False))
                 if coll.size().getInfo() == 0:
                     return result
-                img = coll.first().clip(DISPLAY_BOX)
+                img = coll.mosaic().clip(DISPLAY_BOX)
                 # NDWI (normalized exactly like WQI pipeline)
                 ndwi = img.normalizedDifference(["Oa06_radiance", "Oa17_radiance"])
                 ndwi_n = ndwi.unitScale(-0.2, 0.5).clamp(0, 1).updateMask(wm)
@@ -618,7 +618,7 @@ if mode == MODE_ISRAEL:
                         .sort("system:time_start", False))
                 if coll.size().getInfo() == 0:
                     return result
-                img = coll.first().clip(DISPLAY_BOX)
+                img = coll.mosaic().clip(DISPLAY_BOX)
                 b3 = img.select("B3").divide(10000)
                 b4 = img.select("B4").divide(10000)
                 b5 = img.select("B5").divide(10000)
@@ -647,7 +647,7 @@ if mode == MODE_ISRAEL:
                          .sort("system:time_start", False))
                 if terra.size().getInfo() == 0:
                     return result
-                img = terra.first().clip(DISPLAY_BOX)
+                img = terra.mosaic().clip(DISPLAY_BOX)
                 b1 = img.select("sur_refl_b01")
                 b2 = img.select("sur_refl_b02")
                 b4 = img.select("sur_refl_b04")
