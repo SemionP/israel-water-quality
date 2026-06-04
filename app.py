@@ -1984,38 +1984,64 @@ if mode == MODE_ISRAEL:
                                         _tr_band = None
 
                                     if _tr_img:
-                                        # Sample along line: ~50 points
-                                        _n_pts = 50
-                                        _sampled = _tr_img.sample(
-                                            region=_line_geom,
-                                            scale=_tr_scale,
-                                            numPixels=_n_pts,
-                                            geometries=True
-                                        ).getInfo()
-
-                                        # Calculate cumulative distance along line
                                         import math as _m
                                         def _haversine(lat1, lon1, lat2, lon2):
                                             R = 6371000
                                             phi1, phi2 = _m.radians(lat1), _m.radians(lat2)
-                                            dphi = _m.radians(lat2 - lat1)
-                                            dlam = _m.radians(lon2 - lon1)
-                                            a = _m.sin(dphi/2)**2 + _m.cos(phi1)*_m.cos(phi2)*_m.sin(dlam/2)**2
-                                            return R * 2 * _m.atan2(_m.sqrt(a), _m.sqrt(1-a))
+                                            dphi = _m.radians(lat2-lat1)
+                                            dlam = _m.radians(lon2-lon1)
+                                            a = _m.sin(dphi/2)**2+_m.cos(phi1)*_m.cos(phi2)*_m.sin(dlam/2)**2
+                                            return R*2*_m.atan2(_m.sqrt(a),_m.sqrt(1-a))
 
-                                        # Sort features by position along line
+                                        # Interpolate ~50 evenly-spaced points along line in Python
+                                        # (avoids CRS issues — we sample at explicit WGS84 points)
+                                        _N = 50
+                                        _seg_lens = [_haversine(
+                                            _line_coords[i][1],_line_coords[i][0],
+                                            _line_coords[i+1][1],_line_coords[i+1][0])
+                                            for i in range(len(_line_coords)-1)]
+                                        _total_len = sum(_seg_lens)
+                                        _step = _total_len / (_N - 1)
+
+                                        _interp_pts = []  # [(lon,lat,cum_dist)]
+                                        _cum = 0.0
+                                        _seg_i = 0
+                                        _seg_cum = 0.0
+                                        _interp_pts.append((_line_coords[0][0], _line_coords[0][1], 0.0))
+                                        for _k in range(1, _N):
+                                            _target = _k * _step
+                                            while _seg_i < len(_seg_lens)-1 and _seg_cum + _seg_lens[_seg_i] < _target:
+                                                _seg_cum += _seg_lens[_seg_i]
+                                                _seg_i += 1
+                                            _frac = (_target - _seg_cum) / max(_seg_lens[_seg_i], 1e-9)
+                                            _frac = max(0.0, min(1.0, _frac))
+                                            _p0 = _line_coords[_seg_i]
+                                            _p1 = _line_coords[min(_seg_i+1, len(_line_coords)-1)]
+                                            _ilon = _p0[0] + _frac*(_p1[0]-_p0[0])
+                                            _ilat = _p0[1] + _frac*(_p1[1]-_p0[1])
+                                            _interp_pts.append((_ilon, _ilat, _target))
+
+                                        # Build FeatureCollection of interpolated points
+                                        _fc_pts = ee.FeatureCollection([
+                                            ee.Feature(ee.Geometry.Point([_p[0],_p[1]]),{"dist":_p[2]})
+                                            for _p in _interp_pts
+                                        ])
+
+                                        # Sample image at each point — no clip needed
+                                        _sampled = _tr_img.sampleRegions(
+                                            collection=_fc_pts,
+                                            scale=_tr_scale,
+                                            geometries=False
+                                        ).getInfo()
+
                                         _feats = _sampled.get("features", [])
-                                        # Compute distance from start for each feature
-                                        _start = _line_coords[0]
                                         _pts_dist = []
-                                        for _f in _feats:
-                                            _fc = _f["geometry"]["coordinates"]
-                                            _d = _haversine(_start[1], _start[0], _fc[1], _fc[0])
+                                        for _fi, _f in enumerate(_feats):
                                             _props = _f.get("properties", {})
-                                            # Get first numeric band value
+                                            _d = _interp_pts[_fi][2] if _fi < len(_interp_pts) else 0
                                             _val = None
-                                            for _v in _props.values():
-                                                if isinstance(_v, (int, float)):
+                                            for _k, _v in _props.items():
+                                                if _k != "dist" and isinstance(_v, (int, float)):
                                                     _val = round(float(_v), 3)
                                                     break
                                             if _val is not None:
@@ -2024,10 +2050,7 @@ if mode == MODE_ISRAEL:
                                         _pts_dist.sort(key=lambda x: x[0])
                                         _distances = [round(p[0]) for p in _pts_dist]
                                         _values    = [p[1] for p in _pts_dist]
-                                        _total_km  = round(_haversine(
-                                            _line_coords[0][1], _line_coords[0][0],
-                                            _line_coords[-1][1], _line_coords[-1][0]
-                                        ) / 1000, 2)
+                                        _total_km  = round(_total_len / 1000, 2)
 
                                         st.session_state.transect_result = {
                                             "hash": _line_hash,
