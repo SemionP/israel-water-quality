@@ -116,21 +116,21 @@ BEACHES = [
 PORTS = {
     "🚢 Haifa Port": {
         "lat": 32.8230, "lon": 35.0020,
-        "bbox": ee.Geometry.Rectangle([34.94, 32.78, 35.06, 32.87]),
+        "bbox": {"_type": "rect", "coords": [34.94, 32.78, 35.06, 32.87]},
         "radius_km": 5,
         "description": "Major Mediterranean cargo & passenger port",
         "atm_coords": (32.82, 35.00),
     },
     "⚓ Ashdod Port": {
         "lat": 31.8167, "lon": 34.6500,
-        "bbox": ee.Geometry.Rectangle([34.60, 31.77, 34.70, 31.86]),
+        "bbox": {"_type": "rect", "coords": [34.60, 31.77, 34.70, 31.86]},
         "radius_km": 4,
         "description": "Israel's largest cargo port",
         "atm_coords": (31.82, 34.65),
     },
     "🐠 Eilat Port": {
         "lat": 29.5510, "lon": 34.9480,
-        "bbox": ee.Geometry.Rectangle([34.91, 29.51, 34.99, 29.59]),
+        "bbox": {"_type": "rect", "coords": [34.91, 29.51, 34.99, 29.59]},
         "radius_km": 3,
         "description": "Red Sea port - coral reef proximity",
         "atm_coords": (29.55, 34.95),
@@ -143,45 +143,45 @@ PORTS = {
 # Each polygon: ~3-5km offshore, covers city coastal stretch
 # =============================================================================
 MARITIME_ZONES = {
-    "Nahariya":  ee.Geometry.Polygon([[
+    "Nahariya":  {"_type": "poly", "coords": [[
         [34.88, 33.00], [34.95, 33.00], [34.95, 33.05], [34.88, 33.05]
-    ]]),
-    "Acre":      ee.Geometry.Polygon([[
+    ]]},
+    "Acre":      {"_type": "poly", "coords": [[
         [34.90, 32.90], [34.97, 32.90], [34.97, 32.95], [34.90, 32.95]
-    ]]),
-    "Krayot":    ee.Geometry.Polygon([[
+    ]]},
+    "Krayot":    {"_type": "poly", "coords": [[
         [34.92, 32.83], [34.98, 32.83], [34.98, 32.89], [34.92, 32.89]
-    ]]),
-    "Haifa":     ee.Geometry.Polygon([[
+    ]]},
+    "Haifa":     {"_type": "poly", "coords": [[
         [34.88, 32.78], [34.97, 32.78], [34.97, 32.84], [34.88, 32.84]
-    ]]),
-    "Atlit":     ee.Geometry.Polygon([[
+    ]]},
+    "Atlit":     {"_type": "poly", "coords": [[
         [34.88, 32.67], [34.95, 32.67], [34.95, 32.72], [34.88, 32.72]
-    ]]),
-    "Caesarea":  ee.Geometry.Polygon([[
+    ]]},
+    "Caesarea":  {"_type": "poly", "coords": [[
         [34.85, 32.47], [34.93, 32.47], [34.93, 32.53], [34.85, 32.53]
-    ]]),
-    "Hadera":    ee.Geometry.Polygon([[
+    ]]},
+    "Hadera":    {"_type": "poly", "coords": [[
         [34.84, 32.42], [34.92, 32.42], [34.92, 32.47], [34.84, 32.47]
-    ]]),
-    "Netanya":   ee.Geometry.Polygon([[
+    ]]},
+    "Netanya":   {"_type": "poly", "coords": [[
         [34.82, 32.28], [34.90, 32.28], [34.90, 32.35], [34.82, 32.35]
-    ]]),
-    "Herzliya":  ee.Geometry.Polygon([[
+    ]]},
+    "Herzliya":  {"_type": "poly", "coords": [[
         [34.77, 32.14], [34.85, 32.14], [34.85, 32.20], [34.77, 32.20]
-    ]]),
-    "Tel Aviv":  ee.Geometry.Polygon([[
+    ]]},
+    "Tel Aviv":  {"_type": "poly", "coords": [[
         [34.73, 32.04], [34.81, 32.04], [34.81, 32.12], [34.73, 32.12]
-    ]]),
-    "Palmahim":  ee.Geometry.Polygon([[
+    ]]},
+    "Palmahim":  {"_type": "poly", "coords": [[
         [34.68, 31.90], [34.76, 31.90], [34.76, 31.96], [34.68, 31.96]
-    ]]),
-    "Ashdod":    ee.Geometry.Polygon([[
+    ]]},
+    "Ashdod":    {"_type": "poly", "coords": [[
         [34.60, 31.77], [34.68, 31.77], [34.68, 31.84], [34.60, 31.84]
-    ]]),
-    "Ashkelon":  ee.Geometry.Polygon([[
+    ]]},
+    "Ashkelon":  {"_type": "poly", "coords": [[
         [34.52, 31.63], [34.60, 31.63], [34.60, 31.69], [34.52, 31.69]
-    ]]),
+    ]]},
 }
 
 # Representative point for each city (for map marker)
