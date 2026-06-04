@@ -316,7 +316,7 @@ from gee_processing import (init_gee, get_atm, get_sst, get_available_s3_dates,
     get_available_dates_combined, process_israel_wqi, compute_beach_history_7d,
     process_port_medi, get_global_wqi_layer, get_bbox_from_map, haversine_km,
     compute_point_wqi, compute_city_wqi, compute_beach_history_range,
-    compute_zone_history_range, _empty_atm)
+    compute_zone_history_range, _empty_atm, MODE_ISRAEL, MODE_GLOBAL, mode)
 init_gee()
 
 
