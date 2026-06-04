@@ -929,3 +929,45 @@ def compute_zone_history_range(zones_json: str, days_back: int):
         history[name] = sorted(history[name], key=lambda x: x["date"])
 
     return history
+def sample_pixel_spectra(lat: float, lon: float, source: str, target_date_str: str) -> dict:
+    pt = ee.Geometry.Point([lon, lat])
+    t  = ee.Date(target_date_str)
+    try:
+        if source == "S2":
+            coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                    .filterBounds(pt)
+                    .filterDate(t.advance(-8,"day"), t.advance(1,"day"))
+                    .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
+                    .sort("system:time_start", False))
+            if coll.size().getInfo() == 0: return {}
+            img    = coll.first()
+            bands  = ["B1","B2","B3","B4","B5","B6","B7","B8","B8A","B11","B12"]
+            labels = {"B1":"443nm","B2":"490nm","B3":"560nm","B4":"665nm","B5":"705nm",
+                      "B6":"740nm","B7":"783nm","B8":"842nm","B8A":"865nm","B11":"1610nm","B12":"2190nm"}
+            vals   = img.select(bands).reduceRegion(ee.Reducer.mean(), pt.buffer(30), 10).getInfo()
+            return {labels[b]: round((vals.get(b) or 0)/10000, 5) for b in bands}
+        elif source == "S3":
+            coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                    .filterBounds(pt)
+                    .filterDate(t.advance(-3,"day"), t.advance(1,"day"))
+                    .sort("system:time_start", False))
+            if coll.size().getInfo() == 0: return {}
+            img   = coll.first()
+            bands = [f"Oa{str(i).zfill(2)}_radiance" for i in range(1,17)]
+            wls   = ["400","412","443","490","510","560","620","665","674","681","709","754","760","764","767","779"]
+            vals  = img.select(bands).reduceRegion(ee.Reducer.mean(), pt.buffer(300), 300).getInfo()
+            return {f"{wls[i]}nm": round(vals.get(bands[i]) or 0, 3) for i in range(len(bands))}
+        else:  # MODIS
+            coll = (ee.ImageCollection("MODIS/061/MOD09GA")
+                    .filterBounds(pt)
+                    .filterDate(t.advance(-3,"day"), t.advance(1,"day"))
+                    .sort("system:time_start", False))
+            if coll.size().getInfo() == 0: return {}
+            img    = coll.first()
+            bands  = ["sur_refl_b01","sur_refl_b02","sur_refl_b03","sur_refl_b04","sur_refl_b05","sur_refl_b06","sur_refl_b07"]
+            labels = {"sur_refl_b01":"645nm","sur_refl_b02":"858nm","sur_refl_b03":"469nm",
+                      "sur_refl_b04":"555nm","sur_refl_b05":"1240nm","sur_refl_b06":"1640nm","sur_refl_b07":"2130nm"}
+            vals   = img.select(bands).reduceRegion(ee.Reducer.mean(), pt.buffer(500), 500).getInfo()
+            return {labels[b]: round((vals.get(b) or 0)/10000, 5) for b in bands}
+    except Exception:
+        return {}
