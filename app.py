@@ -1938,50 +1938,77 @@ if mode == MODE_ISRAEL:
                         elif len(_line_coords) >= 2:
                             with st.spinner("📏 Sampling transect from GEE..."):
                                 try:
-                                    # Build ee.Geometry.LineString
-                                    _line_geom = ee.Geometry.LineString([[c[0],c[1]] for c in _line_coords])
                                     _t = ee.Date(sel_date)
 
-                                    # Detect active layer from _raster_layers visible state
-                                    # Use session state to track which layer is active
-                                    _active_layer_id = st.session_state.get("transect_active_layer", "wqi_active")
-
                                     # Build image + band based on active layer
-                                    if "wqi" in _active_layer_id or _active_layer_id == "wqi_active":
-                                        # WQI — use existing wqi pipeline
+                                    # IMPORTANT: build fresh images WITHOUT .clip() to avoid CRS issues
+                                    _active_layer_id = st.session_state.get("transect_active_layer", "wqi_active")
+                                    _t = ee.Date(sel_date)
+                                    _tr_img = None
+                                    _tr_name = "WQI"
+                                    _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
+
+                                    try:
                                         if sel_src == "S2":
-                                            _tr_layer, _, _, _, _ = process_israel_s2(sel_date)
+                                            _coll_tr = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                                                .filterDate(_t.advance(-8,"day"),_t.advance(1,"day"))
+                                                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",40))
+                                                .sort("system:time_start",False))
+                                            _raw = _coll_tr.first() if _coll_tr.size().getInfo()>0 else None
+                                            if _raw:
+                                                b3=_raw.select("B3").divide(10000); b4=_raw.select("B4").divide(10000)
+                                                b5=_raw.select("B5").divide(10000); b8=_raw.select("B8").divide(10000)
+                                                b8a=_raw.select("B8A").divide(10000)
+                                                if "ndwi" in _active_layer_id:
+                                                    _tr_img = b3.subtract(b8).divide(b3.add(b8)).rename("value"); _tr_name="NDWI"
+                                                elif "chl" in _active_layer_id:
+                                                    _tr_img = b5.divide(b4.add(1e-6)).rename("value"); _tr_name="CHL"
+                                                elif "turb" in _active_layer_id:
+                                                    _tr_img = b4.add(b8a).divide(2).rename("value"); _tr_name="Turbidity"
+                                                else:
+                                                    ndwi=b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
+                                                    chl=b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1)
+                                                    turb=b4.add(b8a).divide(2).unitScale(0,0.15).clamp(0,1)
+                                                    _tr_img = ndwi.multiply(0.4).add(chl.multiply(0.3).add(turb.multiply(0.3))).multiply(-1).add(1).multiply(60).add(30).rename("value"); _tr_name="WQI"
                                         elif sel_src == "S3":
-                                            _tr_layer, _, _, _ = process_israel_wqi(sel_date)
-                                        else:
-                                            _tr_layer, _, _, _, _ = process_modis_wqi(sel_date)
-                                        _tr_img = ee.Image(_tr_layer) if _tr_layer else None
-                                        _tr_band = None  # already single band
-                                        _tr_name = "WQI"
-                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
-                                    elif "ndwi" in _active_layer_id:
-                                        _tr_name = "NDWI"
-                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
-                                        _tr_img, _tr_band = _build_index_img("ndwi", sel_src, sel_date, _t)
-                                    elif "chl" in _active_layer_id or "mci" in _active_layer_id:
-                                        _tr_name = "CHL"
-                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
-                                        _tr_img, _tr_band = _build_index_img("chl", sel_src, sel_date, _t)
-                                    elif "turb" in _active_layer_id:
-                                        _tr_name = "Turbidity"
-                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
-                                        _tr_img, _tr_band = _build_index_img("turb", sel_src, sel_date, _t)
-                                    else:
-                                        _tr_name = "WQI"
-                                        _tr_scale = 300
-                                        if sel_src == "S3":
-                                            _tr_layer, _, _, _ = process_israel_wqi(sel_date)
-                                        elif sel_src == "S2":
-                                            _tr_layer, _, _, _, _ = process_israel_s2(sel_date)
-                                        else:
-                                            _tr_layer, _, _, _, _ = process_modis_wqi(sel_date)
-                                        _tr_img = ee.Image(_tr_layer) if _tr_layer else None
-                                        _tr_band = None
+                                            _coll_tr = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                                                .filterDate(_t.advance(-3,"day"),_t.advance(1,"day"))
+                                                .sort("system:time_start",False))
+                                            _raw = _coll_tr.first() if _coll_tr.size().getInfo()>0 else None
+                                            if _raw:
+                                                if "ndwi" in _active_layer_id:
+                                                    _tr_img = _raw.normalizedDifference(["Oa06_radiance","Oa17_radiance"]).rename("value"); _tr_name="NDWI"
+                                                elif "chl" in _active_layer_id or "mci" in _active_layer_id:
+                                                    _tr_img = _raw.select("Oa10_radiance").subtract(_raw.select("Oa09_radiance")).rename("value"); _tr_name="MCI"
+                                                elif "turb" in _active_layer_id:
+                                                    _tr_img = _raw.select("Oa08_radiance").rename("value"); _tr_name="Turbidity"
+                                                else:
+                                                    ndwi=_raw.normalizedDifference(["Oa06_radiance","Oa17_radiance"]).unitScale(-0.2,0.5).clamp(0,1)
+                                                    mci=_raw.select("Oa10_radiance").subtract(_raw.select("Oa09_radiance")).unitScale(-2,12).clamp(0,1)
+                                                    turb=_raw.select("Oa08_radiance").unitScale(10,80).clamp(0,1)
+                                                    _tr_img = ndwi.multiply(0.4).add(mci.multiply(0.3).add(turb.multiply(0.3))).multiply(-1).add(1).multiply(60).add(30).rename("value"); _tr_name="WQI"
+                                            _tr_scale = 300
+                                        else:  # MODIS
+                                            _coll_tr = (ee.ImageCollection("MODIS/061/MOD09GA")
+                                                .filterDate(_t.advance(-3,"day"),_t.advance(1,"day"))
+                                                .sort("system:time_start",False))
+                                            _raw = _coll_tr.first() if _coll_tr.size().getInfo()>0 else None
+                                            if _raw:
+                                                b1=_raw.select("sur_refl_b01"); b2=_raw.select("sur_refl_b02"); b4=_raw.select("sur_refl_b04")
+                                                if "ndwi" in _active_layer_id:
+                                                    _tr_img = b4.subtract(b2).divide(b4.add(b2)).rename("value"); _tr_name="NDWI"
+                                                elif "chl" in _active_layer_id:
+                                                    _tr_img = b4.divide(b1.add(1)).rename("value"); _tr_name="CHL"
+                                                elif "turb" in _active_layer_id:
+                                                    _tr_img = b1.rename("value"); _tr_name="Turbidity"
+                                                else:
+                                                    ndwi=b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3,0.3).clamp(0,1)
+                                                    chl=b4.divide(b1.add(1)).unitScale(0.8,2.5).clamp(0,1)
+                                                    turb=b1.unitScale(0,1500).clamp(0,1)
+                                                    _tr_img = ndwi.multiply(0.4).add(chl.multiply(0.3).add(turb.multiply(0.3))).multiply(-1).add(1).multiply(60).add(30).rename("value"); _tr_name="WQI"
+                                            _tr_scale = 500
+                                    except Exception as _img_err:
+                                        st.warning(f"Image build failed: {_img_err}")
 
                                     if _tr_img:
                                         import math as _m
