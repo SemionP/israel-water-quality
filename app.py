@@ -1410,27 +1410,111 @@ if mode == MODE_ISRAEL:
                 if st.session_state.spectra_result:
                     _sp = st.session_state.spectra_result
                     _lat_str, _lon_str = st.session_state.spectra_click.split(",")
-                    st.markdown(
-                        f'<div style="font-size:12px;color:#7fb3d3;margin:4px 0 2px;">'
-                        f'🔬 Spectra · {data_source} · {_lat_str}°N {_lon_str}°E</div>',
-                        unsafe_allow_html=True)
-                    _max_val = max(_sp.values()) if _sp else 1
-                    _bar_html = '<div style="display:flex;align-items:flex-end;gap:3px;height:80px;padding:4px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.15);border-radius:5px;">'
-                    for _wl, _rv in _sp.items():
-                        _pct = int((_rv / _max_val) * 100) if _max_val else 0
-                        _wl_num = int(_wl.replace("nm","")) if "nm" in _wl else 500
-                        _col = "#8B00FF" if _wl_num<450 else "#0055FF" if _wl_num<500 else "#00AA00" if _wl_num<570 else "#FF4400" if _wl_num<700 else "#880000"
-                        _bar_html += f'<div title="{_wl}: {_rv}" style="flex:1;min-width:8px;height:{_pct}%;background:{_col};border-radius:2px 2px 0 0;cursor:help;"></div>'
-                    _bar_html += '</div>'
-                    _bar_html += '<div style="display:flex;gap:3px;overflow-x:auto;">'
-                    for _wl, _rv in _sp.items():
-                        _bar_html += f'<div style="flex:1;min-width:8px;text-align:center;font-size:9px;color:#7fb3d3;">{_rv}</div>'
-                    _bar_html += '</div>'
-                    _bar_html += '<div style="display:flex;gap:3px;overflow-x:auto;margin-bottom:4px;">'
-                    for _wl in _sp.keys():
-                        _bar_html += f'<div style="flex:1;min-width:8px;text-align:center;font-size:9px;color:#7fb3d3;">{_wl}</div>'
-                    _bar_html += '</div>'
-                    st.markdown(_bar_html, unsafe_allow_html=True)
+                    import json as _spj
+                    _sp_labels = list(_sp.keys())
+                    _sp_values = list(_sp.values())
+                    _sp_labels_j = _spj.dumps(_sp_labels)
+                    _sp_values_j = _spj.dumps(_sp_values)
+                    _src_color = "#1D9E75" if sel_src=="S2" else "#378ADD" if sel_src=="S3" else "#EF9F27"
+                    _y_label = "Radiance" if sel_src=="S3" else "Reflectance"
+                    _spectra_html = f"""
+<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.2);border-radius:6px;padding:10px 12px;margin-top:6px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+    <span style="font-size:12px;color:#7fb3d3;font-family:monospace;">🔬 {data_source} · {_lat_str}°N {_lon_str}°E</span>
+    <button onclick="document.getElementById('spectra-wrap').style.display='none'" style="background:transparent;border:none;color:#7fb3d3;cursor:pointer;font-size:14px;">✕</button>
+  </div>
+  <div id="spectra-wrap">
+    <div style="position:relative;width:100%;height:220px;">
+      <canvas id="spectraChart" role="img" aria-label="Spectral reflectance chart for clicked pixel">Spectral data.</canvas>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:10px;color:#7fb3d3;">
+      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(148,0,211,0.5);display:inline-block;"></span>Violet</span>
+      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(0,0,255,0.4);display:inline-block;"></span>Blue</span>
+      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(0,180,0,0.4);display:inline-block;"></span>Green</span>
+      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(255,220,0,0.5);display:inline-block;"></span>Yellow</span>
+      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(255,140,0,0.5);display:inline-block;"></span>Orange</span>
+      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(220,0,0,0.4);display:inline-block;"></span>Red</span>
+      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(180,180,180,0.3);display:inline-block;"></span>NIR/SWIR</span>
+    </div>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+(function(){{
+  var labels = {_sp_labels_j};
+  var values = {_sp_values_j};
+  var srcColor = "{_src_color}";
+  var VISIBLE = [
+    {{name:'Violet', wl:[380,450], color:'rgba(148,0,211,0.15)'}},
+    {{name:'Blue',   wl:[450,495], color:'rgba(0,0,255,0.12)'}},
+    {{name:'Green',  wl:[495,570], color:'rgba(0,180,0,0.12)'}},
+    {{name:'Yellow', wl:[570,590], color:'rgba(255,220,0,0.15)'}},
+    {{name:'Orange', wl:[590,620], color:'rgba(255,140,0,0.15)'}},
+    {{name:'Red',    wl:[620,700], color:'rgba(220,0,0,0.12)'}},
+  ];
+  var visPlugin = {{
+    id:'visBands',
+    beforeDraw:function(chart){{
+      var ctx=chart.ctx, ca=chart.chartArea, x=chart.scales.x;
+      if(!ca) return;
+      labels.forEach(function(lbl,i){{
+        var wl=parseInt(lbl);
+        var col='rgba(160,160,160,0.06)';
+        for(var v=0;v<VISIBLE.length;v++){{
+          if(wl>=VISIBLE[v].wl[0]&&wl<VISIBLE[v].wl[1]){{col=VISIBLE[v].color;break;}}
+        }}
+        var xPos=x.getPixelForValue(i);
+        var prev=i>0?x.getPixelForValue(i-1):ca.left;
+        var next=i<labels.length-1?x.getPixelForValue(i+1):ca.right;
+        var w=(next-prev)/2;
+        ctx.save();ctx.fillStyle=col;
+        ctx.fillRect(xPos-w/2,ca.top,w,ca.bottom-ca.top);
+        ctx.restore();
+      }});
+    }}
+  }};
+  new Chart(document.getElementById('spectraChart'),{{
+    type:'line',
+    data:{{
+      labels:labels,
+      datasets:[{{
+        label:'{_y_label}',
+        data:values,
+        borderColor:srcColor,
+        backgroundColor:srcColor+'33',
+        fill:true,
+        tension:0.4,
+        pointRadius:4,
+        pointBackgroundColor:srcColor,
+        pointBorderColor:'#020d18',
+        pointBorderWidth:2,
+        borderWidth:2
+      }}]
+    }},
+    plugins:[visPlugin],
+    options:{{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{{
+        legend:{{display:false}},
+        tooltip:{{callbacks:{{
+          title:function(i){{return i[0].label+' nm';}},
+          label:function(c){{return c.parsed.y.toFixed(5)+' ({_y_label})';}}
+        }}}}
+      }},
+      scales:{{
+        x:{{title:{{display:true,text:'Wavelength (nm)',color:'#7fb3d3',font:{{size:11}}}},
+           ticks:{{color:'#7fb3d3',font:{{size:10}},maxRotation:45}},
+           grid:{{color:'rgba(255,255,255,0.06)'}}}},
+        y:{{title:{{display:true,text:'{_y_label}',color:'#7fb3d3',font:{{size:11}}}},
+           ticks:{{color:'#7fb3d3',font:{{size:10}},callback:function(v){{return v.toFixed(3);}}}},
+           grid:{{color:'rgba(255,255,255,0.06)'}}}}
+      }}
+    }}
+  }});
+}})();
+</script>
+"""
+                    components.html(_spectra_html, height=310, scrolling=False)
                     if st.button("✕ Clear spectra", key="clear_spectra"):
                         st.session_state.spectra_result = None
                         st.session_state.spectra_click = None
