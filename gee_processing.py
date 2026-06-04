@@ -1,6 +1,6 @@
 """MEDI Platform — GEE Processing Functions"""
 
-import math, json
+import math, json, tempfile, os
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
@@ -13,6 +13,16 @@ from config import BEACHES, HAIFA_BBOX_COORDS, ISRAEL_CLIP_COORDS
 # Lazy-init GEE geometries
 def _haifa_bbox(): return ee.Geometry.Rectangle(HAIFA_BBOX_COORDS)
 def _israel_clip(): return ee.Geometry.Polygon([ISRAEL_CLIP_COORDS])
+
+def _to_ee_geom(raw):
+    """Convert raw geometry dict from config to ee.Geometry."""
+    if isinstance(raw, dict):
+        t = raw.get("_type", "")
+        c = raw.get("coords", [])
+        if t == "rect": return ee.Geometry.Rectangle(c)
+        if t == "poly": return ee.Geometry.Polygon([c] if c and not isinstance(c[0][0], list) else c)
+        if t == "point": return ee.Geometry.Point(c)
+    return raw  # already ee.Geometry or unknown
 
 @st.cache_resource
 def init_gee():
