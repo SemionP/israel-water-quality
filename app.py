@@ -1393,27 +1393,20 @@ if "spectra_result" not in st.session_state:
                 if st.button(z_label, key="toggle_zones_map", use_container_width=False):
                     st.session_state.show_zones_on_map = not st.session_state.show_zones_on_map
                     st.rerun()
+                inspect_label = "🔬 Stop Inspect" if st.session_state.inspect_mode else "🔬 Inspect Pixel"
+                if st.button(inspect_label, key="toggle_inspect"):
+                    st.session_state.inspect_mode = not st.session_state.inspect_mode
+                    if not st.session_state.inspect_mode:
+                        st.session_state.spectra_result = None
+                        st.session_state.spectra_click = None
+                    st.rerun()
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
                     key=f"israel_map_wqi_{st.session_state.get('img_idx',0)}",
                     returned_objects=["bounds","last_active_drawing","last_clicked"]
                 )
-              # ── Pixel Spectral Inspector ──────────────────────────────
-                if "spectra_click" not in st.session_state:
-                    st.session_state.spectra_click = None
-                if "spectra_result" not in st.session_state:
-                    st.session_state.spectra_result = None
-
-                _lc = map_data_wqi.get("last_clicked") if map_data_wqi else None
-                if _lc and _lc.get("lat"):
-                    _sc_key = f"{round(_lc['lat'],4)},{round(_lc['lng'],4)}"
-                    if st.session_state.spectra_click != _sc_key:
-                        st.session_state.spectra_click = _sc_key
-                        with st.spinner("🔬 Sampling pixel spectra from GEE..."):
-                            st.session_state.spectra_result = sample_pixel_spectra(
-                                _lc["lat"], _lc["lng"], sel_src, sel_date)
-
+  
                 if st.session_state.spectra_result:
                     _sp = st.session_state.spectra_result
                     _lat_str, _lon_str = st.session_state.spectra_click.split(",")
@@ -1475,16 +1468,25 @@ if "spectra_result" not in st.session_state:
                             if not already_pending and not already_saved:
                                 st.session_state["pending_zone"] = {"type": "point", "lat": lat, "lon": lon, "hash": draw_hash}
                                 st.rerun()
-                elif last_clicked and last_clicked.get("lat"):
+               elif last_clicked and last_clicked.get("lat"):
                     clat = round(last_clicked["lat"], 5)
                     clon = round(last_clicked["lng"], 5)
                     draw_hash = f"{clat},{clon}"
-                    pending   = st.session_state.get("pending_zone")
-                    already_pending = pending and pending.get("lat") == clat and pending.get("lon") == clon
-                    already_saved   = draw_hash in st.session_state.saved_drawing_hashes
-                    if not already_pending and not already_saved:
-                        st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon, "hash": draw_hash}
-                        st.rerun()
+                    already_saved = draw_hash in st.session_state.saved_drawing_hashes
+                    if st.session_state.inspect_mode and not already_saved:
+                        _sc_key = f"{round(last_clicked['lat'],4)},{round(last_clicked['lng'],4)}"
+                        if st.session_state.spectra_click != _sc_key:
+                            st.session_state.spectra_click = _sc_key
+                            with st.spinner("🔬 Sampling..."):
+                                st.session_state.spectra_result = sample_pixel_spectra(
+                                    last_clicked["lat"], last_clicked["lng"], sel_src, sel_date)
+                            st.rerun()
+                    elif not st.session_state.inspect_mode:
+                        pending = st.session_state.get("pending_zone")
+                        already_pending = pending and pending.get("lat") == clat and pending.get("lon") == clon
+                        if not already_pending and not already_saved:
+                            st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon, "hash": draw_hash}
+                            st.rerun()
 
                 # All monitoring zones → visible in chart
                 # Include zones from session_state even if history not yet computed
