@@ -525,6 +525,10 @@ if mode == MODE_ISRAEL:
         st.session_state.inspect_sub = "point"
     if "spectra_resample_idx" not in st.session_state:
         st.session_state.spectra_resample_idx = None
+    if "transect_mode" not in st.session_state:
+        st.session_state.transect_mode = False
+    if "transect_result" not in st.session_state:
+        st.session_state.transect_result = None  # {distances, values, layer_name}
 
     @st.cache_data(ttl=7200)
     def _get_true_color_tile(source: str, target_date_str: str):
@@ -881,6 +885,52 @@ if mode == MODE_ISRAEL:
         return results
 
     # Shared map builder
+    def _build_index_img(index, source, date_str, t):
+        """Return (ee.Image, band_name) for a normalized index."""
+        DISPLAY_BOX = ee.Geometry.Rectangle([33.5, 29.5, 36.5, 33.5])
+        wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(10)
+        try:
+            if source == "S2":
+                coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-8,"day"), t.advance(1,"day"))
+                        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",40))
+                        .sort("system:time_start",False))
+                img = coll.mosaic() if coll.size().getInfo()>0 else None
+                if img is None: return None, None
+                b3=img.select("B3").divide(10000); b4=img.select("B4").divide(10000)
+                b5=img.select("B5").divide(10000); b8=img.select("B8").divide(10000)
+                b8a=img.select("B8A").divide(10000)
+                if index=="ndwi": out=b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1).updateMask(wm)
+                elif index=="chl": out=b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1).updateMask(wm)
+                else: out=b4.add(b8a).divide(2).unitScale(0,0.15).clamp(0,1).updateMask(wm)
+            elif source == "S3":
+                coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-3,"day"), t.advance(1,"day"))
+                        .sort("system:time_start",False))
+                img = coll.mosaic() if coll.size().getInfo()>0 else None
+                if img is None: return None, None
+                if index=="ndwi": out=img.normalizedDifference(["Oa06_radiance","Oa17_radiance"]).unitScale(-0.2,0.5).clamp(0,1).updateMask(wm)
+                elif index=="chl":
+                    mci=img.select("Oa10_radiance").subtract(img.select("Oa09_radiance"))
+                    out=mci.unitScale(-2,12).clamp(0,1).updateMask(wm)
+                else: out=img.select("Oa08_radiance").unitScale(10,80).clamp(0,1).updateMask(wm)
+            else:
+                coll = (ee.ImageCollection("MODIS/061/MOD09GA")
+                        .filterBounds(DISPLAY_BOX)
+                        .filterDate(t.advance(-3,"day"), t.advance(1,"day"))
+                        .sort("system:time_start",False))
+                img = coll.mosaic() if coll.size().getInfo()>0 else None
+                if img is None: return None, None
+                b1=img.select("sur_refl_b01"); b2=img.select("sur_refl_b02"); b4=img.select("sur_refl_b04")
+                if index=="ndwi": out=b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3,0.3).clamp(0,1).updateMask(wm)
+                elif index=="chl": out=b4.divide(b1.add(1)).unitScale(0.8,2.5).clamp(0,1).updateMask(wm)
+                else: out=b1.unitScale(0,1500).clamp(0,1).updateMask(wm)
+            return out.rename("value"), "value"
+        except Exception:
+            return None, None
+
     def _build_map(selected_beach=None):
         bm      = st.session_state.get("basemap", "Satellite")
         bm_data = BASEMAPS.get(bm, BASEMAPS["Satellite"])
@@ -890,7 +940,7 @@ if mode == MODE_ISRAEL:
             tiles=bm_data["tile"],
             attr=bm_data["attr"]
         )
-        # Add draw plugin — polygon + marker
+        # Add draw plugin — polygon + marker + polyline (for transect)
         Draw(
             export=False,
             draw_options={
@@ -898,7 +948,7 @@ if mode == MODE_ISRAEL:
                 "rectangle":    True,
                 "marker":       True,
                 "circle":       False,
-                "polyline":     False,
+                "polyline":     st.session_state.get("transect_mode", False),
                 "circlemarker": False,
             },
             edit_options={"edit": False}
@@ -1431,12 +1481,24 @@ if mode == MODE_ISRAEL:
                     st.session_state.show_zones_on_map = not st.session_state.show_zones_on_map
                     st.rerun()
                 inspect_label = "🔬 Stop Inspect" if st.session_state.inspect_mode else "🔬 Inspect Pixel"
-                if st.button(inspect_label, key="toggle_inspect"):
-                    st.session_state.inspect_mode = not st.session_state.inspect_mode
-                    if not st.session_state.inspect_mode:
-                        st.session_state.spectra_result = None
-                        st.session_state.spectra_click = None
-                    st.rerun()
+                transect_label = "📏 Stop Transect" if st.session_state.transect_mode else "📏 Transect"
+                _btn_cols = st.columns(2)
+                with _btn_cols[0]:
+                    if st.button(inspect_label, key="toggle_inspect", use_container_width=True):
+                        st.session_state.inspect_mode = not st.session_state.inspect_mode
+                        if not st.session_state.inspect_mode:
+                            st.session_state.spectra_result = None
+                            st.session_state.spectra_click = None
+                        if st.session_state.inspect_mode:
+                            st.session_state.transect_mode = False
+                        st.rerun()
+                with _btn_cols[1]:
+                    if st.button(transect_label, key="toggle_transect", use_container_width=True):
+                        st.session_state.transect_mode = not st.session_state.transect_mode
+                        if st.session_state.transect_mode:
+                            st.session_state.inspect_mode = False
+                            st.session_state.transect_result = None
+                        st.rerun()
                 if st.session_state.inspect_mode:
                     _sub_cols = st.columns(2)
                     with _sub_cols[0]:
@@ -1705,6 +1767,77 @@ if mode == MODE_ISRAEL:
                             st.rerun()
                     else:
                         st.caption("⬡ Draw a polygon on the map to sample a zone")
+
+                # ── TRANSECT MODE ─────────────────────────────────────────
+                if st.session_state.transect_mode:
+                    st.info("📏 Draw a line on the map to profile the active layer")
+                    _tr = st.session_state.transect_result
+                    if _tr and _tr.get("distances"):
+                        import json as _trj
+                        _tr_dist_j = _trj.dumps(_tr["distances"])
+                        _tr_vals_j = _trj.dumps(_tr["values"])
+                        _tr_color  = "#1D9E75" if sel_src=="S2" else "#378ADD" if sel_src=="S3" else "#EF9F27"
+                        _tr_html = f"""
+<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.2);border-radius:6px;padding:10px 12px;margin-top:6px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+    <span style="font-size:12px;color:#00c8c8;font-family:monospace;">📏 Transect · {_tr['layer_name']} · {_tr['source']}</span>
+    <span style="font-size:11px;color:#7fb3d3;">{_tr['total_km']} km · {_tr['n_pts']} samples</span>
+  </div>
+  <div style="position:relative;width:100%;height:220px;">
+    <canvas id="transectChart" role="img" aria-label="Transect profile chart">Profile along drawn line.</canvas>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+(function(){{
+  var dist = {_tr_dist_j};
+  var vals = {_tr_vals_j};
+  new Chart(document.getElementById('transectChart'),{{
+    type:'line',
+    data:{{
+      labels:dist,
+      datasets:[{{
+        label:'{_tr["layer_name"]}',
+        data:vals,
+        borderColor:'{_tr_color}',
+        backgroundColor:'{_tr_color}22',
+        fill:true,
+        tension:0.3,
+        pointRadius:2,
+        pointBackgroundColor:'{_tr_color}',
+        borderWidth:2
+      }}]
+    }},
+    options:{{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{{
+        legend:{{display:false}},
+        tooltip:{{callbacks:{{
+          title:function(i){{return i[0].label+' m';}},
+          label:function(c){{return '{_tr["layer_name"]}'+': '+c.parsed.y.toFixed(3);}}
+        }}}}
+      }},
+      scales:{{
+        x:{{
+          title:{{display:true,text:'Distance (m)',color:'#7fb3d3',font:{{size:11}}}},
+          ticks:{{color:'#7fb3d3',font:{{size:10}},maxTicksLimit:8,callback:function(v,i){{return dist[i]+'m';}}}},
+          grid:{{color:'rgba(255,255,255,0.06)'}}
+        }},
+        y:{{
+          title:{{display:true,text:'{_tr["layer_name"]}',color:'#7fb3d3',font:{{size:11}}}},
+          ticks:{{color:'#7fb3d3',font:{{size:10}},callback:function(v){{return v.toFixed(2);}}}},
+          grid:{{color:'rgba(255,255,255,0.06)'}}
+        }}
+      }}
+    }}
+  }});
+}})();
+</script>
+"""
+                        components.html(_tr_html, height=280, scrolling=False)
+                        if st.button("🗑 Clear transect", key="clear_transect"):
+                            st.session_state.transect_result = None
+                            st.rerun()
             with col_info:
                 # Detect drawings → unified pending_zone (point or polygon)
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
@@ -1796,6 +1929,118 @@ if mode == MODE_ISRAEL:
                             if not already_pending and not already_saved:
                                 st.session_state["pending_zone"] = {"type": "point", "lat": lat, "lon": lon, "hash": draw_hash}
                                 st.rerun()
+                    elif gtype == "LineString" and st.session_state.get("transect_mode"):
+                        _line_coords = geom.get("coordinates", [])
+                        _line_hash = str(_line_coords)
+                        _existing = st.session_state.get("transect_result", {})
+                        if _existing and _existing.get("hash") == _line_hash:
+                            pass  # already sampled
+                        elif len(_line_coords) >= 2:
+                            with st.spinner("📏 Sampling transect from GEE..."):
+                                try:
+                                    # Build ee.Geometry.LineString
+                                    _line_geom = ee.Geometry.LineString([[c[0],c[1]] for c in _line_coords])
+                                    _t = ee.Date(sel_date)
+
+                                    # Detect active layer from _raster_layers visible state
+                                    # Use session state to track which layer is active
+                                    _active_layer_id = st.session_state.get("transect_active_layer", "wqi_active")
+
+                                    # Build image + band based on active layer
+                                    if "wqi" in _active_layer_id or _active_layer_id == "wqi_active":
+                                        # WQI — use existing wqi pipeline
+                                        if sel_src == "S2":
+                                            _tr_layer, _, _, _, _ = process_israel_s2(sel_date)
+                                        elif sel_src == "S3":
+                                            _tr_layer, _, _, _ = process_israel_wqi(sel_date)
+                                        else:
+                                            _tr_layer, _, _, _, _ = process_modis_wqi(sel_date)
+                                        _tr_img = ee.Image(_tr_layer) if _tr_layer else None
+                                        _tr_band = None  # already single band
+                                        _tr_name = "WQI"
+                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
+                                    elif "ndwi" in _active_layer_id:
+                                        _tr_name = "NDWI"
+                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
+                                        _tr_img, _tr_band = _build_index_img("ndwi", sel_src, sel_date, _t)
+                                    elif "chl" in _active_layer_id or "mci" in _active_layer_id:
+                                        _tr_name = "CHL"
+                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
+                                        _tr_img, _tr_band = _build_index_img("chl", sel_src, sel_date, _t)
+                                    elif "turb" in _active_layer_id:
+                                        _tr_name = "Turbidity"
+                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
+                                        _tr_img, _tr_band = _build_index_img("turb", sel_src, sel_date, _t)
+                                    else:
+                                        _tr_name = "WQI"
+                                        _tr_scale = 300
+                                        if sel_src == "S3":
+                                            _tr_layer, _, _, _ = process_israel_wqi(sel_date)
+                                        elif sel_src == "S2":
+                                            _tr_layer, _, _, _, _ = process_israel_s2(sel_date)
+                                        else:
+                                            _tr_layer, _, _, _, _ = process_modis_wqi(sel_date)
+                                        _tr_img = ee.Image(_tr_layer) if _tr_layer else None
+                                        _tr_band = None
+
+                                    if _tr_img:
+                                        # Sample along line: ~50 points
+                                        _n_pts = 50
+                                        _sampled = _tr_img.sample(
+                                            region=_line_geom,
+                                            scale=_tr_scale,
+                                            numPixels=_n_pts,
+                                            geometries=True
+                                        ).getInfo()
+
+                                        # Calculate cumulative distance along line
+                                        import math as _m
+                                        def _haversine(lat1, lon1, lat2, lon2):
+                                            R = 6371000
+                                            phi1, phi2 = _m.radians(lat1), _m.radians(lat2)
+                                            dphi = _m.radians(lat2 - lat1)
+                                            dlam = _m.radians(lon2 - lon1)
+                                            a = _m.sin(dphi/2)**2 + _m.cos(phi1)*_m.cos(phi2)*_m.sin(dlam/2)**2
+                                            return R * 2 * _m.atan2(_m.sqrt(a), _m.sqrt(1-a))
+
+                                        # Sort features by position along line
+                                        _feats = _sampled.get("features", [])
+                                        # Compute distance from start for each feature
+                                        _start = _line_coords[0]
+                                        _pts_dist = []
+                                        for _f in _feats:
+                                            _fc = _f["geometry"]["coordinates"]
+                                            _d = _haversine(_start[1], _start[0], _fc[1], _fc[0])
+                                            _props = _f.get("properties", {})
+                                            # Get first numeric band value
+                                            _val = None
+                                            for _v in _props.values():
+                                                if isinstance(_v, (int, float)):
+                                                    _val = round(float(_v), 3)
+                                                    break
+                                            if _val is not None:
+                                                _pts_dist.append((_d, _val))
+
+                                        _pts_dist.sort(key=lambda x: x[0])
+                                        _distances = [round(p[0]) for p in _pts_dist]
+                                        _values    = [p[1] for p in _pts_dist]
+                                        _total_km  = round(_haversine(
+                                            _line_coords[0][1], _line_coords[0][0],
+                                            _line_coords[-1][1], _line_coords[-1][0]
+                                        ) / 1000, 2)
+
+                                        st.session_state.transect_result = {
+                                            "hash": _line_hash,
+                                            "distances": _distances,
+                                            "values": _values,
+                                            "layer_name": _tr_name,
+                                            "total_km": _total_km,
+                                            "n_pts": len(_pts_dist),
+                                            "source": data_source,
+                                        }
+                                        st.rerun()
+                                except Exception as _te:
+                                    st.warning(f"Transect sampling failed: {_te}")
                 elif last_clicked and last_clicked.get("lat"):
                     clat = round(last_clicked["lat"], 5)
                     clon = round(last_clicked["lng"], 5)
