@@ -511,12 +511,12 @@ if mode == MODE_ISRAEL:
         st.session_state.sat_view_mode = "wqi"   # "wqi" | "true_color" | "swipe"
     if "sat_opacity" not in st.session_state:
         st.session_state.sat_opacity = 0.85
-      if "inspect_mode" not in st.session_state:
-    st.session_state.inspect_mode = False
-if "spectra_click" not in st.session_state:
-    st.session_state.spectra_click = None
-if "spectra_result" not in st.session_state:
-    st.session_state.spectra_result = None
+    if "inspect_mode" not in st.session_state:
+        st.session_state.inspect_mode = False
+    if "spectra_click" not in st.session_state:
+        st.session_state.spectra_click = None
+    if "spectra_result" not in st.session_state:
+        st.session_state.spectra_result = None
 
     @st.cache_data(ttl=7200)
     def _get_true_color_tile(source: str, target_date_str: str):
