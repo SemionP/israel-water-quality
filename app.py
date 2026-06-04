@@ -1468,25 +1468,26 @@ if mode == MODE_ISRAEL:
                             if not already_pending and not already_saved:
                                 st.session_state["pending_zone"] = {"type": "point", "lat": lat, "lon": lon, "hash": draw_hash}
                                 st.rerun()
-                  elif last_clicked and last_clicked.get("lat"):
-                          clat = round(last_clicked["lat"], 5)
-                          clon = round(last_clicked["lng"], 5)
-                          draw_hash = f"{clat},{clon}"
-                          already_saved = draw_hash in st.session_state.saved_drawing_hashes
-                          if st.session_state.inspect_mode and not already_saved:
-                              _sc_key = f"{round(last_clicked['lat'],4)},{round(last_clicked['lng'],4)}"
-                              if st.session_state.spectra_click != _sc_key:
-                                  st.session_state.spectra_click = _sc_key
-                                  with st.spinner("🔬 Sampling..."):
-                                      st.session_state.spectra_result = sample_pixel_spectra(
-                                          last_clicked["lat"], last_clicked["lng"], sel_src, sel_date)
-                                  st.rerun()
-                          elif not st.session_state.inspect_mode:
-                              pending = st.session_state.get("pending_zone")
-                              already_pending = pending and pending.get("lat") == clat and pending.get("lon") == clon
-                              if not already_pending and not already_saved:
-                                  st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon, "hash": draw_hash}
-                                  st.rerun()
+                elif last_clicked and last_clicked.get("lat"):
+                    clat = round(last_clicked["lat"], 5)
+                    clon = round(last_clicked["lng"], 5)
+                    draw_hash = f"{clat},{clon}"
+                    already_saved = draw_hash in st.session_state.saved_drawing_hashes
+                    if st.session_state.inspect_mode and not already_saved:
+                        _sc_key = f"{round(last_clicked['lat'],4)},{round(last_clicked['lng'],4)}"
+                        if st.session_state.spectra_click != _sc_key:
+                            st.session_state.spectra_click = _sc_key
+                            with st.spinner("🔬 Sampling..."):
+                                st.session_state.spectra_result = sample_pixel_spectra(
+                                    last_clicked["lat"], last_clicked["lng"], sel_src, sel_date)
+                            st.rerun()
+                    elif not st.session_state.inspect_mode:
+                        pending = st.session_state.get("pending_zone")
+                        already_pending = pending and pending.get("lat") == clat and pending.get("lon") == clon
+                        if not already_pending and not already_saved:
+                            st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon, "hash": draw_hash}
+                            st.rerun()
+
 
                 # All monitoring zones → visible in chart
                 # Include zones from session_state even if history not yet computed
