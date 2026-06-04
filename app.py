@@ -523,6 +523,8 @@ if mode == MODE_ISRAEL:
         st.session_state.spectra_zone = None
     if "inspect_sub" not in st.session_state:
         st.session_state.inspect_sub = "point"
+    if "spectra_resample_idx" not in st.session_state:
+        st.session_state.spectra_resample_idx = None
 
     @st.cache_data(ttl=7200)
     def _get_true_color_tile(source: str, target_date_str: str):
@@ -1345,6 +1347,35 @@ if mode == MODE_ISRAEL:
                             )
                         ).add_to(m)
 
+        # ── Spectra point markers ────────────────────────────────────────────
+        if st.session_state.get("inspect_mode") and st.session_state.get("inspect_sub") == "point":
+            _pt_colors_m = ["#1D9E75","#EF9F27","#D4537E","#378ADD","#7F77DD","#D85A30"]
+            for _pi, _pt in enumerate(st.session_state.get("spectra_points", [])):
+                try:
+                    _lat_m = float(_pt["key"].split(",")[0])
+                    _lon_m = float(_pt["key"].split(",")[1])
+                    _pc_m  = _pt_colors_m[_pi % len(_pt_colors_m)]
+                    folium.CircleMarker(
+                        location=[_lat_m, _lon_m],
+                        radius=12,
+                        color=_pc_m,
+                        fill=True,
+                        fill_color=_pc_m,
+                        fill_opacity=0.85,
+                        weight=2,
+                        tooltip=folium.Tooltip(_pt["label"], sticky=True),
+                    ).add_to(m)
+                    folium.Marker(
+                        location=[_lat_m, _lon_m],
+                        icon=folium.DivIcon(
+                            html=f'<div style="font-size:10px;font-weight:bold;color:#020d18;'
+                                 f'text-align:center;line-height:24px;">P{_pi+1}</div>',
+                            icon_size=(24, 24), icon_anchor=(12, 12)
+                        )
+                    ).add_to(m)
+                except Exception:
+                    pass
+
         # Native folium.LayerControl removed — replaced by custom 30×30 basemap
         # button injected via JS (topleft, matching the other toolbar buttons).
         return m
@@ -1471,12 +1502,52 @@ if mode == MODE_ISRAEL:
                             st.session_state.spectra_result = None
 
                     if st.session_state.spectra_points:
-                        # Chips row
-                        _chips_html = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">'
+                        # Per-point controls: chip + delete + re-sample
+                        _resample_idx = st.session_state.get("spectra_resample_idx", None)
+                        _chip_cols = st.columns(len(st.session_state.spectra_points))
                         for _pi, _pt in enumerate(st.session_state.spectra_points):
                             _pc = _PT_COLORS[_pi % len(_PT_COLORS)]
-                            _chips_html += f'<span style="display:flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:12px;border:1px solid {_pc};color:#d6eaf8;font-family:monospace;"><span style="width:8px;height:8px;border-radius:50%;background:{_pc};flex-shrink:0;"></span>{_pt["label"]}</span>'
-                        _chips_html += '</div>'
+                            with _chip_cols[_pi]:
+                                st.markdown(
+                                    f'<div style="display:flex;align-items:center;gap:4px;font-size:11px;'
+                                    f'padding:2px 6px;border-radius:10px;border:1px solid {_pc};'
+                                    f'color:#d6eaf8;font-family:monospace;margin-bottom:4px;">'
+                                    f'<span style="width:7px;height:7px;border-radius:50%;background:{_pc};'
+                                    f'flex-shrink:0;display:inline-block;"></span>P{_pi+1}</div>',
+                                    unsafe_allow_html=True
+                                )
+                                _bcols = st.columns(2)
+                                with _bcols[0]:
+                                    if st.button("🎯", key=f"resample_{_pi}", help="Move — click new location on map",
+                                                 use_container_width=True):
+                                        st.session_state.spectra_resample_idx = _pi
+                                        st.session_state.spectra_click = None
+                                        st.session_state.spectra_result = None
+                                        st.rerun()
+                                with _bcols[1]:
+                                    if st.button("✕", key=f"del_pt_{_pi}_{_pt['key']}",
+                                                 help="Remove point", use_container_width=True):
+                                        st.session_state.spectra_points.pop(_pi)
+                                        if st.session_state.get("spectra_resample_idx") == _pi:
+                                            st.session_state.spectra_resample_idx = None
+                                        st.rerun()
+
+                        # Handle re-sample: replace point data when new click arrives
+                        if _resample_idx is not None:
+                            st.info(f"🎯 Click new location for P{_resample_idx+1} on the map")
+                            if st.session_state.spectra_result and st.session_state.spectra_click:
+                                _key = st.session_state.spectra_click
+                                _lat_s, _lon_s = _key.split(",")
+                                st.session_state.spectra_points[_resample_idx] = {
+                                    "key": _key,
+                                    "label": f"P{_resample_idx+1} · {_lat_s}°N {_lon_s}°E",
+                                    "data": st.session_state.spectra_result
+                                }
+                                st.session_state.spectra_resample_idx = None
+                                st.session_state.spectra_result = None
+                                st.session_state.spectra_click = None
+                                st.rerun()
+                        _chips_html = ""  # not used anymore — kept for _multi_html f-string below
 
                         # Build datasets JSON
                         _pts_labels = list(st.session_state.spectra_points[0]["data"].keys())
@@ -1498,7 +1569,6 @@ if mode == MODE_ISRAEL:
                         _multi_html = f"""
 <div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.2);border-radius:6px;padding:10px 12px;margin-top:6px;">
   <div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:8px;">📍 Multi-point spectra · {data_source}</div>
-  {_chips_html}
   <div style="position:relative;width:100%;height:230px;">
     <canvas id="multiChart" role="img" aria-label="Multi-point spectral comparison">Spectral comparison.</canvas>
   </div>
@@ -1735,6 +1805,7 @@ if mode == MODE_ISRAEL:
                         _sc_key = f"{round(last_clicked['lat'],4)},{round(last_clicked['lng'],4)}"
                         if st.session_state.spectra_click != _sc_key:
                             st.session_state.spectra_click = _sc_key
+                            _ridx = st.session_state.get("spectra_resample_idx")
                             with st.spinner("🔬 Sampling..."):
                                 st.session_state.spectra_result = sample_pixel_spectra(
                                     last_clicked["lat"], last_clicked["lng"], sel_src, sel_date)
