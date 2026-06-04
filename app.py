@@ -517,6 +517,12 @@ if mode == MODE_ISRAEL:
         st.session_state.spectra_click = None
     if "spectra_result" not in st.session_state:
         st.session_state.spectra_result = None
+    if "spectra_points" not in st.session_state:
+        st.session_state.spectra_points = []
+    if "spectra_zone" not in st.session_state:
+        st.session_state.spectra_zone = None
+    if "inspect_sub" not in st.session_state:
+        st.session_state.inspect_sub = "point"
 
     @st.cache_data(ttl=7200)
     def _get_true_color_tile(source: str, target_date_str: str):
@@ -1400,6 +1406,20 @@ if mode == MODE_ISRAEL:
                         st.session_state.spectra_result = None
                         st.session_state.spectra_click = None
                     st.rerun()
+                if st.session_state.inspect_mode:
+                    _sub_cols = st.columns(2)
+                    with _sub_cols[0]:
+                        if st.button("📍 Points", key="inspect_sub_point",
+                                     use_container_width=True,
+                                     type="primary" if st.session_state.inspect_sub=="point" else "secondary"):
+                            st.session_state.inspect_sub = "point"
+                            st.rerun()
+                    with _sub_cols[1]:
+                        if st.button("⬡ Zone", key="inspect_sub_zone",
+                                     use_container_width=True,
+                                     type="primary" if st.session_state.inspect_sub=="zone" else "secondary"):
+                            st.session_state.inspect_sub = "zone"
+                            st.rerun()
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
@@ -1407,118 +1427,214 @@ if mode == MODE_ISRAEL:
                     returned_objects=["bounds","last_active_drawing","last_clicked"]
                 )
   
-                if st.session_state.spectra_result:
-                    _sp = st.session_state.spectra_result
-                    _lat_str, _lon_str = st.session_state.spectra_click.split(",")
-                    import json as _spj
-                    _sp_labels = list(_sp.keys())
-                    _sp_values = list(_sp.values())
-                    _sp_labels_j = _spj.dumps(_sp_labels)
-                    _sp_values_j = _spj.dumps(_sp_values)
-                    _src_color = "#1D9E75" if sel_src=="S2" else "#378ADD" if sel_src=="S3" else "#EF9F27"
-                    _y_label = "Radiance" if sel_src=="S3" else "Reflectance"
-                    _spectra_html = f"""
+                # ── Spectra display ───────────────────────────────────────
+                import json as _spj
+                import math as _spmath
+
+                _PT_COLORS = ["#1D9E75","#EF9F27","#D4537E","#378ADD","#7F77DD","#D85A30"]
+                _PT_DASHES = ["[]","[6,3]","[3,3]","[8,4,3,4]","[6,3]","[3,3]"]
+                _y_label   = "Radiance" if sel_src=="S3" else "Reflectance"
+
+                _VISIBLE_JS = """[
+                  {wl:[380,450],col:'rgba(148,0,211,0.13)'},
+                  {wl:[450,495],col:'rgba(0,0,255,0.10)'},
+                  {wl:[495,570],col:'rgba(0,180,0,0.10)'},
+                  {wl:[570,590],col:'rgba(255,220,0,0.13)'},
+                  {wl:[590,620],col:'rgba(255,140,0,0.13)'},
+                  {wl:[620,700],col:'rgba(220,0,0,0.10)'},
+                ]"""
+
+                _LEG_HTML = """
+<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:10px;color:#7fb3d3;">
+  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(148,0,211,0.5);display:inline-block;"></span>Violet</span>
+  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(0,0,255,0.4);display:inline-block;"></span>Blue</span>
+  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(0,180,0,0.4);display:inline-block;"></span>Green</span>
+  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(255,220,0,0.5);display:inline-block;"></span>Yellow</span>
+  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(255,140,0,0.5);display:inline-block;"></span>Orange</span>
+  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(220,0,0,0.4);display:inline-block;"></span>Red</span>
+  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(180,180,180,0.3);display:inline-block;"></span>NIR/SWIR</span>
+</div>"""
+
+                # ── POINT MODE ────────────────────────────────────────────
+                if st.session_state.inspect_mode and st.session_state.inspect_sub == "point":
+                    # Add latest click as new point
+                    if st.session_state.spectra_result and st.session_state.spectra_click:
+                        _key = st.session_state.spectra_click
+                        _existing_keys = [p["key"] for p in st.session_state.spectra_points]
+                        if _key not in _existing_keys:
+                            _lat_s, _lon_s = _key.split(",")
+                            st.session_state.spectra_points.append({
+                                "key": _key,
+                                "label": f"P{len(st.session_state.spectra_points)+1} · {_lat_s}°N {_lon_s}°E",
+                                "data": st.session_state.spectra_result
+                            })
+                            st.session_state.spectra_result = None
+
+                    if st.session_state.spectra_points:
+                        # Chips row
+                        _chips_html = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">'
+                        for _pi, _pt in enumerate(st.session_state.spectra_points):
+                            _pc = _PT_COLORS[_pi % len(_PT_COLORS)]
+                            _chips_html += f'<span style="display:flex;align-items:center;gap:5px;font-size:11px;padding:2px 8px;border-radius:12px;border:1px solid {_pc};color:#d6eaf8;font-family:monospace;"><span style="width:8px;height:8px;border-radius:50%;background:{_pc};flex-shrink:0;"></span>{_pt["label"]}</span>'
+                        _chips_html += '</div>'
+
+                        # Build datasets JSON
+                        _pts_labels = list(st.session_state.spectra_points[0]["data"].keys())
+                        _datasets = []
+                        for _pi, _pt in enumerate(st.session_state.spectra_points):
+                            _pc = _PT_COLORS[_pi % len(_PT_COLORS)]
+                            _pd = _PT_DASHES[_pi % len(_PT_DASHES)]
+                            _vals = list(_pt["data"].values())
+                            _datasets.append(
+                                f'{{"label":"{_pt["label"]}","data":{_spj.dumps(_vals)},'
+                                f'"borderColor":"{_pc}","backgroundColor":"transparent",'
+                                f'"borderDash":{_pd},"tension":0.4,"pointRadius":4,'
+                                f'"pointBackgroundColor":"{_pc}","pointBorderColor":"#020d18",'
+                                f'"pointBorderWidth":2,"borderWidth":2}}'
+                            )
+                        _ds_js = "[" + ",".join(_datasets) + "]"
+                        _lbl_js = _spj.dumps(_pts_labels)
+
+                        _multi_html = f"""
 <div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.2);border-radius:6px;padding:10px 12px;margin-top:6px;">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-    <span style="font-size:12px;color:#7fb3d3;font-family:monospace;">🔬 {data_source} · {_lat_str}°N {_lon_str}°E</span>
-    <button onclick="document.getElementById('spectra-wrap').style.display='none'" style="background:transparent;border:none;color:#7fb3d3;cursor:pointer;font-size:14px;">✕</button>
+  <div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:8px;">📍 Multi-point spectra · {data_source}</div>
+  {_chips_html}
+  <div style="position:relative;width:100%;height:230px;">
+    <canvas id="multiChart" role="img" aria-label="Multi-point spectral comparison">Spectral comparison.</canvas>
   </div>
-  <div id="spectra-wrap">
-    <div style="position:relative;width:100%;height:220px;">
-      <canvas id="spectraChart" role="img" aria-label="Spectral reflectance chart for clicked pixel">Spectral data.</canvas>
-    </div>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:10px;color:#7fb3d3;">
-      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(148,0,211,0.5);display:inline-block;"></span>Violet</span>
-      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(0,0,255,0.4);display:inline-block;"></span>Blue</span>
-      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(0,180,0,0.4);display:inline-block;"></span>Green</span>
-      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(255,220,0,0.5);display:inline-block;"></span>Yellow</span>
-      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(255,140,0,0.5);display:inline-block;"></span>Orange</span>
-      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(220,0,0,0.4);display:inline-block;"></span>Red</span>
-      <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(180,180,180,0.3);display:inline-block;"></span>NIR/SWIR</span>
-    </div>
-  </div>
+  {_LEG_HTML}
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script>
 (function(){{
-  var labels = {_sp_labels_j};
-  var values = {_sp_values_j};
-  var srcColor = "{_src_color}";
-  var VISIBLE = [
-    {{name:'Violet', wl:[380,450], color:'rgba(148,0,211,0.15)'}},
-    {{name:'Blue',   wl:[450,495], color:'rgba(0,0,255,0.12)'}},
-    {{name:'Green',  wl:[495,570], color:'rgba(0,180,0,0.12)'}},
-    {{name:'Yellow', wl:[570,590], color:'rgba(255,220,0,0.15)'}},
-    {{name:'Orange', wl:[590,620], color:'rgba(255,140,0,0.15)'}},
-    {{name:'Red',    wl:[620,700], color:'rgba(220,0,0,0.12)'}},
-  ];
-  var visPlugin = {{
-    id:'visBands',
-    beforeDraw:function(chart){{
-      var ctx=chart.ctx, ca=chart.chartArea, x=chart.scales.x;
-      if(!ca) return;
-      labels.forEach(function(lbl,i){{
-        var wl=parseInt(lbl);
-        var col='rgba(160,160,160,0.06)';
-        for(var v=0;v<VISIBLE.length;v++){{
-          if(wl>=VISIBLE[v].wl[0]&&wl<VISIBLE[v].wl[1]){{col=VISIBLE[v].color;break;}}
-        }}
-        var xPos=x.getPixelForValue(i);
-        var prev=i>0?x.getPixelForValue(i-1):ca.left;
-        var next=i<labels.length-1?x.getPixelForValue(i+1):ca.right;
-        var w=(next-prev)/2;
-        ctx.save();ctx.fillStyle=col;
-        ctx.fillRect(xPos-w/2,ca.top,w,ca.bottom-ca.top);
-        ctx.restore();
-      }});
-    }}
-  }};
-  new Chart(document.getElementById('spectraChart'),{{
-    type:'line',
-    data:{{
-      labels:labels,
-      datasets:[{{
-        label:'{_y_label}',
-        data:values,
-        borderColor:srcColor,
-        backgroundColor:srcColor+'33',
-        fill:true,
-        tension:0.4,
-        pointRadius:4,
-        pointBackgroundColor:srcColor,
-        pointBorderColor:'#020d18',
-        pointBorderWidth:2,
-        borderWidth:2
-      }}]
-    }},
+  var VISIBLE={_VISIBLE_JS};
+  var labels={_lbl_js};
+  var visPlugin={{id:'vb',beforeDraw:function(chart){{
+    var ctx=chart.ctx,ca=chart.chartArea,x=chart.scales.x;if(!ca)return;
+    labels.forEach(function(b,i){{
+      var wl=parseInt(b),col='rgba(160,160,160,0.06)';
+      for(var v=0;v<VISIBLE.length;v++){{if(wl>=VISIBLE[v].wl[0]&&wl<VISIBLE[v].wl[1]){{col=VISIBLE[v].col;break;}}}}
+      var xp=x.getPixelForValue(i),pr=i>0?x.getPixelForValue(i-1):ca.left,nx=i<labels.length-1?x.getPixelForValue(i+1):ca.right,w=(nx-pr)/2;
+      ctx.save();ctx.fillStyle=col;ctx.fillRect(xp-w/2,ca.top,w,ca.bottom-ca.top);ctx.restore();
+    }});
+  }}}};
+  new Chart(document.getElementById('multiChart'),{{
+    type:'line',data:{{labels:labels,datasets:{_ds_js}}},
     plugins:[visPlugin],
-    options:{{
-      responsive:true,maintainAspectRatio:false,
-      plugins:{{
-        legend:{{display:false}},
-        tooltip:{{callbacks:{{
-          title:function(i){{return i[0].label+' nm';}},
-          label:function(c){{return c.parsed.y.toFixed(5)+' ({_y_label})';}}
-        }}}}
-      }},
+    options:{{responsive:true,maintainAspectRatio:false,
+      plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{
+        title:function(i){{return i[0].label+' nm';}},
+        label:function(c){{return c.dataset.label+': '+c.parsed.y.toFixed(5);}}
+      }}}}}},
       scales:{{
-        x:{{title:{{display:true,text:'Wavelength (nm)',color:'#7fb3d3',font:{{size:11}}}},
-           ticks:{{color:'#7fb3d3',font:{{size:10}},maxRotation:45}},
-           grid:{{color:'rgba(255,255,255,0.06)'}}}},
-        y:{{title:{{display:true,text:'{_y_label}',color:'#7fb3d3',font:{{size:11}}}},
-           ticks:{{color:'#7fb3d3',font:{{size:10}},callback:function(v){{return v.toFixed(3);}}}},
-           grid:{{color:'rgba(255,255,255,0.06)'}}}}
+        x:{{title:{{display:true,text:'Wavelength (nm)',color:'#7fb3d3',font:{{size:11}}}},ticks:{{color:'#7fb3d3',font:{{size:10}},maxRotation:45}},grid:{{color:'rgba(255,255,255,0.06)'}}}},
+        y:{{title:{{display:true,text:'{_y_label}',color:'#7fb3d3',font:{{size:11}}}},ticks:{{color:'#7fb3d3',font:{{size:10}},callback:function(v){{return v.toFixed(3);}}}},grid:{{color:'rgba(255,255,255,0.06)'}}}}
       }}
     }}
   }});
 }})();
 </script>
 """
-                    components.html(_spectra_html, height=310, scrolling=False)
-                    if st.button("✕ Clear spectra", key="clear_spectra"):
-                        st.session_state.spectra_result = None
-                        st.session_state.spectra_click = None
-                        st.rerun()
+                        components.html(_multi_html, height=370, scrolling=False)
+                        if st.button("🗑 Clear all points", key="clear_spectra_pts"):
+                            st.session_state.spectra_points = []
+                            st.session_state.spectra_result = None
+                            st.session_state.spectra_click = None
+                            st.rerun()
+                    else:
+                        st.caption("🔬 Click on the map to sample a pixel")
+
+                # ── ZONE MODE ─────────────────────────────────────────────
+                elif st.session_state.inspect_mode and st.session_state.inspect_sub == "zone":
+                    _zone = st.session_state.spectra_zone
+                    if _zone:
+                        _zmean  = _zone["mean"]
+                        _zupper = _zone["upper"]
+                        _zlower = _zone["lower"]
+                        _zcount = _zone["count"]
+                        _zlbls  = list(_zmean.keys())
+                        _zmean_v  = [round(v, 5) for v in _zmean.values()]
+                        _zupper_v = [round(v, 5) for v in _zupper.values()]
+                        _zlower_v = [round(v, 5) for v in _zlower.values()]
+                        _lbl_js  = _spj.dumps(_zlbls)
+                        _mean_js = _spj.dumps(_zmean_v)
+                        _up_js   = _spj.dumps(_zupper_v)
+                        _lo_js   = _spj.dumps(_zlower_v)
+                        _overall_mean = round(sum(_zmean_v)/len(_zmean_v), 5) if _zmean_v else 0
+                        _overall_std  = _zone.get("overall_std", 0)
+
+                        _zone_html = f"""
+<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.2);border-radius:6px;padding:10px 12px;margin-top:6px;">
+  <div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:8px;">⬡ Zone spectra · {data_source} · {_zcount} pixels</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;">
+    <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:4px;padding:5px 8px;text-align:center;">
+      <div style="font-size:10px;color:#7fb3d3;margin-bottom:2px;">Mean</div>
+      <div style="font-size:14px;font-weight:500;color:#d6eaf8;font-family:monospace;">{_overall_mean:.4f}</div>
+    </div>
+    <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:4px;padding:5px 8px;text-align:center;">
+      <div style="font-size:10px;color:#7fb3d3;margin-bottom:2px;">Std dev</div>
+      <div style="font-size:14px;font-weight:500;color:#d6eaf8;font-family:monospace;">±{_overall_std:.4f}</div>
+    </div>
+    <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:4px;padding:5px 8px;text-align:center;">
+      <div style="font-size:10px;color:#7fb3d3;margin-bottom:2px;">Pixels</div>
+      <div style="font-size:14px;font-weight:500;color:#d6eaf8;font-family:monospace;">{_zcount}</div>
+    </div>
+  </div>
+  <div style="position:relative;width:100%;height:220px;">
+    <canvas id="zoneChart" role="img" aria-label="Zone mean and std dev spectral profile">Zone spectral profile.</canvas>
+  </div>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;font-size:10px;color:#7fb3d3;">
+    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:3px;background:#378ADD;display:inline-block;"></span>Mean</span>
+    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:8px;border-radius:2px;background:rgba(55,138,221,0.25);border:1px solid rgba(55,138,221,0.4);display:inline-block;"></span>±1 std dev</span>
+  </div>
+  {_LEG_HTML}
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+(function(){{
+  var VISIBLE={_VISIBLE_JS};
+  var labels={_lbl_js};
+  var visPlugin={{id:'vb2',beforeDraw:function(chart){{
+    var ctx=chart.ctx,ca=chart.chartArea,x=chart.scales.x;if(!ca)return;
+    labels.forEach(function(b,i){{
+      var wl=parseInt(b),col='rgba(160,160,160,0.06)';
+      for(var v=0;v<VISIBLE.length;v++){{if(wl>=VISIBLE[v].wl[0]&&wl<VISIBLE[v].wl[1]){{col=VISIBLE[v].col;break;}}}}
+      var xp=x.getPixelForValue(i),pr=i>0?x.getPixelForValue(i-1):ca.left,nx=i<labels.length-1?x.getPixelForValue(i+1):ca.right,w=(nx-pr)/2;
+      ctx.save();ctx.fillStyle=col;ctx.fillRect(xp-w/2,ca.top,w,ca.bottom-ca.top);ctx.restore();
+    }});
+  }}}};
+  new Chart(document.getElementById('zoneChart'),{{
+    type:'line',
+    data:{{labels:labels,datasets:[
+      {{label:'Upper',data:{_up_js},borderColor:'transparent',backgroundColor:'rgba(55,138,221,0.18)',fill:'+1',tension:0.4,pointRadius:0,borderWidth:0}},
+      {{label:'Mean', data:{_mean_js},borderColor:'#378ADD',backgroundColor:'transparent',fill:false,tension:0.4,pointRadius:4,pointBackgroundColor:'#378ADD',pointBorderColor:'#020d18',pointBorderWidth:2,borderWidth:2.5}},
+      {{label:'Lower',data:{_lo_js},borderColor:'transparent',backgroundColor:'rgba(55,138,221,0.18)',fill:'-1',tension:0.4,pointRadius:0,borderWidth:0}},
+    ]}},
+    plugins:[visPlugin],
+    options:{{responsive:true,maintainAspectRatio:false,
+      plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{
+        title:function(i){{return i[0].label+' nm';}},
+        label:function(c){{
+          if(c.dataset.label==='Mean') return 'Mean: '+c.parsed.y.toFixed(5);
+          if(c.dataset.label==='Upper') return '+1σ: '+c.parsed.y.toFixed(5);
+          return '-1σ: '+c.parsed.y.toFixed(5);
+        }}
+      }}}}}},
+      scales:{{
+        x:{{title:{{display:true,text:'Wavelength (nm)',color:'#7fb3d3',font:{{size:11}}}},ticks:{{color:'#7fb3d3',font:{{size:10}},maxRotation:45}},grid:{{color:'rgba(255,255,255,0.06)'}}}},
+        y:{{title:{{display:true,text:'{_y_label}',color:'#7fb3d3',font:{{size:11}}}},ticks:{{color:'#7fb3d3',font:{{size:10}},callback:function(v){{return v.toFixed(3);}}}},grid:{{color:'rgba(255,255,255,0.06)'}}}}
+      }}
+    }}
+  }});
+}})();
+</script>
+"""
+                        components.html(_zone_html, height=420, scrolling=False)
+                        if st.button("🗑 Clear zone", key="clear_spectra_zone"):
+                            st.session_state.spectra_zone = None
+                            st.rerun()
+                    else:
+                        st.caption("⬡ Draw a polygon on the map to sample a zone")
             with col_info:
                 # Detect drawings → unified pending_zone (point or polygon)
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
@@ -1534,13 +1650,71 @@ if mode == MODE_ISRAEL:
                     if gtype in ["Polygon", "Rectangle"]:
                         coords = geom["coordinates"][0]
                         draw_hash = str(coords)
-                        pending   = st.session_state.get("pending_zone")
-                        # Only trigger if this drawing hasn't been saved yet AND isn't already pending
-                        already_pending = pending and pending.get("coords") == coords
-                        already_saved   = draw_hash in st.session_state.saved_drawing_hashes
-                        if not already_pending and not already_saved:
-                            st.session_state["pending_zone"] = {"type": "polygon", "coords": coords, "hash": draw_hash}
-                            st.rerun()
+                        # Zone spectra mode — sample polygon instead of saving as monitoring zone
+                        if st.session_state.get("inspect_mode") and st.session_state.get("inspect_sub") == "zone":
+                            _zh = f"zone_{draw_hash}"
+                            if st.session_state.get("spectra_zone", {}) and st.session_state.spectra_zone.get("hash") == _zh:
+                                pass  # already sampled
+                            else:
+                                with st.spinner("⬡ Sampling zone spectra from GEE..."):
+                                    try:
+                                        _zone_geom = ee.Geometry.Polygon([[[c[0],c[1]] for c in coords]])
+                                        _t = ee.Date(sel_date)
+                                        if sel_src == "S2":
+                                            _coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                                                     .filterBounds(_zone_geom)
+                                                     .filterDate(_t.advance(-8,"day"),_t.advance(1,"day"))
+                                                     .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",40))
+                                                     .sort("system:time_start",False))
+                                            _img = _coll.first() if _coll.size().getInfo()>0 else None
+                                            _bands = ["B1","B2","B3","B4","B5","B6","B7","B8","B8A","B11","B12"]
+                                            _lbls  = {"B1":"443nm","B2":"490nm","B3":"560nm","B4":"665nm","B5":"705nm","B6":"740nm","B7":"783nm","B8":"842nm","B8A":"865nm","B11":"1610nm","B12":"2190nm"}
+                                            _scale = 10
+                                            _div   = 10000
+                                        elif sel_src == "S3":
+                                            _coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                                                     .filterBounds(_zone_geom)
+                                                     .filterDate(_t.advance(-3,"day"),_t.advance(1,"day"))
+                                                     .sort("system:time_start",False))
+                                            _img = _coll.first() if _coll.size().getInfo()>0 else None
+                                            _bands = [f"Oa{str(i).zfill(2)}_radiance" for i in range(1,17)]
+                                            _wls   = ["400","412","443","490","510","560","620","665","674","681","709","754","760","764","767","779"]
+                                            _lbls  = {b: f"{_wls[i]}nm" for i,b in enumerate(_bands)}
+                                            _scale = 300; _div = 1
+                                        else:
+                                            _coll = (ee.ImageCollection("MODIS/061/MOD09GA")
+                                                     .filterBounds(_zone_geom)
+                                                     .filterDate(_t.advance(-3,"day"),_t.advance(1,"day"))
+                                                     .sort("system:time_start",False))
+                                            _img = _coll.first() if _coll.size().getInfo()>0 else None
+                                            _bands = ["sur_refl_b01","sur_refl_b02","sur_refl_b03","sur_refl_b04","sur_refl_b05","sur_refl_b06","sur_refl_b07"]
+                                            _lbls  = {"sur_refl_b01":"645nm","sur_refl_b02":"858nm","sur_refl_b03":"469nm","sur_refl_b04":"555nm","sur_refl_b05":"1240nm","sur_refl_b06":"1640nm","sur_refl_b07":"2130nm"}
+                                            _scale = 500; _div = 10000
+                                        if _img:
+                                            _mean_dict = _img.select(_bands).reduceRegion(ee.Reducer.mean(),  _zone_geom, _scale).getInfo()
+                                            _std_dict  = _img.select(_bands).reduceRegion(ee.Reducer.stdDev(),_zone_geom, _scale).getInfo()
+                                            _cnt_dict  = _img.select(_bands[:1]).reduceRegion(ee.Reducer.count(),_zone_geom, _scale).getInfo()
+                                            _mean_out = {_lbls[b]: round(((_mean_dict.get(b) or 0)/_div),5) for b in _bands}
+                                            _std_out  = {_lbls[b]: round(((_std_dict.get(b)  or 0)/_div),5) for b in _bands}
+                                            _upper    = {k: round(_mean_out[k]+_std_out[k],5) for k in _mean_out}
+                                            _lower    = {k: round(max(0,_mean_out[k]-_std_out[k]),5) for k in _mean_out}
+                                            _cnt      = int(list(_cnt_dict.values())[0]) if _cnt_dict else 0
+                                            _all_std  = list(_std_out.values())
+                                            _ov_std   = round(sum(_all_std)/len(_all_std),5) if _all_std else 0
+                                            st.session_state.spectra_zone = {
+                                                "hash": _zh, "mean": _mean_out, "upper": _upper,
+                                                "lower": _lower, "count": _cnt, "overall_std": _ov_std
+                                            }
+                                            st.rerun()
+                                    except Exception:
+                                        st.warning("Zone sampling failed — try a smaller area.")
+                        else:
+                            pending   = st.session_state.get("pending_zone")
+                            already_pending = pending and pending.get("coords") == coords
+                            already_saved   = draw_hash in st.session_state.saved_drawing_hashes
+                            if not already_pending and not already_saved:
+                                st.session_state["pending_zone"] = {"type": "polygon", "coords": coords, "hash": draw_hash}
+                                st.rerun()
                     elif gtype == "Point":
                         raw = geom.get("coordinates", [])
                         if raw:
