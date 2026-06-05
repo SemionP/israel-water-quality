@@ -1416,6 +1416,39 @@ if mode == MODE_ISRAEL:
             history_days  = 30
             history_label = "30 ימים"
             beach_history = {}
+
+            # ── S1 SAR loading (must be BEFORE col split so spinner shows full width) ──
+            if st.session_state.get("s1_mode") and not st.session_state.get("s1_result"):
+                with st.spinner("🛰 Loading Sentinel-1 SAR data..."):
+                    try:
+                        from s1_processing import (get_available_s1_dates as _gsd1,
+                            get_s1_layers as _gsl1, detect_oil_spills as _dos1,
+                            detect_vessels as _dv1, check_vessel_oil_proximity as _cvop1)
+                        _s1_target = st.session_state.pop("s1_target_date", None)
+                        if not _s1_target:
+                            _s1_dates = _gsd1(days_back=7)
+                            st.session_state["s1_avail_dates"] = _s1_dates
+                            _s1_target = _s1_dates[0]["date"] if _s1_dates else sel_date
+                        st.session_state["s1_date"] = _s1_target
+                        _s1_layers  = _gsl1(_s1_target)
+                        _s1_oil     = _dos1(_s1_target)
+                        _s1_vessels = _dv1(_s1_target)
+                        _s1_vessels["vessels"] = _cvop1(
+                            _s1_vessels.get("vessels", []),
+                            _s1_oil.get("polygons", [])
+                        )
+                        st.session_state["s1_result"] = {
+                            "layers":  _s1_layers,
+                            "oil":     _s1_oil,
+                            "vessels": _s1_vessels,
+                            "date":    _s1_target,
+                        }
+                        st.rerun()
+                    except Exception as _s1e:
+                        st.warning(f"SAR load failed: {_s1e}")
+                        st.session_state["s1_mode"]   = False
+                        st.session_state["s1_result"] = None
+
             col_map, col_info = st.columns([1, 1], gap="small")
             with col_map:
                 # ── Task 3: Show/Hide zones toggle ────────────────────────────
@@ -1442,38 +1475,9 @@ if mode == MODE_ISRAEL:
                         st.session_state["s1_result"] = None
                     st.rerun()
 
-                # Load SAR data after rerun if mode is on but result not yet loaded
+                # ── S1 SAR mode active indicator ──────────────────────────
                 if st.session_state.get("s1_mode") and not st.session_state.get("s1_result"):
-                    with st.spinner("🛰 Loading Sentinel-1 SAR data..."):
-                        try:
-                            from s1_processing import (get_available_s1_dates as _gsd1,
-                                get_s1_layers as _gsl1, detect_oil_spills as _dos1,
-                                detect_vessels as _dv1, check_vessel_oil_proximity as _cvop1)
-                            # Use target date if set by navigator, else freshest
-                            _s1_target = st.session_state.pop("s1_target_date", None)
-                            if not _s1_target:
-                                _s1_dates = _gsd1(days_back=7)
-                                st.session_state["s1_avail_dates"] = _s1_dates
-                                _s1_target = _s1_dates[0]["date"] if _s1_dates else sel_date
-                            st.session_state["s1_date"] = _s1_target
-                            _s1_layers  = _gsl1(_s1_target)
-                            _s1_oil     = _dos1(_s1_target)
-                            _s1_vessels = _dv1(_s1_target)
-                            _s1_vessels["vessels"] = _cvop1(
-                                _s1_vessels.get("vessels", []),
-                                _s1_oil.get("polygons", [])
-                            )
-                            st.session_state["s1_result"] = {
-                                "layers":  _s1_layers,
-                                "oil":     _s1_oil,
-                                "vessels": _s1_vessels,
-                                "date":    _s1_target,
-                            }
-                            st.rerun()
-                        except Exception as _s1e:
-                            st.warning(f"SAR load failed: {_s1e}")
-                            st.session_state["s1_mode"]   = False
-                            st.session_state["s1_result"] = None
+                    st.info("🛰 Loading SAR data...")
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
