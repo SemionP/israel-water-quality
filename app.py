@@ -420,7 +420,7 @@ if mode == MODE_ISRAEL:
             all_candidates.append((s2_age,  s2_layer,  s2_df,  s2_age,  "S2",    "Sentinel-2"))
         if not mod_err and mod_layer is not None and mod_age is not None:
             all_candidates.append((mod_age, mod_layer, mod_df, mod_age, "MOD",   mod_src))
-        all_candidates.sort(key=lambda x: x[0])
+        all_candidates.sort(key=lambda x: x[0])  # freshest first (lowest age_hours)
 
         # Navigator state
         if "img_idx" not in st.session_state or st.session_state.get("img_total") != len(all_candidates):
@@ -1372,7 +1372,7 @@ if mode == MODE_ISRAEL:
                 with nav_l:
                     if st.button("◀", key="nav_prev", use_container_width=True):
                         n = len(all_candidates)
-                        st.session_state.img_idx = (st.session_state.img_idx+1)%n
+                        st.session_state.img_idx = (st.session_state.img_idx - 1) % n
                         st.rerun()
                 with nav_center:
                     st.markdown(
@@ -1384,7 +1384,7 @@ if mode == MODE_ISRAEL:
                 with nav_r:
                     if st.button("▶", key="nav_next", use_container_width=True):
                         n = len(all_candidates)
-                        st.session_state.img_idx = (st.session_state.img_idx-1)%n
+                        st.session_state.img_idx = (st.session_state.img_idx + 1) % n
                         st.rerun()
 
             # Load history for user zones
@@ -1412,30 +1412,36 @@ if mode == MODE_ISRAEL:
                     st.session_state["s1_mode"] = new_s1
                     if new_s1:
                         st.session_state.inspect_mode = False
-                        with st.spinner("🛰 Loading Sentinel-1 SAR data..."):
-                            try:
-                                _s1_dates = get_available_s1_dates(days_back=7)
-                                _s1_date  = _s1_dates[0]["date"] if _s1_dates else sel_date
-                                st.session_state["s1_date"] = _s1_date
-                                _s1_layers  = get_s1_layers(_s1_date)
-                                _s1_oil     = detect_oil_spills(_s1_date)
-                                _s1_vessels = detect_vessels(_s1_date)
-                                _s1_vessels["vessels"] = check_vessel_oil_proximity(
-                                    _s1_vessels.get("vessels", []),
-                                    _s1_oil.get("polygons", [])
-                                )
-                                st.session_state["s1_result"] = {
-                                    "layers":  _s1_layers,
-                                    "oil":     _s1_oil,
-                                    "vessels": _s1_vessels,
-                                    "date":    _s1_date,
-                                }
-                            except Exception as _s1e:
-                                st.warning(f"SAR load failed: {_s1e}")
-                                st.session_state["s1_mode"] = False
+                        st.session_state["s1_result"] = None  # clear first so UI shows loading
                     else:
                         st.session_state["s1_result"] = None
                     st.rerun()
+
+                # Load SAR data after rerun if mode is on but result not yet loaded
+                if st.session_state.get("s1_mode") and not st.session_state.get("s1_result"):
+                    with st.spinner("🛰 Loading Sentinel-1 SAR data..."):
+                        try:
+                            _s1_dates   = get_available_s1_dates(days_back=7)
+                            _s1_date    = _s1_dates[0]["date"] if _s1_dates else sel_date
+                            st.session_state["s1_date"]   = _s1_date
+                            _s1_layers  = get_s1_layers(_s1_date)
+                            _s1_oil     = detect_oil_spills(_s1_date)
+                            _s1_vessels = detect_vessels(_s1_date)
+                            _s1_vessels["vessels"] = check_vessel_oil_proximity(
+                                _s1_vessels.get("vessels", []),
+                                _s1_oil.get("polygons", [])
+                            )
+                            st.session_state["s1_result"] = {
+                                "layers":  _s1_layers,
+                                "oil":     _s1_oil,
+                                "vessels": _s1_vessels,
+                                "date":    _s1_date,
+                            }
+                            st.rerun()
+                        except Exception as _s1e:
+                            st.warning(f"SAR load failed: {_s1e}")
+                            st.session_state["s1_mode"]   = False
+                            st.session_state["s1_result"] = None
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
