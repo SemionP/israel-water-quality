@@ -962,6 +962,7 @@ if mode == MODE_ISRAEL:
             pass
 
         # ── Sentinel-1 SAR layers ────────────────────────────────────────────────
+        _s1_mode_on = st.session_state.get("s1_mode", False)
         try:
             _s1r = st.session_state.get("s1_result")
             if _s1r and _s1r.get("layers"):
@@ -977,6 +978,11 @@ if mode == MODE_ISRAEL:
                     _raster_layers.append({"id":"s1_ratio","label":"VV/VH ratio · S1","date":_s1_date_str,"url":_s1_lyr["ratio"],"visible":False,"vis":_s1_vis_ratio})
                 if _s1_lyr.get("rgb"):
                     _raster_layers.append({"id":"s1_rgb","label":"RGB composite · S1","date":_s1_date_str,"url":_s1_lyr["rgb"],"visible":False,"vis":None})
+                # When S1 is active, hide all optical layers
+                if _s1_mode_on:
+                    for _rl in _raster_layers:
+                        if not _rl["id"].startswith("s1_"):
+                            _rl["visible"] = False
         except Exception:
             pass
 
@@ -1440,13 +1446,17 @@ if mode == MODE_ISRAEL:
                 if st.session_state.get("s1_mode") and not st.session_state.get("s1_result"):
                     with st.spinner("🛰 Loading Sentinel-1 SAR data..."):
                         try:
-                            _s1_dates   = get_available_s1_dates(days_back=7)
+                            from s1_processing import (get_available_s1_dates as _gsd1,
+                                get_s1_layers as _gsl1, detect_oil_spills as _dos1,
+                                detect_vessels as _dv1, check_vessel_oil_proximity as _cvop1)
+                            _s1_dates   = _gsd1(days_back=7)
+                            st.session_state["s1_avail_dates"] = _s1_dates
                             _s1_date    = _s1_dates[0]["date"] if _s1_dates else sel_date
                             st.session_state["s1_date"]   = _s1_date
-                            _s1_layers  = get_s1_layers(_s1_date)
-                            _s1_oil     = detect_oil_spills(_s1_date)
-                            _s1_vessels = detect_vessels(_s1_date)
-                            _s1_vessels["vessels"] = check_vessel_oil_proximity(
+                            _s1_layers  = _gsl1(_s1_date)
+                            _s1_oil     = _dos1(_s1_date)
+                            _s1_vessels = _dv1(_s1_date)
+                            _s1_vessels["vessels"] = _cvop1(
                                 _s1_vessels.get("vessels", []),
                                 _s1_oil.get("polygons", [])
                             )
