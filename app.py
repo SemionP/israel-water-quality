@@ -1449,13 +1449,16 @@ if mode == MODE_ISRAEL:
                             from s1_processing import (get_available_s1_dates as _gsd1,
                                 get_s1_layers as _gsl1, detect_oil_spills as _dos1,
                                 detect_vessels as _dv1, check_vessel_oil_proximity as _cvop1)
-                            _s1_dates   = _gsd1(days_back=7)
-                            st.session_state["s1_avail_dates"] = _s1_dates
-                            _s1_date    = _s1_dates[0]["date"] if _s1_dates else sel_date
-                            st.session_state["s1_date"]   = _s1_date
-                            _s1_layers  = _gsl1(_s1_date)
-                            _s1_oil     = _dos1(_s1_date)
-                            _s1_vessels = _dv1(_s1_date)
+                            # Use target date if set by navigator, else freshest
+                            _s1_target = st.session_state.pop("s1_target_date", None)
+                            if not _s1_target:
+                                _s1_dates = _gsd1(days_back=7)
+                                st.session_state["s1_avail_dates"] = _s1_dates
+                                _s1_target = _s1_dates[0]["date"] if _s1_dates else sel_date
+                            st.session_state["s1_date"] = _s1_target
+                            _s1_layers  = _gsl1(_s1_target)
+                            _s1_oil     = _dos1(_s1_target)
+                            _s1_vessels = _dv1(_s1_target)
                             _s1_vessels["vessels"] = _cvop1(
                                 _s1_vessels.get("vessels", []),
                                 _s1_oil.get("polygons", [])
@@ -1464,7 +1467,7 @@ if mode == MODE_ISRAEL:
                                 "layers":  _s1_layers,
                                 "oil":     _s1_oil,
                                 "vessels": _s1_vessels,
-                                "date":    _s1_date,
+                                "date":    _s1_target,
                             }
                             st.rerun()
                         except Exception as _s1e:
@@ -1518,7 +1521,7 @@ if mode == MODE_ISRAEL:
                     _s1_date_str = _s1r.get("date", sel_date)
 
                     st.markdown(f'<div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:4px;">🛰 Sentinel-1 SAR · {_s1_date_str}</div>', unsafe_allow_html=True)
-                    # Date navigator — use cached dates stored at load time
+                    # Date navigator
                     _s1_avail = st.session_state.get("s1_avail_dates", [])
                     if not _s1_avail:
                         try:
@@ -1532,31 +1535,19 @@ if mode == MODE_ISRAEL:
                         _s1_cur_idx = _s1_date_opts.index(_s1_date_str) if _s1_date_str in _s1_date_opts else 0
                         _sn1, _sn2, _sn3 = st.columns([1, 4, 1])
                         with _sn1:
-                            if st.button("◀", key="s1_prev") and _s1_cur_idx < len(_s1_date_opts)-1:
-                                _new_date = _s1_date_opts[_s1_cur_idx + 1]
-                                with st.spinner(f"Loading S1 {_new_date}..."):
-                                    from s1_processing import (get_s1_layers as _gsl, detect_oil_spills as _dos,
-                                        detect_vessels as _dv, check_vessel_oil_proximity as _cvop)
-                                    _nl = _gsl(_new_date)
-                                    _no = _dos(_new_date)
-                                    _nv = _dv(_new_date)
-                                    _nv["vessels"] = _cvop(_nv.get("vessels",[]), _no.get("polygons",[]))
-                                    st.session_state["s1_result"] = {"layers":_nl,"oil":_no,"vessels":_nv,"date":_new_date}
-                                st.rerun()
+                            if st.button("◀", key="s1_prev"):
+                                if _s1_cur_idx < len(_s1_date_opts)-1:
+                                    st.session_state["s1_target_date"] = _s1_date_opts[_s1_cur_idx + 1]
+                                    st.session_state["s1_result"] = None
+                                    st.rerun()
                         with _sn2:
                             st.markdown(f'<div style="text-align:center;font-size:12px;color:#7fb3d3;padding:4px 0;">{_s1_date_str} ({_s1_cur_idx+1}/{len(_s1_date_opts)})</div>', unsafe_allow_html=True)
                         with _sn3:
-                            if st.button("▶", key="s1_next") and _s1_cur_idx > 0:
-                                _new_date = _s1_date_opts[_s1_cur_idx - 1]
-                                with st.spinner(f"Loading S1 {_new_date}..."):
-                                    from s1_processing import (get_s1_layers as _gsl, detect_oil_spills as _dos,
-                                        detect_vessels as _dv, check_vessel_oil_proximity as _cvop)
-                                    _nl = _gsl(_new_date)
-                                    _no = _dos(_new_date)
-                                    _nv = _dv(_new_date)
-                                    _nv["vessels"] = _cvop(_nv.get("vessels",[]), _no.get("polygons",[]))
-                                    st.session_state["s1_result"] = {"layers":_nl,"oil":_no,"vessels":_nv,"date":_new_date}
-                                st.rerun()
+                            if st.button("▶", key="s1_next"):
+                                if _s1_cur_idx > 0:
+                                    st.session_state["s1_target_date"] = _s1_date_opts[_s1_cur_idx - 1]
+                                    st.session_state["s1_result"] = None
+                                    st.rerun()
                     _s1c1, _s1c2, _s1c3 = st.columns(3)
                     with _s1c1:
                         st.markdown(f'<div style="background:rgba(55,138,221,0.08);border:1px solid rgba(55,138,221,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Vessels</div><div style="font-size:22px;font-weight:600;color:#c8e8f8;">{_n_ves}</div></div>', unsafe_allow_html=True)
