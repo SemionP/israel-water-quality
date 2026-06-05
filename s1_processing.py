@@ -30,8 +30,9 @@ def _get_s1_img(date_str, aoi):
             .sort("system:time_start", False))
     if coll.size().getInfo() == 0:
         return None
-    # Use first image (freshest) — mosaic in native CRS causes shift
-    return coll.first()
+    # Mosaic + reproject to EPSG:4326 at 10m — fixes tile alignment with WebMercator basemap
+    img = coll.mosaic().reproject(crs="EPSG:4326", scale=10)
+    return img
 
 
 @st.cache_data(ttl=14400)
