@@ -320,9 +320,6 @@ from gee_processing import (init_gee, get_atm, get_sst, get_available_s3_dates,
     sample_pixel_spectra)
 init_gee()
 
-from s1_processing import (get_available_s1_dates, get_s1_layers,
-    detect_oil_spills, detect_vessels, check_vessel_oil_proximity)
-
 
 from storage import (load_zones, save_zones, load_zones_from_all, load_points, save_points)
 
@@ -520,6 +517,12 @@ if mode == MODE_ISRAEL:
         st.session_state.spectra_click = None
     if "spectra_result" not in st.session_state:
         st.session_state.spectra_result = None
+    if "s1_mode" not in st.session_state:
+        st.session_state["s1_mode"] = False
+    if "s1_result" not in st.session_state:
+        st.session_state["s1_result"] = None
+    if "s1_date" not in st.session_state:
+        st.session_state["s1_date"] = None
 
     @st.cache_data(ttl=7200)
     def _get_true_color_tile(source: str, target_date_str: str):
@@ -1403,6 +1406,36 @@ if mode == MODE_ISRAEL:
                         st.session_state.spectra_result = None
                         st.session_state.spectra_click = None
                     st.rerun()
+                s1_label = "🛰 Stop SAR" if st.session_state.get("s1_mode") else "🛰 SAR · S1"
+                if st.button(s1_label, key="toggle_s1", use_container_width=False):
+                    new_s1 = not st.session_state.get("s1_mode", False)
+                    st.session_state["s1_mode"] = new_s1
+                    if new_s1:
+                        st.session_state.inspect_mode = False
+                        with st.spinner("🛰 Loading Sentinel-1 SAR data..."):
+                            try:
+                                _s1_dates = get_available_s1_dates(days_back=7)
+                                _s1_date  = _s1_dates[0]["date"] if _s1_dates else sel_date
+                                st.session_state["s1_date"] = _s1_date
+                                _s1_layers  = get_s1_layers(_s1_date)
+                                _s1_oil     = detect_oil_spills(_s1_date)
+                                _s1_vessels = detect_vessels(_s1_date)
+                                _s1_vessels["vessels"] = check_vessel_oil_proximity(
+                                    _s1_vessels.get("vessels", []),
+                                    _s1_oil.get("polygons", [])
+                                )
+                                st.session_state["s1_result"] = {
+                                    "layers":  _s1_layers,
+                                    "oil":     _s1_oil,
+                                    "vessels": _s1_vessels,
+                                    "date":    _s1_date,
+                                }
+                            except Exception as _s1e:
+                                st.warning(f"SAR load failed: {_s1e}")
+                                st.session_state["s1_mode"] = False
+                    else:
+                        st.session_state["s1_result"] = None
+                    st.rerun()
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
@@ -1438,65 +1471,6 @@ if mode == MODE_ISRAEL:
                         st.session_state.spectra_result = None
                         st.session_state.spectra_click = None
                         st.rerun()
-                # ── S1 SAR PANEL ──────────────────────────────────────────
-                if st.session_state.s1_mode and st.session_state.s1_result:
-                    import json as _s1j
-                    _s1r  = st.session_state.s1_result
-                    _oil  = _s1r["oil"]
-                    _ves  = _s1r["vessels"]
-                    _date = _s1r.get("date", sel_date)
-                    _n_oil  = _oil.get("n_anomalies", 0)
-                    _n_ves  = _ves.get("n_vessels", 0)
-                    _n_near = sum(1 for v in _ves.get("vessels",[]) if v.get("near_oil"))
-
-                    # Stats row
-                    _s1c1, _s1c2, _s1c3 = st.columns(3)
-                    with _s1c1:
-                        st.markdown(f'<div style="background:rgba(55,138,221,0.08);border:1px solid rgba(55,138,221,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Vessels</div><div style="font-size:22px;font-weight:600;color:#c8e8f8;">{_n_ves}</div></div>', unsafe_allow_html=True)
-                    with _s1c2:
-                        st.markdown(f'<div style="background:rgba(226,75,74,0.08);border:1px solid rgba(226,75,74,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Oil anomalies</div><div style="font-size:22px;font-weight:600;color:#f09595;">{_n_oil}</div></div>', unsafe_allow_html=True)
-                    with _s1c3:
-                        _warn_col = "#FAC775" if _n_near > 0 else "#7fb3d3"
-                        st.markdown(f'<div style="background:rgba(239,159,39,0.08);border:1px solid rgba(239,159,39,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Near oil</div><div style="font-size:22px;font-weight:600;color:{_warn_col};">{_n_near}</div></div>', unsafe_allow_html=True)
-
-                    # Vessels list
-                    if _ves.get("vessels"):
-                        st.markdown('<div style="font-size:12px;color:#00c8c8;margin:8px 0 4px;font-family:monospace;">📍 Detected vessels</div>', unsafe_allow_html=True)
-                        for _v in _ves["vessels"]:
-                            _vc = "rgba(239,159,39,0.15)" if _v.get("near_oil") else "rgba(4,30,51,0.6)"
-                            _vb = "rgba(239,159,39,0.4)" if _v.get("near_oil") else "rgba(0,200,200,0.15)"
-                            _alert = f'⚠ near {_v["near_oil_id"]}'  if _v.get("near_oil") else ""
-                            st.markdown(
-                                f'<div style="background:{_vc};border:1px solid {_vb};border-radius:5px;padding:6px 10px;margin-bottom:4px;">'
-                                f'<span style="font-size:12px;color:#c8e8f8;font-weight:500;">{_v["id"]}</span>'
-                                f'<span style="font-size:11px;color:#EF9F27;margin-left:8px;">{_alert}</span><br>'
-                                f'<span style="font-size:11px;color:#7fb3d3;">{_v["lat"]}°N {_v["lon"]}°E &nbsp;·&nbsp; {_v["category"]} &nbsp;·&nbsp; ~{_v["length_min_m"]}–{_v["length_max_m"]}m × {_v["width_min_m"]}–{_v["width_max_m"]}m &nbsp;·&nbsp; {_v["confidence"]}</span>'
-                                f'</div>',
-                                unsafe_allow_html=True
-                            )
-
-                    # Oil list
-                    if _oil.get("polygons"):
-                        st.markdown('<div style="font-size:12px;color:#00c8c8;margin:8px 0 4px;font-family:monospace;">⚠ Oil anomalies</div>', unsafe_allow_html=True)
-                        for _o in _oil["polygons"]:
-                            _conf_col = {"High":"#f09595","Medium":"#FAC775","Low":"#B4B2A9"}.get(_o["confidence"],"#7fb3d3")
-                            _near_v = [v["id"] for v in _ves.get("vessels",[]) if v.get("near_oil_id") == _o["id"]]
-                            _near_str = f'⚠ {", ".join(_near_v)} nearby' if _near_v else ""
-                            st.markdown(
-                                f'<div style="background:rgba(226,75,74,0.08);border:1px solid rgba(226,75,74,0.2);border-radius:5px;padding:6px 10px;margin-bottom:4px;">'
-                                f'<span style="font-size:12px;color:{_conf_col};font-weight:500;">{_o["id"]}</span>'
-                                f'<span style="font-size:11px;color:#EF9F27;margin-left:8px;">{_near_str}</span><br>'
-                                f'<span style="font-size:11px;color:#7fb3d3;">{_o["lat"]}°N {_o["lon"]}°E &nbsp;·&nbsp; {_o["area_km2_min"]}–{_o["area_km2_max"]} km² &nbsp;·&nbsp; {_o["confidence"]}</span>'
-                                f'</div>',
-                                unsafe_allow_html=True
-                            )
-
-                    st.markdown('<div style="font-size:10px;color:#7fb3d3;padding:5px 0;border-top:1px solid rgba(0,200,200,0.1);margin-top:6px;">⚠ SAR detection only. Oil requires optical validation. Vessel size ±40%.</div>', unsafe_allow_html=True)
-                    if st.button("🗑 Clear SAR", key="clear_s1"):
-                        st.session_state.s1_mode   = False
-                        st.session_state.s1_result = None
-                        st.rerun()
-
             with col_info:
                 # Detect drawings → unified pending_zone (point or polygon)
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
