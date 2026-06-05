@@ -1508,8 +1508,15 @@ if mode == MODE_ISRAEL:
                     _s1_date_str = _s1r.get("date", sel_date)
 
                     st.markdown(f'<div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:4px;">🛰 Sentinel-1 SAR · {_s1_date_str}</div>', unsafe_allow_html=True)
-                    # Date navigator
-                    _s1_avail = get_available_s1_dates(days_back=14)
+                    # Date navigator — use cached dates stored at load time
+                    _s1_avail = st.session_state.get("s1_avail_dates", [])
+                    if not _s1_avail:
+                        try:
+                            from s1_processing import get_available_s1_dates as _gsd
+                            _s1_avail = _gsd(days_back=14)
+                            st.session_state["s1_avail_dates"] = _s1_avail
+                        except Exception:
+                            _s1_avail = []
                     if _s1_avail and len(_s1_avail) > 1:
                         _s1_date_opts = [d["date"] for d in _s1_avail]
                         _s1_cur_idx = _s1_date_opts.index(_s1_date_str) if _s1_date_str in _s1_date_opts else 0
@@ -1518,10 +1525,12 @@ if mode == MODE_ISRAEL:
                             if st.button("◀", key="s1_prev") and _s1_cur_idx < len(_s1_date_opts)-1:
                                 _new_date = _s1_date_opts[_s1_cur_idx + 1]
                                 with st.spinner(f"Loading S1 {_new_date}..."):
-                                    _nl = get_s1_layers(_new_date)
-                                    _no = detect_oil_spills(_new_date)
-                                    _nv = detect_vessels(_new_date)
-                                    _nv["vessels"] = check_vessel_oil_proximity(_nv.get("vessels",[]), _no.get("polygons",[]))
+                                    from s1_processing import (get_s1_layers as _gsl, detect_oil_spills as _dos,
+                                        detect_vessels as _dv, check_vessel_oil_proximity as _cvop)
+                                    _nl = _gsl(_new_date)
+                                    _no = _dos(_new_date)
+                                    _nv = _dv(_new_date)
+                                    _nv["vessels"] = _cvop(_nv.get("vessels",[]), _no.get("polygons",[]))
                                     st.session_state["s1_result"] = {"layers":_nl,"oil":_no,"vessels":_nv,"date":_new_date}
                                 st.rerun()
                         with _sn2:
@@ -1530,10 +1539,12 @@ if mode == MODE_ISRAEL:
                             if st.button("▶", key="s1_next") and _s1_cur_idx > 0:
                                 _new_date = _s1_date_opts[_s1_cur_idx - 1]
                                 with st.spinner(f"Loading S1 {_new_date}..."):
-                                    _nl = get_s1_layers(_new_date)
-                                    _no = detect_oil_spills(_new_date)
-                                    _nv = detect_vessels(_new_date)
-                                    _nv["vessels"] = check_vessel_oil_proximity(_nv.get("vessels",[]), _no.get("polygons",[]))
+                                    from s1_processing import (get_s1_layers as _gsl, detect_oil_spills as _dos,
+                                        detect_vessels as _dv, check_vessel_oil_proximity as _cvop)
+                                    _nl = _gsl(_new_date)
+                                    _no = _dos(_new_date)
+                                    _nv = _dv(_new_date)
+                                    _nv["vessels"] = _cvop(_nv.get("vessels",[]), _no.get("polygons",[]))
                                     st.session_state["s1_result"] = {"layers":_nl,"oil":_no,"vessels":_nv,"date":_new_date}
                                 st.rerun()
                     _s1c1, _s1c2, _s1c3 = st.columns(3)
