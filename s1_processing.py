@@ -71,7 +71,7 @@ def get_s1_layers(date_str: str, orbit: str = "ASCENDING") -> dict:
         if coll.size().getInfo() == 0:
             return result
 
-        img = coll.mosaic().clip(MED_SEA_BOX)
+        img = coll.mean().clip(MED_SEA_BOX)
         vv  = img.select("VV")
         vh  = img.select("VH")
 
