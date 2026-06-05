@@ -319,8 +319,7 @@ from gee_processing import (init_gee, get_atm, get_sst, get_available_s3_dates,
     compute_zone_history_range, _empty_atm, MODE_ISRAEL, MODE_GLOBAL, mode,
     sample_pixel_spectra)
 init_gee()
-from s1_processing import (get_available_s1_dates, get_s1_layers,
-    detect_oil_spills, detect_vessels, check_vessel_oil_proximity)
+
 
 from storage import (load_zones, save_zones, load_zones_from_all, load_points, save_points)
 
@@ -1479,6 +1478,62 @@ if mode == MODE_ISRAEL:
                         st.session_state.spectra_click = None
                         st.rerun()
             with col_info:
+                # ── S1 SAR PANEL ──────────────────────────────────────────
+                if st.session_state.get("s1_mode") and st.session_state.get("s1_result"):
+                    _s1r  = st.session_state.get("s1_result", {})
+                    _oil  = _s1r.get("oil", {})
+                    _ves  = _s1r.get("vessels", {})
+                    _n_oil  = _oil.get("n_anomalies", 0)
+                    _n_ves  = _ves.get("n_vessels", 0)
+                    _n_near = sum(1 for v in _ves.get("vessels", []) if v.get("near_oil"))
+                    _s1_date_str = _s1r.get("date", sel_date)
+
+                    st.markdown(f'<div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:6px;">🛰 Sentinel-1 SAR · {_s1_date_str}</div>', unsafe_allow_html=True)
+                    _s1c1, _s1c2, _s1c3 = st.columns(3)
+                    with _s1c1:
+                        st.markdown(f'<div style="background:rgba(55,138,221,0.08);border:1px solid rgba(55,138,221,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Vessels</div><div style="font-size:22px;font-weight:600;color:#c8e8f8;">{_n_ves}</div></div>', unsafe_allow_html=True)
+                    with _s1c2:
+                        st.markdown(f'<div style="background:rgba(226,75,74,0.08);border:1px solid rgba(226,75,74,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Oil anomalies</div><div style="font-size:22px;font-weight:600;color:#f09595;">{_n_oil}</div></div>', unsafe_allow_html=True)
+                    with _s1c3:
+                        _wc = "#FAC775" if _n_near > 0 else "#7fb3d3"
+                        st.markdown(f'<div style="background:rgba(239,159,39,0.08);border:1px solid rgba(239,159,39,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Near oil</div><div style="font-size:22px;font-weight:600;color:{_wc};">{_n_near}</div></div>', unsafe_allow_html=True)
+
+                    if _ves.get("vessels"):
+                        st.markdown('<div style="font-size:12px;color:#00c8c8;margin:8px 0 4px;font-family:monospace;">📍 Detected vessels</div>', unsafe_allow_html=True)
+                        for _v in _ves["vessels"]:
+                            _vc = "rgba(239,159,39,0.15)" if _v.get("near_oil") else "rgba(4,30,51,0.6)"
+                            _vb = "rgba(239,159,39,0.4)" if _v.get("near_oil") else "rgba(0,200,200,0.15)"
+                            _alert = f'⚠ near {_v["near_oil_id"]}' if _v.get("near_oil") else ""
+                            st.markdown(
+                                f'<div style="background:{_vc};border:1px solid {_vb};border-radius:5px;padding:6px 10px;margin-bottom:4px;">'
+                                f'<span style="font-size:12px;color:#c8e8f8;font-weight:500;">{_v["id"]}</span>'
+                                f'<span style="font-size:11px;color:#EF9F27;margin-left:8px;">{_alert}</span><br>'
+                                f'<span style="font-size:11px;color:#7fb3d3;">{_v["lat"]}°N {_v["lon"]}°E &nbsp;·&nbsp; {_v["category"]} &nbsp;·&nbsp; ~{_v["length_min_m"]}–{_v["length_max_m"]}m × {_v["width_min_m"]}–{_v["width_max_m"]}m &nbsp;·&nbsp; {_v["confidence"]}</span>'
+                                f'</div>', unsafe_allow_html=True)
+
+                    if _oil.get("polygons"):
+                        st.markdown('<div style="font-size:12px;color:#00c8c8;margin:8px 0 4px;font-family:monospace;">⚠ Oil anomalies</div>', unsafe_allow_html=True)
+                        for _o in _oil["polygons"]:
+                            _cc = {"High":"#f09595","Medium":"#FAC775","Low":"#B4B2A9"}.get(_o["confidence"],"#7fb3d3")
+                            _nv = [v["id"] for v in _ves.get("vessels",[]) if v.get("near_oil_id")==_o["id"]]
+                            _ns = f'⚠ {", ".join(_nv)} nearby' if _nv else ""
+                            st.markdown(
+                                f'<div style="background:rgba(226,75,74,0.08);border:1px solid rgba(226,75,74,0.2);border-radius:5px;padding:6px 10px;margin-bottom:4px;">'
+                                f'<span style="font-size:12px;color:{_cc};font-weight:500;">{_o["id"]}</span>'
+                                f'<span style="font-size:11px;color:#EF9F27;margin-left:8px;">{_ns}</span><br>'
+                                f'<span style="font-size:11px;color:#7fb3d3;">{_o["lat"]}°N {_o["lon"]}°E &nbsp;·&nbsp; {_o["area_km2_min"]}–{_o["area_km2_max"]} km² &nbsp;·&nbsp; {_o["confidence"]}</span>'
+                                f'</div>', unsafe_allow_html=True)
+
+                    if not _ves.get("vessels") and not _oil.get("polygons"):
+                        st.info("No vessels or oil anomalies detected for this date.")
+
+                    st.markdown('<div style="font-size:10px;color:#7fb3d3;padding:5px 0;border-top:1px solid rgba(0,200,200,0.1);margin-top:6px;">⚠ SAR detection only. Oil requires optical validation. Vessel size ±40%.</div>', unsafe_allow_html=True)
+                    if st.button("🗑 Clear SAR", key="clear_s1"):
+                        st.session_state["s1_mode"]   = False
+                        st.session_state["s1_result"] = None
+                        st.rerun()
+                    st.markdown("---")
+
                 # Detect drawings → unified pending_zone (point or polygon)
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
                 last_drawing  = map_data_wqi.get("last_active_drawing") if map_data_wqi else None
