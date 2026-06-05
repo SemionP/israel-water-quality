@@ -319,8 +319,6 @@ from gee_processing import (init_gee, get_atm, get_sst, get_available_s3_dates,
     compute_zone_history_range, _empty_atm, MODE_ISRAEL, MODE_GLOBAL, mode,
     sample_pixel_spectra)
 init_gee()
-from s1_processing import (get_available_s1_dates, get_s1_layers,
-    detect_oil_spills, detect_vessels, check_vessel_oil_proximity)
 
 
 from storage import (load_zones, save_zones, load_zones_from_all, load_points, save_points)
@@ -963,6 +961,25 @@ if mode == MODE_ISRAEL:
         except Exception:
             pass
 
+        # ── Sentinel-1 SAR layers ────────────────────────────────────────────────
+        try:
+            _s1r = st.session_state.get("s1_result")
+            if _s1r and _s1r.get("layers"):
+                _s1_lyr = _s1r["layers"]
+                _s1_date_str = _s1r.get("date", "")
+                _s1_vis_vv = {"palette":["#000014","#0a1520","#152840","#1e3a5a","#5aaacf","#c8e8f8"],"min":-25,"max":0,"unit":"VV backscatter (dB)","minLabel":"Low","maxLabel":"High"}
+                _s1_vis_ratio = {"palette":["#041e33","#1D9E75","#fdae61","#d73027"],"min":0,"max":15,"unit":"VV/VH ratio (dB)","minLabel":"Low","maxLabel":"High"}
+                if _s1_lyr.get("vv"):
+                    _raster_layers.append({"id":"s1_vv","label":"VV backscatter · S1","date":_s1_date_str,"url":_s1_lyr["vv"],"visible":True,"vis":_s1_vis_vv})
+                if _s1_lyr.get("vh"):
+                    _raster_layers.append({"id":"s1_vh","label":"VH backscatter · S1","date":_s1_date_str,"url":_s1_lyr["vh"],"visible":False,"vis":None})
+                if _s1_lyr.get("ratio"):
+                    _raster_layers.append({"id":"s1_ratio","label":"VV/VH ratio · S1","date":_s1_date_str,"url":_s1_lyr["ratio"],"visible":False,"vis":_s1_vis_ratio})
+                if _s1_lyr.get("rgb"):
+                    _raster_layers.append({"id":"s1_rgb","label":"RGB composite · S1","date":_s1_date_str,"url":_s1_lyr["rgb"],"visible":False,"vis":None})
+        except Exception:
+            pass
+
         # All raster layers managed exclusively by JS (no folium TileLayer for rasters)
         # The folium.Map only has the basemap. JS pre-creates all tile layers and
         # adds/removes them based on checkbox state.
@@ -1490,7 +1507,35 @@ if mode == MODE_ISRAEL:
                     _n_near = sum(1 for v in _ves.get("vessels", []) if v.get("near_oil"))
                     _s1_date_str = _s1r.get("date", sel_date)
 
-                    st.markdown(f'<div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:6px;">🛰 Sentinel-1 SAR · {_s1_date_str}</div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:4px;">🛰 Sentinel-1 SAR · {_s1_date_str}</div>', unsafe_allow_html=True)
+                    # Date navigator
+                    _s1_avail = get_available_s1_dates(days_back=14)
+                    if _s1_avail and len(_s1_avail) > 1:
+                        _s1_date_opts = [d["date"] for d in _s1_avail]
+                        _s1_cur_idx = _s1_date_opts.index(_s1_date_str) if _s1_date_str in _s1_date_opts else 0
+                        _sn1, _sn2, _sn3 = st.columns([1, 4, 1])
+                        with _sn1:
+                            if st.button("◀", key="s1_prev") and _s1_cur_idx < len(_s1_date_opts)-1:
+                                _new_date = _s1_date_opts[_s1_cur_idx + 1]
+                                with st.spinner(f"Loading S1 {_new_date}..."):
+                                    _nl = get_s1_layers(_new_date)
+                                    _no = detect_oil_spills(_new_date)
+                                    _nv = detect_vessels(_new_date)
+                                    _nv["vessels"] = check_vessel_oil_proximity(_nv.get("vessels",[]), _no.get("polygons",[]))
+                                    st.session_state["s1_result"] = {"layers":_nl,"oil":_no,"vessels":_nv,"date":_new_date}
+                                st.rerun()
+                        with _sn2:
+                            st.markdown(f'<div style="text-align:center;font-size:12px;color:#7fb3d3;padding:4px 0;">{_s1_date_str} ({_s1_cur_idx+1}/{len(_s1_date_opts)})</div>', unsafe_allow_html=True)
+                        with _sn3:
+                            if st.button("▶", key="s1_next") and _s1_cur_idx > 0:
+                                _new_date = _s1_date_opts[_s1_cur_idx - 1]
+                                with st.spinner(f"Loading S1 {_new_date}..."):
+                                    _nl = get_s1_layers(_new_date)
+                                    _no = detect_oil_spills(_new_date)
+                                    _nv = detect_vessels(_new_date)
+                                    _nv["vessels"] = check_vessel_oil_proximity(_nv.get("vessels",[]), _no.get("polygons",[]))
+                                    st.session_state["s1_result"] = {"layers":_nl,"oil":_no,"vessels":_nv,"date":_new_date}
+                                st.rerun()
                     _s1c1, _s1c2, _s1c3 = st.columns(3)
                     with _s1c1:
                         st.markdown(f'<div style="background:rgba(55,138,221,0.08);border:1px solid rgba(55,138,221,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Vessels</div><div style="font-size:22px;font-weight:600;color:#c8e8f8;">{_n_ves}</div></div>', unsafe_allow_html=True)
