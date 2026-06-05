@@ -319,6 +319,8 @@ from gee_processing import (init_gee, get_atm, get_sst, get_available_s3_dates,
     compute_zone_history_range, _empty_atm, MODE_ISRAEL, MODE_GLOBAL, mode,
     sample_pixel_spectra)
 init_gee()
+from s1_processing import (get_available_s1_dates, get_s1_layers,
+    detect_oil_spills, detect_vessels, check_vessel_oil_proximity)
 
 
 from storage import (load_zones, save_zones, load_zones_from_all, load_points, save_points)
