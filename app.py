@@ -320,6 +320,9 @@ from gee_processing import (init_gee, get_atm, get_sst, get_available_s3_dates,
     sample_pixel_spectra)
 init_gee()
 
+from s1_processing import (get_available_s1_dates, get_s1_layers,
+    detect_oil_spills, detect_vessels, check_vessel_oil_proximity)
+
 
 from storage import (load_zones, save_zones, load_zones_from_all, load_points, save_points)
 
@@ -517,18 +520,6 @@ if mode == MODE_ISRAEL:
         st.session_state.spectra_click = None
     if "spectra_result" not in st.session_state:
         st.session_state.spectra_result = None
-    if "spectra_points" not in st.session_state:
-        st.session_state.spectra_points = []
-    if "spectra_zone" not in st.session_state:
-        st.session_state.spectra_zone = None
-    if "inspect_sub" not in st.session_state:
-        st.session_state.inspect_sub = "point"
-    if "spectra_resample_idx" not in st.session_state:
-        st.session_state.spectra_resample_idx = None
-    if "transect_mode" not in st.session_state:
-        st.session_state.transect_mode = False
-    if "transect_result" not in st.session_state:
-        st.session_state.transect_result = None  # {distances, values, layer_name}
 
     @st.cache_data(ttl=7200)
     def _get_true_color_tile(source: str, target_date_str: str):
@@ -885,52 +876,6 @@ if mode == MODE_ISRAEL:
         return results
 
     # Shared map builder
-    def _build_index_img(index, source, date_str, t):
-        """Return (ee.Image, band_name) for a normalized index."""
-        DISPLAY_BOX = ee.Geometry.Rectangle([33.5, 29.5, 36.5, 33.5])
-        wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(10)
-        try:
-            if source == "S2":
-                coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                        .filterBounds(DISPLAY_BOX)
-                        .filterDate(t.advance(-8,"day"), t.advance(1,"day"))
-                        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",40))
-                        .sort("system:time_start",False))
-                img = coll.mosaic() if coll.size().getInfo()>0 else None
-                if img is None: return None, None
-                b3=img.select("B3").divide(10000); b4=img.select("B4").divide(10000)
-                b5=img.select("B5").divide(10000); b8=img.select("B8").divide(10000)
-                b8a=img.select("B8A").divide(10000)
-                if index=="ndwi": out=b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1).updateMask(wm)
-                elif index=="chl": out=b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1).updateMask(wm)
-                else: out=b4.add(b8a).divide(2).unitScale(0,0.15).clamp(0,1).updateMask(wm)
-            elif source == "S3":
-                coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                        .filterBounds(DISPLAY_BOX)
-                        .filterDate(t.advance(-3,"day"), t.advance(1,"day"))
-                        .sort("system:time_start",False))
-                img = coll.mosaic() if coll.size().getInfo()>0 else None
-                if img is None: return None, None
-                if index=="ndwi": out=img.normalizedDifference(["Oa06_radiance","Oa17_radiance"]).unitScale(-0.2,0.5).clamp(0,1).updateMask(wm)
-                elif index=="chl":
-                    mci=img.select("Oa10_radiance").subtract(img.select("Oa09_radiance"))
-                    out=mci.unitScale(-2,12).clamp(0,1).updateMask(wm)
-                else: out=img.select("Oa08_radiance").unitScale(10,80).clamp(0,1).updateMask(wm)
-            else:
-                coll = (ee.ImageCollection("MODIS/061/MOD09GA")
-                        .filterBounds(DISPLAY_BOX)
-                        .filterDate(t.advance(-3,"day"), t.advance(1,"day"))
-                        .sort("system:time_start",False))
-                img = coll.mosaic() if coll.size().getInfo()>0 else None
-                if img is None: return None, None
-                b1=img.select("sur_refl_b01"); b2=img.select("sur_refl_b02"); b4=img.select("sur_refl_b04")
-                if index=="ndwi": out=b4.subtract(b2).divide(b4.add(b2)).unitScale(-0.3,0.3).clamp(0,1).updateMask(wm)
-                elif index=="chl": out=b4.divide(b1.add(1)).unitScale(0.8,2.5).clamp(0,1).updateMask(wm)
-                else: out=b1.unitScale(0,1500).clamp(0,1).updateMask(wm)
-            return out.rename("value"), "value"
-        except Exception:
-            return None, None
-
     def _build_map(selected_beach=None):
         bm      = st.session_state.get("basemap", "Satellite")
         bm_data = BASEMAPS.get(bm, BASEMAPS["Satellite"])
@@ -940,7 +885,7 @@ if mode == MODE_ISRAEL:
             tiles=bm_data["tile"],
             attr=bm_data["attr"]
         )
-        # Add draw plugin — polygon + marker + polyline (for transect)
+        # Add draw plugin — polygon + marker
         Draw(
             export=False,
             draw_options={
@@ -948,7 +893,7 @@ if mode == MODE_ISRAEL:
                 "rectangle":    True,
                 "marker":       True,
                 "circle":       False,
-                "polyline":     st.session_state.get("transect_mode", False),
+                "polyline":     False,
                 "circlemarker": False,
             },
             edit_options={"edit": False}
@@ -1397,35 +1342,6 @@ if mode == MODE_ISRAEL:
                             )
                         ).add_to(m)
 
-        # ── Spectra point markers ────────────────────────────────────────────
-        if st.session_state.get("inspect_mode") and st.session_state.get("inspect_sub") == "point":
-            _pt_colors_m = ["#1D9E75","#EF9F27","#D4537E","#378ADD","#7F77DD","#D85A30"]
-            for _pi, _pt in enumerate(st.session_state.get("spectra_points", [])):
-                try:
-                    _lat_m = float(_pt["key"].split(",")[0])
-                    _lon_m = float(_pt["key"].split(",")[1])
-                    _pc_m  = _pt_colors_m[_pi % len(_pt_colors_m)]
-                    folium.CircleMarker(
-                        location=[_lat_m, _lon_m],
-                        radius=12,
-                        color=_pc_m,
-                        fill=True,
-                        fill_color=_pc_m,
-                        fill_opacity=0.85,
-                        weight=2,
-                        tooltip=folium.Tooltip(_pt["label"], sticky=True),
-                    ).add_to(m)
-                    folium.Marker(
-                        location=[_lat_m, _lon_m],
-                        icon=folium.DivIcon(
-                            html=f'<div style="font-size:10px;font-weight:bold;color:#020d18;'
-                                 f'text-align:center;line-height:24px;">P{_pi+1}</div>',
-                            icon_size=(24, 24), icon_anchor=(12, 12)
-                        )
-                    ).add_to(m)
-                except Exception:
-                    pass
-
         # Native folium.LayerControl removed — replaced by custom 30×30 basemap
         # button injected via JS (topleft, matching the other toolbar buttons).
         return m
@@ -1481,361 +1397,106 @@ if mode == MODE_ISRAEL:
                     st.session_state.show_zones_on_map = not st.session_state.show_zones_on_map
                     st.rerun()
                 inspect_label = "🔬 Stop Inspect" if st.session_state.inspect_mode else "🔬 Inspect Pixel"
-                transect_label = "📏 Stop Transect" if st.session_state.transect_mode else "📏 Transect"
-                _btn_cols = st.columns(2)
-                with _btn_cols[0]:
-                    if st.button(inspect_label, key="toggle_inspect", use_container_width=True):
-                        st.session_state.inspect_mode = not st.session_state.inspect_mode
-                        if not st.session_state.inspect_mode:
-                            st.session_state.spectra_result = None
-                            st.session_state.spectra_click = None
-                        if st.session_state.inspect_mode:
-                            st.session_state.transect_mode = False
-                        st.rerun()
-                with _btn_cols[1]:
-                    if st.button(transect_label, key="toggle_transect", use_container_width=True):
-                        st.session_state.transect_mode = not st.session_state.transect_mode
-                        if st.session_state.transect_mode:
-                            st.session_state.inspect_mode = False
-                            st.session_state.transect_result = None
-                        st.rerun()
-                if st.session_state.inspect_mode:
-                    _sub_cols = st.columns(2)
-                    with _sub_cols[0]:
-                        if st.button("📍 Points", key="inspect_sub_point",
-                                     use_container_width=True,
-                                     type="primary" if st.session_state.inspect_sub=="point" else "secondary"):
-                            st.session_state.inspect_sub = "point"
-                    with _sub_cols[1]:
-                        if st.button("⬡ Zone", key="inspect_sub_zone",
-                                     use_container_width=True,
-                                     type="primary" if st.session_state.inspect_sub=="zone" else "secondary"):
-                            st.session_state.inspect_sub = "zone"
+                if st.button(inspect_label, key="toggle_inspect"):
+                    st.session_state.inspect_mode = not st.session_state.inspect_mode
+                    if not st.session_state.inspect_mode:
+                        st.session_state.spectra_result = None
+                        st.session_state.spectra_click = None
+                    st.rerun()
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
-                    key=f"israel_map_wqi_{st.session_state.get('img_idx',0)}_{int(st.session_state.get('inspect_mode',False))}_{int(st.session_state.get('transect_mode',False))}",
+                    key=f"israel_map_wqi_{st.session_state.get('img_idx',0)}",
                     returned_objects=["bounds","last_active_drawing","last_clicked"]
                 )
   
-                # ── Spectra display ───────────────────────────────────────
-                import json as _spj
-                import math as _spmath
+                if st.session_state.spectra_result:
+                    _sp = st.session_state.spectra_result
+                    _lat_str, _lon_str = st.session_state.spectra_click.split(",")
+                    st.markdown(
+                        f'<div style="font-size:12px;color:#7fb3d3;margin:4px 0 2px;">'
+                        f'🔬 Spectra · {data_source} · {_lat_str}°N {_lon_str}°E</div>',
+                        unsafe_allow_html=True)
+                    _max_val = max(_sp.values()) if _sp else 1
+                    _bar_html = '<div style="display:flex;align-items:flex-end;gap:3px;height:80px;padding:4px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.15);border-radius:5px;">'
+                    for _wl, _rv in _sp.items():
+                        _pct = int((_rv / _max_val) * 100) if _max_val else 0
+                        _wl_num = int(_wl.replace("nm","")) if "nm" in _wl else 500
+                        _col = "#8B00FF" if _wl_num<450 else "#0055FF" if _wl_num<500 else "#00AA00" if _wl_num<570 else "#FF4400" if _wl_num<700 else "#880000"
+                        _bar_html += f'<div title="{_wl}: {_rv}" style="flex:1;min-width:8px;height:{_pct}%;background:{_col};border-radius:2px 2px 0 0;cursor:help;"></div>'
+                    _bar_html += '</div>'
+                    _bar_html += '<div style="display:flex;gap:3px;overflow-x:auto;">'
+                    for _wl, _rv in _sp.items():
+                        _bar_html += f'<div style="flex:1;min-width:8px;text-align:center;font-size:9px;color:#7fb3d3;">{_rv}</div>'
+                    _bar_html += '</div>'
+                    _bar_html += '<div style="display:flex;gap:3px;overflow-x:auto;margin-bottom:4px;">'
+                    for _wl in _sp.keys():
+                        _bar_html += f'<div style="flex:1;min-width:8px;text-align:center;font-size:9px;color:#7fb3d3;">{_wl}</div>'
+                    _bar_html += '</div>'
+                    st.markdown(_bar_html, unsafe_allow_html=True)
+                    if st.button("✕ Clear spectra", key="clear_spectra"):
+                        st.session_state.spectra_result = None
+                        st.session_state.spectra_click = None
+                        st.rerun()
+                # ── S1 SAR PANEL ──────────────────────────────────────────
+                if st.session_state.s1_mode and st.session_state.s1_result:
+                    import json as _s1j
+                    _s1r  = st.session_state.s1_result
+                    _oil  = _s1r["oil"]
+                    _ves  = _s1r["vessels"]
+                    _date = _s1r.get("date", sel_date)
+                    _n_oil  = _oil.get("n_anomalies", 0)
+                    _n_ves  = _ves.get("n_vessels", 0)
+                    _n_near = sum(1 for v in _ves.get("vessels",[]) if v.get("near_oil"))
 
-                _PT_COLORS = ["#1D9E75","#EF9F27","#D4537E","#378ADD","#7F77DD","#D85A30"]
-                _PT_DASHES = ["[]","[6,3]","[3,3]","[8,4,3,4]","[6,3]","[3,3]"]
-                _y_label   = "Radiance" if sel_src=="S3" else "Reflectance"
+                    # Stats row
+                    _s1c1, _s1c2, _s1c3 = st.columns(3)
+                    with _s1c1:
+                        st.markdown(f'<div style="background:rgba(55,138,221,0.08);border:1px solid rgba(55,138,221,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Vessels</div><div style="font-size:22px;font-weight:600;color:#c8e8f8;">{_n_ves}</div></div>', unsafe_allow_html=True)
+                    with _s1c2:
+                        st.markdown(f'<div style="background:rgba(226,75,74,0.08);border:1px solid rgba(226,75,74,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Oil anomalies</div><div style="font-size:22px;font-weight:600;color:#f09595;">{_n_oil}</div></div>', unsafe_allow_html=True)
+                    with _s1c3:
+                        _warn_col = "#FAC775" if _n_near > 0 else "#7fb3d3"
+                        st.markdown(f'<div style="background:rgba(239,159,39,0.08);border:1px solid rgba(239,159,39,0.2);border-radius:6px;padding:8px;text-align:center;"><div style="font-size:11px;color:#7fb3d3;">Near oil</div><div style="font-size:22px;font-weight:600;color:{_warn_col};">{_n_near}</div></div>', unsafe_allow_html=True)
 
-                _VISIBLE_JS = """[
-                  {wl:[380,450],col:'rgba(148,0,211,0.13)'},
-                  {wl:[450,495],col:'rgba(0,0,255,0.10)'},
-                  {wl:[495,570],col:'rgba(0,180,0,0.10)'},
-                  {wl:[570,590],col:'rgba(255,220,0,0.13)'},
-                  {wl:[590,620],col:'rgba(255,140,0,0.13)'},
-                  {wl:[620,700],col:'rgba(220,0,0,0.10)'},
-                ]"""
-
-                _LEG_HTML = """
-<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:10px;color:#7fb3d3;">
-  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(148,0,211,0.5);display:inline-block;"></span>Violet</span>
-  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(0,0,255,0.4);display:inline-block;"></span>Blue</span>
-  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(0,180,0,0.4);display:inline-block;"></span>Green</span>
-  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(255,220,0,0.5);display:inline-block;"></span>Yellow</span>
-  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(255,140,0,0.5);display:inline-block;"></span>Orange</span>
-  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(220,0,0,0.4);display:inline-block;"></span>Red</span>
-  <span style="display:flex;align-items:center;gap:3px;"><span style="width:8px;height:8px;border-radius:2px;background:rgba(180,180,180,0.3);display:inline-block;"></span>NIR/SWIR</span>
-</div>"""
-
-                # ── POINT MODE ────────────────────────────────────────────
-                if st.session_state.inspect_mode and st.session_state.inspect_sub == "point":
-                    # Add latest click as new point
-                    if st.session_state.spectra_result and st.session_state.spectra_click:
-                        _key = st.session_state.spectra_click
-                        _existing_keys = [p["key"] for p in st.session_state.spectra_points]
-                        if _key not in _existing_keys:
-                            _lat_s, _lon_s = _key.split(",")
-                            st.session_state.spectra_points.append({
-                                "key": _key,
-                                "label": f"P{len(st.session_state.spectra_points)+1} · {_lat_s}°N {_lon_s}°E",
-                                "data": st.session_state.spectra_result
-                            })
-                            st.session_state.spectra_result = None
-
-                    if st.session_state.spectra_points:
-                        # Per-point controls: chip + delete + re-sample
-                        _resample_idx = st.session_state.get("spectra_resample_idx", None)
-                        _chip_cols = st.columns(len(st.session_state.spectra_points))
-                        for _pi, _pt in enumerate(st.session_state.spectra_points):
-                            _pc = _PT_COLORS[_pi % len(_PT_COLORS)]
-                            with _chip_cols[_pi]:
-                                st.markdown(
-                                    f'<div style="display:flex;align-items:center;gap:4px;font-size:11px;'
-                                    f'padding:2px 6px;border-radius:10px;border:1px solid {_pc};'
-                                    f'color:#d6eaf8;font-family:monospace;margin-bottom:4px;">'
-                                    f'<span style="width:7px;height:7px;border-radius:50%;background:{_pc};'
-                                    f'flex-shrink:0;display:inline-block;"></span>P{_pi+1}</div>',
-                                    unsafe_allow_html=True
-                                )
-                                _bcols = st.columns(2)
-                                with _bcols[0]:
-                                    if st.button("🎯", key=f"resample_{_pi}", help="Move — click new location on map",
-                                                 use_container_width=True):
-                                        st.session_state.spectra_resample_idx = _pi
-                                        st.session_state.spectra_click = None
-                                        st.session_state.spectra_result = None
-                                        st.rerun()
-                                with _bcols[1]:
-                                    if st.button("✕", key=f"del_pt_{_pi}_{_pt['key']}",
-                                                 help="Remove point", use_container_width=True):
-                                        st.session_state.spectra_points.pop(_pi)
-                                        if st.session_state.get("spectra_resample_idx") == _pi:
-                                            st.session_state.spectra_resample_idx = None
-                                        st.rerun()
-
-                        # Handle re-sample: replace point data when new click arrives
-                        if _resample_idx is not None:
-                            st.info(f"🎯 Click new location for P{_resample_idx+1} on the map")
-                            if st.session_state.spectra_result and st.session_state.spectra_click:
-                                _key = st.session_state.spectra_click
-                                _lat_s, _lon_s = _key.split(",")
-                                st.session_state.spectra_points[_resample_idx] = {
-                                    "key": _key,
-                                    "label": f"P{_resample_idx+1} · {_lat_s}°N {_lon_s}°E",
-                                    "data": st.session_state.spectra_result
-                                }
-                                st.session_state.spectra_resample_idx = None
-                                st.session_state.spectra_result = None
-                                st.session_state.spectra_click = None
-                                st.rerun()
-                        _chips_html = ""  # not used anymore — kept for _multi_html f-string below
-
-                        # Build datasets JSON
-                        _pts_labels = list(st.session_state.spectra_points[0]["data"].keys())
-                        _datasets = []
-                        for _pi, _pt in enumerate(st.session_state.spectra_points):
-                            _pc = _PT_COLORS[_pi % len(_PT_COLORS)]
-                            _pd = _PT_DASHES[_pi % len(_PT_DASHES)]
-                            _vals = list(_pt["data"].values())
-                            _datasets.append(
-                                f'{{"label":"{_pt["label"]}","data":{_spj.dumps(_vals)},'
-                                f'"borderColor":"{_pc}","backgroundColor":"transparent",'
-                                f'"borderDash":{_pd},"tension":0.4,"pointRadius":4,'
-                                f'"pointBackgroundColor":"{_pc}","pointBorderColor":"#020d18",'
-                                f'"pointBorderWidth":2,"borderWidth":2}}'
+                    # Vessels list
+                    if _ves.get("vessels"):
+                        st.markdown('<div style="font-size:12px;color:#00c8c8;margin:8px 0 4px;font-family:monospace;">📍 Detected vessels</div>', unsafe_allow_html=True)
+                        for _v in _ves["vessels"]:
+                            _vc = "rgba(239,159,39,0.15)" if _v.get("near_oil") else "rgba(4,30,51,0.6)"
+                            _vb = "rgba(239,159,39,0.4)" if _v.get("near_oil") else "rgba(0,200,200,0.15)"
+                            _alert = f'⚠ near {_v["near_oil_id"]}'  if _v.get("near_oil") else ""
+                            st.markdown(
+                                f'<div style="background:{_vc};border:1px solid {_vb};border-radius:5px;padding:6px 10px;margin-bottom:4px;">'
+                                f'<span style="font-size:12px;color:#c8e8f8;font-weight:500;">{_v["id"]}</span>'
+                                f'<span style="font-size:11px;color:#EF9F27;margin-left:8px;">{_alert}</span><br>'
+                                f'<span style="font-size:11px;color:#7fb3d3;">{_v["lat"]}°N {_v["lon"]}°E &nbsp;·&nbsp; {_v["category"]} &nbsp;·&nbsp; ~{_v["length_min_m"]}–{_v["length_max_m"]}m × {_v["width_min_m"]}–{_v["width_max_m"]}m &nbsp;·&nbsp; {_v["confidence"]}</span>'
+                                f'</div>',
+                                unsafe_allow_html=True
                             )
-                        _ds_js = "[" + ",".join(_datasets) + "]"
-                        _lbl_js = _spj.dumps(_pts_labels)
 
-                        _multi_html = f"""
-<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.2);border-radius:6px;padding:10px 12px;margin-top:6px;">
-  <div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:8px;">📍 Multi-point spectra · {data_source}</div>
-  <div style="position:relative;width:100%;height:230px;">
-    <canvas id="multiChart" role="img" aria-label="Multi-point spectral comparison">Spectral comparison.</canvas>
-  </div>
-  {_LEG_HTML}
-</div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<script>
-(function(){{
-  var VISIBLE={_VISIBLE_JS};
-  var labels={_lbl_js};
-  var visPlugin={{id:'vb',beforeDraw:function(chart){{
-    var ctx=chart.ctx,ca=chart.chartArea,x=chart.scales.x;if(!ca)return;
-    labels.forEach(function(b,i){{
-      var wl=parseInt(b),col='rgba(160,160,160,0.06)';
-      for(var v=0;v<VISIBLE.length;v++){{if(wl>=VISIBLE[v].wl[0]&&wl<VISIBLE[v].wl[1]){{col=VISIBLE[v].col;break;}}}}
-      var xp=x.getPixelForValue(i),pr=i>0?x.getPixelForValue(i-1):ca.left,nx=i<labels.length-1?x.getPixelForValue(i+1):ca.right,w=(nx-pr)/2;
-      ctx.save();ctx.fillStyle=col;ctx.fillRect(xp-w/2,ca.top,w,ca.bottom-ca.top);ctx.restore();
-    }});
-  }}}};
-  new Chart(document.getElementById('multiChart'),{{
-    type:'line',data:{{labels:labels,datasets:{_ds_js}}},
-    plugins:[visPlugin],
-    options:{{responsive:true,maintainAspectRatio:false,
-      plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{
-        title:function(i){{return i[0].label+' nm';}},
-        label:function(c){{return c.dataset.label+': '+c.parsed.y.toFixed(5);}}
-      }}}}}},
-      scales:{{
-        x:{{title:{{display:true,text:'Wavelength (nm)',color:'#7fb3d3',font:{{size:11}}}},ticks:{{color:'#7fb3d3',font:{{size:10}},maxRotation:45}},grid:{{color:'rgba(255,255,255,0.06)'}}}},
-        y:{{title:{{display:true,text:'{_y_label}',color:'#7fb3d3',font:{{size:11}}}},ticks:{{color:'#7fb3d3',font:{{size:10}},callback:function(v){{return v.toFixed(3);}}}},grid:{{color:'rgba(255,255,255,0.06)'}}}}
-      }}
-    }}
-  }});
-}})();
-</script>
-"""
-                        components.html(_multi_html, height=370, scrolling=False)
-                        if st.button("🗑 Clear all points", key="clear_spectra_pts"):
-                            st.session_state.spectra_points = []
-                            st.session_state.spectra_result = None
-                            st.session_state.spectra_click = None
-                            st.rerun()
-                    else:
-                        st.caption("🔬 Click on the map to sample a pixel")
+                    # Oil list
+                    if _oil.get("polygons"):
+                        st.markdown('<div style="font-size:12px;color:#00c8c8;margin:8px 0 4px;font-family:monospace;">⚠ Oil anomalies</div>', unsafe_allow_html=True)
+                        for _o in _oil["polygons"]:
+                            _conf_col = {"High":"#f09595","Medium":"#FAC775","Low":"#B4B2A9"}.get(_o["confidence"],"#7fb3d3")
+                            _near_v = [v["id"] for v in _ves.get("vessels",[]) if v.get("near_oil_id") == _o["id"]]
+                            _near_str = f'⚠ {", ".join(_near_v)} nearby' if _near_v else ""
+                            st.markdown(
+                                f'<div style="background:rgba(226,75,74,0.08);border:1px solid rgba(226,75,74,0.2);border-radius:5px;padding:6px 10px;margin-bottom:4px;">'
+                                f'<span style="font-size:12px;color:{_conf_col};font-weight:500;">{_o["id"]}</span>'
+                                f'<span style="font-size:11px;color:#EF9F27;margin-left:8px;">{_near_str}</span><br>'
+                                f'<span style="font-size:11px;color:#7fb3d3;">{_o["lat"]}°N {_o["lon"]}°E &nbsp;·&nbsp; {_o["area_km2_min"]}–{_o["area_km2_max"]} km² &nbsp;·&nbsp; {_o["confidence"]}</span>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
 
-                # ── ZONE MODE ─────────────────────────────────────────────
-                elif st.session_state.inspect_mode and st.session_state.inspect_sub == "zone":
-                    _zone = st.session_state.spectra_zone
-                    if _zone:
-                        _zmean  = _zone["mean"]
-                        _zupper = _zone["upper"]
-                        _zlower = _zone["lower"]
-                        _zcount = _zone["count"]
-                        _zlbls  = list(_zmean.keys())
-                        _zmean_v  = [round(v, 5) for v in _zmean.values()]
-                        _zupper_v = [round(v, 5) for v in _zupper.values()]
-                        _zlower_v = [round(v, 5) for v in _zlower.values()]
-                        _lbl_js  = _spj.dumps(_zlbls)
-                        _mean_js = _spj.dumps(_zmean_v)
-                        _up_js   = _spj.dumps(_zupper_v)
-                        _lo_js   = _spj.dumps(_zlower_v)
-                        _overall_mean = round(sum(_zmean_v)/len(_zmean_v), 5) if _zmean_v else 0
-                        _overall_std  = _zone.get("overall_std", 0)
+                    st.markdown('<div style="font-size:10px;color:#7fb3d3;padding:5px 0;border-top:1px solid rgba(0,200,200,0.1);margin-top:6px;">⚠ SAR detection only. Oil requires optical validation. Vessel size ±40%.</div>', unsafe_allow_html=True)
+                    if st.button("🗑 Clear SAR", key="clear_s1"):
+                        st.session_state.s1_mode   = False
+                        st.session_state.s1_result = None
+                        st.rerun()
 
-                        _zone_html = f"""
-<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.2);border-radius:6px;padding:10px 12px;margin-top:6px;">
-  <div style="font-size:12px;color:#00c8c8;font-family:monospace;margin-bottom:8px;">⬡ Zone spectra · {data_source} · {_zcount} pixels</div>
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;">
-    <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:4px;padding:5px 8px;text-align:center;">
-      <div style="font-size:10px;color:#7fb3d3;margin-bottom:2px;">Mean</div>
-      <div style="font-size:14px;font-weight:500;color:#d6eaf8;font-family:monospace;">{_overall_mean:.4f}</div>
-    </div>
-    <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:4px;padding:5px 8px;text-align:center;">
-      <div style="font-size:10px;color:#7fb3d3;margin-bottom:2px;">Std dev</div>
-      <div style="font-size:14px;font-weight:500;color:#d6eaf8;font-family:monospace;">±{_overall_std:.4f}</div>
-    </div>
-    <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:4px;padding:5px 8px;text-align:center;">
-      <div style="font-size:10px;color:#7fb3d3;margin-bottom:2px;">Pixels</div>
-      <div style="font-size:14px;font-weight:500;color:#d6eaf8;font-family:monospace;">{_zcount}</div>
-    </div>
-  </div>
-  <div style="position:relative;width:100%;height:220px;">
-    <canvas id="zoneChart" role="img" aria-label="Zone mean and std dev spectral profile">Zone spectral profile.</canvas>
-  </div>
-  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;font-size:10px;color:#7fb3d3;">
-    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:3px;background:#378ADD;display:inline-block;"></span>Mean</span>
-    <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:8px;border-radius:2px;background:rgba(55,138,221,0.25);border:1px solid rgba(55,138,221,0.4);display:inline-block;"></span>±1 std dev</span>
-  </div>
-  {_LEG_HTML}
-</div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<script>
-(function(){{
-  var VISIBLE={_VISIBLE_JS};
-  var labels={_lbl_js};
-  var visPlugin={{id:'vb2',beforeDraw:function(chart){{
-    var ctx=chart.ctx,ca=chart.chartArea,x=chart.scales.x;if(!ca)return;
-    labels.forEach(function(b,i){{
-      var wl=parseInt(b),col='rgba(160,160,160,0.06)';
-      for(var v=0;v<VISIBLE.length;v++){{if(wl>=VISIBLE[v].wl[0]&&wl<VISIBLE[v].wl[1]){{col=VISIBLE[v].col;break;}}}}
-      var xp=x.getPixelForValue(i),pr=i>0?x.getPixelForValue(i-1):ca.left,nx=i<labels.length-1?x.getPixelForValue(i+1):ca.right,w=(nx-pr)/2;
-      ctx.save();ctx.fillStyle=col;ctx.fillRect(xp-w/2,ca.top,w,ca.bottom-ca.top);ctx.restore();
-    }});
-  }}}};
-  new Chart(document.getElementById('zoneChart'),{{
-    type:'line',
-    data:{{labels:labels,datasets:[
-      {{label:'Upper',data:{_up_js},borderColor:'transparent',backgroundColor:'rgba(55,138,221,0.18)',fill:'+1',tension:0.4,pointRadius:0,borderWidth:0}},
-      {{label:'Mean', data:{_mean_js},borderColor:'#378ADD',backgroundColor:'transparent',fill:false,tension:0.4,pointRadius:4,pointBackgroundColor:'#378ADD',pointBorderColor:'#020d18',pointBorderWidth:2,borderWidth:2.5}},
-      {{label:'Lower',data:{_lo_js},borderColor:'transparent',backgroundColor:'rgba(55,138,221,0.18)',fill:'-1',tension:0.4,pointRadius:0,borderWidth:0}},
-    ]}},
-    plugins:[visPlugin],
-    options:{{responsive:true,maintainAspectRatio:false,
-      plugins:{{legend:{{display:false}},tooltip:{{callbacks:{{
-        title:function(i){{return i[0].label+' nm';}},
-        label:function(c){{
-          if(c.dataset.label==='Mean') return 'Mean: '+c.parsed.y.toFixed(5);
-          if(c.dataset.label==='Upper') return '+1σ: '+c.parsed.y.toFixed(5);
-          return '-1σ: '+c.parsed.y.toFixed(5);
-        }}
-      }}}}}},
-      scales:{{
-        x:{{title:{{display:true,text:'Wavelength (nm)',color:'#7fb3d3',font:{{size:11}}}},ticks:{{color:'#7fb3d3',font:{{size:10}},maxRotation:45}},grid:{{color:'rgba(255,255,255,0.06)'}}}},
-        y:{{title:{{display:true,text:'{_y_label}',color:'#7fb3d3',font:{{size:11}}}},ticks:{{color:'#7fb3d3',font:{{size:10}},callback:function(v){{return v.toFixed(3);}}}},grid:{{color:'rgba(255,255,255,0.06)'}}}}
-      }}
-    }}
-  }});
-}})();
-</script>
-"""
-                        components.html(_zone_html, height=420, scrolling=False)
-                        if st.button("🗑 Clear zone", key="clear_spectra_zone"):
-                            st.session_state.spectra_zone = None
-                            st.rerun()
-                    else:
-                        st.caption("⬡ Draw a polygon on the map to sample a zone")
-
-                # ── TRANSECT MODE ─────────────────────────────────────────
-                if st.session_state.transect_mode:
-                    st.info("📏 Draw a line on the map to profile the active layer")
-                    _tr = st.session_state.transect_result
-                    if _tr and _tr.get("distances"):
-                        import json as _trj
-                        _tr_dist_j = _trj.dumps(_tr["distances"])
-                        _tr_vals_j = _trj.dumps(_tr["values"])
-                        _tr_color  = "#1D9E75" if sel_src=="S2" else "#378ADD" if sel_src=="S3" else "#EF9F27"
-                        _tr_html = f"""
-<div style="background:rgba(2,13,24,0.92);border:1px solid rgba(0,200,200,0.2);border-radius:6px;padding:10px 12px;margin-top:6px;">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-    <span style="font-size:12px;color:#00c8c8;font-family:monospace;">📏 Transect · {_tr['layer_name']} · {_tr['source']}</span>
-    <span style="font-size:11px;color:#7fb3d3;">{_tr['total_km']} km · {_tr['n_pts']} samples</span>
-  </div>
-  <div style="position:relative;width:100%;height:220px;">
-    <canvas id="transectChart" role="img" aria-label="Transect profile chart">Profile along drawn line.</canvas>
-  </div>
-</div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<script>
-(function(){{
-  var dist = {_tr_dist_j};
-  var vals = {_tr_vals_j};
-  new Chart(document.getElementById('transectChart'),{{
-    type:'line',
-    data:{{
-      labels:dist,
-      datasets:[{{
-        label:'{_tr["layer_name"]}',
-        data:vals,
-        borderColor:'{_tr_color}',
-        backgroundColor:'{_tr_color}22',
-        fill:true,
-        tension:0.3,
-        pointRadius:2,
-        pointBackgroundColor:'{_tr_color}',
-        borderWidth:2
-      }}]
-    }},
-    options:{{
-      responsive:true,maintainAspectRatio:false,
-      plugins:{{
-        legend:{{display:false}},
-        tooltip:{{callbacks:{{
-          title:function(i){{return i[0].label+' m';}},
-          label:function(c){{return '{_tr["layer_name"]}'+': '+c.parsed.y.toFixed(3);}}
-        }}}}
-      }},
-      scales:{{
-        x:{{
-          title:{{display:true,text:'Distance (m)',color:'#7fb3d3',font:{{size:11}}}},
-          ticks:{{color:'#7fb3d3',font:{{size:10}},maxTicksLimit:8,callback:function(v,i){{return dist[i]+'m';}}}},
-          grid:{{color:'rgba(255,255,255,0.06)'}}
-        }},
-        y:{{
-          title:{{display:true,text:'{_tr["layer_name"]}',color:'#7fb3d3',font:{{size:11}}}},
-          ticks:{{color:'#7fb3d3',font:{{size:10}},callback:function(v){{return v.toFixed(2);}}}},
-          grid:{{color:'rgba(255,255,255,0.06)'}}
-        }}
-      }}
-    }}
-  }});
-}})();
-</script>
-"""
-                        components.html(_tr_html, height=280, scrolling=False)
-                        if st.button("🗑 Clear transect", key="clear_transect"):
-                            st.session_state.transect_result = None
-                            st.rerun()
             with col_info:
                 # Detect drawings → unified pending_zone (point or polygon)
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
@@ -1851,71 +1512,13 @@ if mode == MODE_ISRAEL:
                     if gtype in ["Polygon", "Rectangle"]:
                         coords = geom["coordinates"][0]
                         draw_hash = str(coords)
-                        # Zone spectra mode — sample polygon instead of saving as monitoring zone
-                        if st.session_state.get("inspect_mode") and st.session_state.get("inspect_sub") == "zone":
-                            _zh = f"zone_{draw_hash}"
-                            if st.session_state.get("spectra_zone", {}) and st.session_state.spectra_zone.get("hash") == _zh:
-                                pass  # already sampled
-                            else:
-                                with st.spinner("⬡ Sampling zone spectra from GEE..."):
-                                    try:
-                                        _zone_geom = ee.Geometry.Polygon([[[c[0],c[1]] for c in coords]])
-                                        _t = ee.Date(sel_date)
-                                        if sel_src == "S2":
-                                            _coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-                                                     .filterBounds(_zone_geom)
-                                                     .filterDate(_t.advance(-8,"day"),_t.advance(1,"day"))
-                                                     .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",40))
-                                                     .sort("system:time_start",False))
-                                            _img = _coll.first() if _coll.size().getInfo()>0 else None
-                                            _bands = ["B1","B2","B3","B4","B5","B6","B7","B8","B8A","B11","B12"]
-                                            _lbls  = {"B1":"443nm","B2":"490nm","B3":"560nm","B4":"665nm","B5":"705nm","B6":"740nm","B7":"783nm","B8":"842nm","B8A":"865nm","B11":"1610nm","B12":"2190nm"}
-                                            _scale = 10
-                                            _div   = 10000
-                                        elif sel_src == "S3":
-                                            _coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-                                                     .filterBounds(_zone_geom)
-                                                     .filterDate(_t.advance(-3,"day"),_t.advance(1,"day"))
-                                                     .sort("system:time_start",False))
-                                            _img = _coll.first() if _coll.size().getInfo()>0 else None
-                                            _bands = [f"Oa{str(i).zfill(2)}_radiance" for i in range(1,17)]
-                                            _wls   = ["400","412","443","490","510","560","620","665","674","681","709","754","760","764","767","779"]
-                                            _lbls  = {b: f"{_wls[i]}nm" for i,b in enumerate(_bands)}
-                                            _scale = 300; _div = 1
-                                        else:
-                                            _coll = (ee.ImageCollection("MODIS/061/MOD09GA")
-                                                     .filterBounds(_zone_geom)
-                                                     .filterDate(_t.advance(-3,"day"),_t.advance(1,"day"))
-                                                     .sort("system:time_start",False))
-                                            _img = _coll.first() if _coll.size().getInfo()>0 else None
-                                            _bands = ["sur_refl_b01","sur_refl_b02","sur_refl_b03","sur_refl_b04","sur_refl_b05","sur_refl_b06","sur_refl_b07"]
-                                            _lbls  = {"sur_refl_b01":"645nm","sur_refl_b02":"858nm","sur_refl_b03":"469nm","sur_refl_b04":"555nm","sur_refl_b05":"1240nm","sur_refl_b06":"1640nm","sur_refl_b07":"2130nm"}
-                                            _scale = 500; _div = 10000
-                                        if _img:
-                                            _mean_dict = _img.select(_bands).reduceRegion(ee.Reducer.mean(),  _zone_geom, _scale).getInfo()
-                                            _std_dict  = _img.select(_bands).reduceRegion(ee.Reducer.stdDev(),_zone_geom, _scale).getInfo()
-                                            _cnt_dict  = _img.select(_bands[:1]).reduceRegion(ee.Reducer.count(),_zone_geom, _scale).getInfo()
-                                            _mean_out = {_lbls[b]: round(((_mean_dict.get(b) or 0)/_div),5) for b in _bands}
-                                            _std_out  = {_lbls[b]: round(((_std_dict.get(b)  or 0)/_div),5) for b in _bands}
-                                            _upper    = {k: round(_mean_out[k]+_std_out[k],5) for k in _mean_out}
-                                            _lower    = {k: round(max(0,_mean_out[k]-_std_out[k]),5) for k in _mean_out}
-                                            _cnt      = int(list(_cnt_dict.values())[0]) if _cnt_dict else 0
-                                            _all_std  = list(_std_out.values())
-                                            _ov_std   = round(sum(_all_std)/len(_all_std),5) if _all_std else 0
-                                            st.session_state.spectra_zone = {
-                                                "hash": _zh, "mean": _mean_out, "upper": _upper,
-                                                "lower": _lower, "count": _cnt, "overall_std": _ov_std
-                                            }
-                                            st.rerun()
-                                    except Exception:
-                                        st.warning("Zone sampling failed — try a smaller area.")
-                        else:
-                            pending   = st.session_state.get("pending_zone")
-                            already_pending = pending and pending.get("coords") == coords
-                            already_saved   = draw_hash in st.session_state.saved_drawing_hashes
-                            if not already_pending and not already_saved:
-                                st.session_state["pending_zone"] = {"type": "polygon", "coords": coords, "hash": draw_hash}
-                                st.rerun()
+                        pending   = st.session_state.get("pending_zone")
+                        # Only trigger if this drawing hasn't been saved yet AND isn't already pending
+                        already_pending = pending and pending.get("coords") == coords
+                        already_saved   = draw_hash in st.session_state.saved_drawing_hashes
+                        if not already_pending and not already_saved:
+                            st.session_state["pending_zone"] = {"type": "polygon", "coords": coords, "hash": draw_hash}
+                            st.rerun()
                     elif gtype == "Point":
                         raw = geom.get("coordinates", [])
                         if raw:
@@ -1927,141 +1530,6 @@ if mode == MODE_ISRAEL:
                             if not already_pending and not already_saved:
                                 st.session_state["pending_zone"] = {"type": "point", "lat": lat, "lon": lon, "hash": draw_hash}
                                 st.rerun()
-                    elif gtype == "LineString" and st.session_state.get("transect_mode"):
-                        _line_coords = geom.get("coordinates", [])
-                        _line_hash = str(_line_coords)
-                        _existing = st.session_state.get("transect_result", {})
-                        if _existing and _existing.get("hash") == _line_hash:
-                            pass  # already sampled
-                        elif len(_line_coords) >= 2:
-                            with st.spinner("📏 Sampling transect from GEE..."):
-                                try:
-                                    # Build ee.Geometry.LineString
-                                    _line_geom = ee.Geometry.LineString([[c[0],c[1]] for c in _line_coords])
-                                    _t = ee.Date(sel_date)
-
-                                    # Detect active layer from _raster_layers visible state
-                                    # Use session state to track which layer is active
-                                    _active_layer_id = st.session_state.get("transect_active_layer", "wqi_active")
-
-                                    # Build image + band based on active layer
-                                    if "wqi" in _active_layer_id or _active_layer_id == "wqi_active":
-                                        # WQI — use existing wqi pipeline
-                                        if sel_src == "S2":
-                                            _tr_layer, _, _, _, _ = process_israel_s2(sel_date)
-                                        elif sel_src == "S3":
-                                            _tr_layer, _, _, _ = process_israel_wqi(sel_date)
-                                        else:
-                                            _tr_layer, _, _, _, _ = process_modis_wqi(sel_date)
-                                        _tr_img = ee.Image(_tr_layer) if _tr_layer else None
-                                        _tr_band = None  # already single band
-                                        _tr_name = "WQI"
-                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
-                                    elif "ndwi" in _active_layer_id:
-                                        _tr_name = "NDWI"
-                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
-                                        _tr_img, _tr_band = _build_index_img("ndwi", sel_src, sel_date, _t)
-                                    elif "chl" in _active_layer_id or "mci" in _active_layer_id:
-                                        _tr_name = "CHL"
-                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
-                                        _tr_img, _tr_band = _build_index_img("chl", sel_src, sel_date, _t)
-                                    elif "turb" in _active_layer_id:
-                                        _tr_name = "Turbidity"
-                                        _tr_scale = 300 if sel_src=="S3" else 10 if sel_src=="S2" else 500
-                                        _tr_img, _tr_band = _build_index_img("turb", sel_src, sel_date, _t)
-                                    else:
-                                        _tr_name = "WQI"
-                                        _tr_scale = 300
-                                        if sel_src == "S3":
-                                            _tr_layer, _, _, _ = process_israel_wqi(sel_date)
-                                        elif sel_src == "S2":
-                                            _tr_layer, _, _, _, _ = process_israel_s2(sel_date)
-                                        else:
-                                            _tr_layer, _, _, _, _ = process_modis_wqi(sel_date)
-                                        _tr_img = ee.Image(_tr_layer) if _tr_layer else None
-                                        _tr_band = None
-
-                                    if _tr_img:
-                                        import math as _m
-                                        def _haversine(lat1, lon1, lat2, lon2):
-                                            R = 6371000
-                                            phi1, phi2 = _m.radians(lat1), _m.radians(lat2)
-                                            dphi = _m.radians(lat2-lat1)
-                                            dlam = _m.radians(lon2-lon1)
-                                            a = _m.sin(dphi/2)**2+_m.cos(phi1)*_m.cos(phi2)*_m.sin(dlam/2)**2
-                                            return R*2*_m.atan2(_m.sqrt(a),_m.sqrt(1-a))
-
-                                        # Interpolate ~50 evenly-spaced points along line in Python
-                                        # (avoids CRS issues — we sample at explicit WGS84 points)
-                                        _N = 50
-                                        _seg_lens = [_haversine(
-                                            _line_coords[i][1],_line_coords[i][0],
-                                            _line_coords[i+1][1],_line_coords[i+1][0])
-                                            for i in range(len(_line_coords)-1)]
-                                        _total_len = sum(_seg_lens)
-                                        _step = _total_len / (_N - 1)
-
-                                        _interp_pts = []  # [(lon,lat,cum_dist)]
-                                        _cum = 0.0
-                                        _seg_i = 0
-                                        _seg_cum = 0.0
-                                        _interp_pts.append((_line_coords[0][0], _line_coords[0][1], 0.0))
-                                        for _k in range(1, _N):
-                                            _target = _k * _step
-                                            while _seg_i < len(_seg_lens)-1 and _seg_cum + _seg_lens[_seg_i] < _target:
-                                                _seg_cum += _seg_lens[_seg_i]
-                                                _seg_i += 1
-                                            _frac = (_target - _seg_cum) / max(_seg_lens[_seg_i], 1e-9)
-                                            _frac = max(0.0, min(1.0, _frac))
-                                            _p0 = _line_coords[_seg_i]
-                                            _p1 = _line_coords[min(_seg_i+1, len(_line_coords)-1)]
-                                            _ilon = _p0[0] + _frac*(_p1[0]-_p0[0])
-                                            _ilat = _p0[1] + _frac*(_p1[1]-_p0[1])
-                                            _interp_pts.append((_ilon, _ilat, _target))
-
-                                        # Build FeatureCollection of interpolated points
-                                        _fc_pts = ee.FeatureCollection([
-                                            ee.Feature(ee.Geometry.Point([_p[0],_p[1]]),{"dist":_p[2]})
-                                            for _p in _interp_pts
-                                        ])
-
-                                        # Sample image at each point — no clip needed
-                                        _sampled = _tr_img.sampleRegions(
-                                            collection=_fc_pts,
-                                            scale=_tr_scale,
-                                            geometries=False
-                                        ).getInfo()
-
-                                        _feats = _sampled.get("features", [])
-                                        _pts_dist = []
-                                        for _fi, _f in enumerate(_feats):
-                                            _props = _f.get("properties", {})
-                                            _d = _interp_pts[_fi][2] if _fi < len(_interp_pts) else 0
-                                            _val = None
-                                            for _k, _v in _props.items():
-                                                if _k != "dist" and isinstance(_v, (int, float)):
-                                                    _val = round(float(_v), 3)
-                                                    break
-                                            if _val is not None:
-                                                _pts_dist.append((_d, _val))
-
-                                        _pts_dist.sort(key=lambda x: x[0])
-                                        _distances = [round(p[0]) for p in _pts_dist]
-                                        _values    = [p[1] for p in _pts_dist]
-                                        _total_km  = round(_total_len / 1000, 2)
-
-                                        st.session_state.transect_result = {
-                                            "hash": _line_hash,
-                                            "distances": _distances,
-                                            "values": _values,
-                                            "layer_name": _tr_name,
-                                            "total_km": _total_km,
-                                            "n_pts": len(_pts_dist),
-                                            "source": data_source,
-                                        }
-                                        st.rerun()
-                                except Exception as _te:
-                                    st.warning(f"Transect sampling failed: {_te}")
                 elif last_clicked and last_clicked.get("lat"):
                     clat = round(last_clicked["lat"], 5)
                     clon = round(last_clicked["lng"], 5)
@@ -2071,7 +1539,6 @@ if mode == MODE_ISRAEL:
                         _sc_key = f"{round(last_clicked['lat'],4)},{round(last_clicked['lng'],4)}"
                         if st.session_state.spectra_click != _sc_key:
                             st.session_state.spectra_click = _sc_key
-                            _ridx = st.session_state.get("spectra_resample_idx")
                             with st.spinner("🔬 Sampling..."):
                                 st.session_state.spectra_result = sample_pixel_spectra(
                                     last_clicked["lat"], last_clicked["lng"], sel_src, sel_date)
@@ -2082,7 +1549,6 @@ if mode == MODE_ISRAEL:
                         if not already_pending and not already_saved:
                             st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon, "hash": draw_hash}
                             st.rerun()
-
 
                 # All monitoring zones → visible in chart
                 # Include zones from session_state even if history not yet computed
