@@ -393,15 +393,75 @@ if "pending_point" not in st.session_state:
 if mode == MODE_ISRAEL:
 
     # ==========================================================================
+    # SIDEBAR — Module selector (radio) + controls
+    # ==========================================================================
+    with st.sidebar:
+        st.markdown("""
+<div style="font-family:'Share Tech Mono',monospace;font-size:0.68rem;
+color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
+▸ SELECT MODULE
+</div>""", unsafe_allow_html=True)
+
+        if "active_module" not in st.session_state:
+            st.session_state.active_module = None
+        _radio_choice = st.radio(
+            label="module",
+            options=[
+                "🌊  Water Quality",
+                "🛢️  Oil Spill Detection",
+                "🛸  Vessel Detection",
+            ],
+            index=None,
+            label_visibility="collapsed",
+        )
+        if _radio_choice is not None:
+            st.session_state.active_module = _radio_choice
+        active_module = st.session_state.active_module
+        st.divider()
+
+        # ── Controls: SAR modules share date picker ────────────────────────
+        if active_module in ("🛢️  Oil Spill Detection", "🛸  Vessel Detection"):
+            st.markdown("### 📡 Sentinel-1 SAR")
+            with st.spinner("Fetching S1 dates..."):
+                from s1_processing import get_available_s1_dates as _get_s1_dates
+                _s1_avail = _get_s1_dates(days_back=14)
+
+            if not _s1_avail:
+                st.warning("No S1 acquisitions in last 14 days.")
+                st.stop()
+
+            _s1_labels = [
+                f"{d['date']}  ·  {d['orbit'][:3]}  ·  {d['age_h']:.0f}h ago"
+                for d in _s1_avail
+            ]
+            _s1_idx = st.selectbox(
+                "📅 Acquisition",
+                range(len(_s1_labels)),
+                format_func=lambda i: _s1_labels[i],
+                key="s1_date_select",
+            )
+            _s1_sel_date  = _s1_avail[_s1_idx]["date"]
+            _s1_sel_orbit = _s1_avail[_s1_idx]["orbit"]
+            st.caption(f"Orbit: {_s1_sel_orbit}  ·  10m IW mode")
+            st.divider()
+
+            _run_label = (
+                "🔍 Detect Oil Spills"
+                if "Oil" in active_module
+                else "🛸 Detect Vessels"
+            )
+            _run_sar = st.button(_run_label, use_container_width=True, type="primary")
+
+    # ==========================================================================
     # Early exit for SAR modules — skip all Water Quality loading
     # ==========================================================================
-    if active_module in ("Oil Spill Detection", "Vessel Detection"):
+    if active_module in ("🛢️  Oil Spill Detection", "🛸  Vessel Detection"):
         _is_oil     = "Oil" in active_module
         _module_key = "oil" if _is_oil else "vessels"
         _cache_key  = f"s1_result_{_module_key}_{_s1_sel_date}"
 
         st.markdown(
-            f"## {'🛢️ Oil Spill Detection' if _is_oil else '🛸 Vessel Detection'} — Sentinel-1 SAR"
+            f"## {'🛢️ Oil Spill Detection' if _is_oil else '🛸 Vessel Detection'}"
             f" — Sentinel-1 SAR"
         )
 
