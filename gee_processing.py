@@ -254,7 +254,7 @@ def process_israel_s2(target_date_str):
     wqi = (ndwi_n.add(chl_n).add(turb_n)
            .divide(3).multiply(100)
            .clip(aoi)
-           .rename("WQI"))
+           .rename("WQI")
            .updateMask(ndwi_raw.gt(-0.1)))
 
     def _pt(pt):
