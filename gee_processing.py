@@ -34,14 +34,6 @@ def _israel_clip(): return ee.Geometry.Polygon([_MED_COAST_COORDS])
 _MED_WIDE_BBOX = [33.0, 31.2, 35.1, 33.2]
 def _med_wide(): return ee.Geometry.Rectangle(_MED_WIDE_BBOX)
 
-def _sea_mask():
-    """
-    Sea mask for open Mediterranean water.
-    Uses SRTM elevation <= 0 (below sea level).
-    JRC GlobalSurfaceWater is NOT suitable for open ocean.
-    """
-    return ee.Image("USGS/SRTMGL1_003").select("elevation").lte(0).clip(_israel_clip())
-
 def _to_ee_geom(raw):
     """Convert raw geometry dict from config to ee.Geometry."""
     if isinstance(raw, dict):
@@ -252,10 +244,9 @@ def process_israel_s2(target_date_str):
     b8  = img_mosaic.select("B8").divide(10000)
     b8a = img_mosaic.select("B8A").divide(10000)
 
-    # NDWI > 0 = water pixel (removes land without relying on SCL)
     ndwi_raw = b3.subtract(b8).divide(b3.add(b8).add(1e-6))
-    water_px  = ndwi_raw.gt(0).And(wm)
 
+    # Use same coverage as NDWI index layer — no additional mask
     ndwi_n = ndwi_raw.unitScale(-0.3, 0.5).clamp(0, 1)
     chl_n  = b5.divide(b4.add(1e-6)).unitScale(1.0, 3.5).clamp(0, 1)
     turb_n = ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0, 0.15)).clamp(0, 1)
@@ -263,7 +254,6 @@ def process_israel_s2(target_date_str):
     wqi = (ndwi_n.add(chl_n).add(turb_n)
            .divide(3).multiply(100)
            .clip(aoi)
-           .updateMask(water_px)
            .rename("WQI"))
 
     def _pt(pt):
