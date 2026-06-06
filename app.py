@@ -407,9 +407,9 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
         _radio_choice = st.radio(
             label="module",
             options=[
-                "🌊  Water Quality",
-                "🛢️  Oil Spill Detection",
-                "🛸  Vessel Detection",
+                "Water Quality",
+                "Oil Spill Detection",
+                "Vessel Detection",
             ],
             index=None,
             label_visibility="collapsed",
@@ -420,7 +420,7 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
         st.divider()
 
         # ── Controls: SAR modules share date picker ────────────────────────
-        if active_module in ("🛢️  Oil Spill Detection", "🛸  Vessel Detection"):
+        if active_module in ("Oil Spill Detection", "Vessel Detection"):
             st.markdown("### 📡 Sentinel-1 SAR")
             with st.spinner("Fetching S1 dates..."):
                 from s1_processing import get_available_s1_dates as _get_s1_dates
@@ -455,13 +455,13 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
     # ==========================================================================
     # Early exit for SAR modules — skip all Water Quality loading
     # ==========================================================================
-    if active_module in ("🛢️  Oil Spill Detection", "🛸  Vessel Detection"):
+    if active_module in ("Oil Spill Detection", "Vessel Detection"):
         _is_oil     = "Oil" in active_module
         _module_key = "oil" if _is_oil else "vessels"
         _cache_key  = f"s1_result_{_module_key}_{_s1_sel_date}"
 
         st.markdown(
-            f"## {'🛢️ Oil Spill Detection' if _is_oil else '🛸 Vessel Detection'}"
+            f"## {'🛢️ Oil Spill Detection' if _is_oil else '🛸 Vessel Detection'} — Sentinel-1 SAR"
             f" — Sentinel-1 SAR"
         )
 
