@@ -391,6 +391,226 @@ if "pending_point" not in st.session_state:
     st.session_state.pending_point = None
 
 if mode == MODE_ISRAEL:
+
+    # ==========================================================================
+    # SIDEBAR — Module selector (radio) + controls
+    # ==========================================================================
+    with st.sidebar:
+        st.markdown("""
+<div style="font-family:'Share Tech Mono',monospace;font-size:0.68rem;
+color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
+▸ SELECT MODULE
+</div>""", unsafe_allow_html=True)
+
+        active_module = st.radio(
+            label="module",
+            options=[
+                "🌊  Water Quality",
+                "🛢️  Oil Spill Detection",
+                "🛸  Vessel Detection",
+            ],
+            index=0,
+            label_visibility="collapsed",
+        )
+        st.divider()
+
+        # ── Controls: SAR modules share date picker ────────────────────────
+        if active_module in ("🛢️  Oil Spill Detection", "🛸  Vessel Detection"):
+            st.markdown("### 📡 Sentinel-1 SAR")
+            with st.spinner("Fetching S1 dates..."):
+                from s1_processing import get_available_s1_dates as _get_s1_dates
+                _s1_avail = _get_s1_dates(days_back=14)
+
+            if not _s1_avail:
+                st.warning("No S1 acquisitions in last 14 days.")
+                st.stop()
+
+            _s1_labels = [
+                f"{d['date']}  ·  {d['orbit'][:3]}  ·  {d['age_h']:.0f}h ago"
+                for d in _s1_avail
+            ]
+            _s1_idx = st.selectbox(
+                "📅 Acquisition",
+                range(len(_s1_labels)),
+                format_func=lambda i: _s1_labels[i],
+                key="s1_date_select",
+            )
+            _s1_sel_date  = _s1_avail[_s1_idx]["date"]
+            _s1_sel_orbit = _s1_avail[_s1_idx]["orbit"]
+            st.caption(f"Orbit: {_s1_sel_orbit}  ·  10m IW mode")
+            st.divider()
+
+            _run_label = (
+                "🔍 Detect Oil Spills"
+                if "Oil" in active_module
+                else "🛸 Detect Vessels"
+            )
+            _run_sar = st.button(_run_label, use_container_width=True, type="primary")
+
+    # ==========================================================================
+    # Early exit for SAR modules — skip all Water Quality loading
+    # ==========================================================================
+    if active_module in ("🛢️  Oil Spill Detection", "🛸  Vessel Detection"):
+        _is_oil     = "Oil" in active_module
+        _module_key = "oil" if _is_oil else "vessels"
+        _cache_key  = f"s1_result_{_module_key}_{_s1_sel_date}"
+
+        st.markdown(
+            f"## {'🛢️ Oil Spill Detection' if _is_oil else '🛸 Vessel Detection'}"
+            f" — Sentinel-1 SAR"
+        )
+
+        # Load on button press or if cached result exists for this date
+        if _run_sar or st.session_state.get(_cache_key):
+            if _run_sar:
+                # clear cache for new run
+                for k in list(st.session_state.keys()):
+                    if k.startswith("s1_result_"):
+                        del st.session_state[k]
+
+            if not st.session_state.get(_cache_key):
+                with st.spinner(f"🛰 Processing S1 SAR · {_s1_sel_date}..."):
+                    from s1_processing import (
+                        get_s1_layers        as _gsl,
+                        detect_oil_spills    as _dos,
+                        detect_vessels       as _dv,
+                        check_vessel_oil_proximity as _cvop,
+                    )
+                    _layers  = _gsl(_s1_sel_date)
+                    _oil_res = _dos(_s1_sel_date)
+                    _ves_res = _dv(_s1_sel_date)
+                    _ves_res["vessels"] = _cvop(
+                        _ves_res.get("vessels", []),
+                        _oil_res.get("polygons", []),
+                    )
+                    st.session_state[_cache_key] = {
+                        "layers":  _layers,
+                        "oil":     _oil_res,
+                        "vessels": _ves_res,
+                        "date":    _s1_sel_date,
+                    }
+
+            _r    = st.session_state[_cache_key]
+            _oil  = _r["oil"]
+            _ves  = _r["vessels"]
+            _date = _r["date"]
+
+            # ── Map ──────────────────────────────────────────────────────────
+            _m = folium.Map(location=[32.0, 34.85], zoom_start=8,
+                           tiles="CartoDB dark_matter")
+
+            if _r["layers"].get("vv"):
+                folium.TileLayer(
+                    _r["layers"]["vv"], attr="S1 VV", name="SAR VV (dB)",
+                    overlay=True, opacity=0.7).add_to(_m)
+            if _r["layers"].get("ratio"):
+                folium.TileLayer(
+                    _r["layers"]["ratio"], attr="VV/VH", name="VV/VH ratio",
+                    overlay=True, opacity=0.6).add_to(_m)
+
+            # Oil polygons
+            for _p in _oil.get("polygons", []):
+                if _p.get("coords"):
+                    folium.Polygon(
+                        locations=[(c[1], c[0]) for c in _p["coords"]],
+                        color="#e24b4a", fill=True, fill_opacity=0.35, weight=2,
+                        popup=folium.Popup(
+                            f"<b>{_p['id']}</b><br>"
+                            f"Area: {_p.get('area_km2_min','?')}–{_p.get('area_km2_max','?')} km²<br>"
+                            f"Confidence: {_p['confidence']}",
+                            max_width=220),
+                    ).add_to(_m)
+                    folium.Marker(
+                        [_p["lat"], _p["lon"]],
+                        icon=folium.DivIcon(html=(
+                            f'<div style="color:#e24b4a;font-size:11px;'
+                            f'font-weight:bold;white-space:nowrap;'
+                            f'text-shadow:0 0 4px #000;">'
+                            f'🛢 {_p.get("area_km2_min","?")} km²</div>'
+                        ))
+                    ).add_to(_m)
+
+            # Vessel bounding boxes
+            for _v in _ves.get("vessels", []):
+                if _v.get("bbox_coords"):
+                    _vc = "#FAC775" if _v.get("near_oil") else "#c8e8f8"
+                    folium.Polygon(
+                        locations=[(c[1], c[0]) for c in _v["bbox_coords"]],
+                        color=_vc, fill=False, weight=2,
+                        popup=folium.Popup(
+                            f"<b>{_v['id']}</b><br>"
+                            f"Category: {_v['category']}<br>"
+                            f"Length: {_v.get('length_min_m','?')}–{_v.get('length_max_m','?')} m<br>"
+                            f"Width: {_v.get('width_min_m','?')}–{_v.get('width_max_m','?')} m<br>"
+                            f"Confidence: {_v['confidence']}"
+                            + (f"<br>⚠ Near {_v['near_oil_id']}" if _v.get("near_oil") else ""),
+                            max_width=220),
+                    ).add_to(_m)
+                    folium.Marker(
+                        [_v["lat"], _v["lon"]],
+                        icon=folium.DivIcon(html=(
+                            f'<div style="color:{_vc};font-size:10px;'
+                            f'white-space:nowrap;text-shadow:0 0 4px #000;">'
+                            f'⬡ {_v["id"]}</div>'
+                        ))
+                    ).add_to(_m)
+
+            folium.LayerControl().add_to(_m)
+            st_folium(_m, use_container_width=True, height=520,
+                      key=f"sar_map_{_date}_{_module_key}")
+
+            # ── Results table ─────────────────────────────────────────────
+            _col1, _col2 = st.columns(2)
+            with _col1:
+                st.markdown(f"### 🛢️ Oil Anomalies · {_oil.get('n_anomalies', 0)}")
+                if _oil.get("polygons"):
+                    st.markdown(f"**Total area:** {_oil.get('total_area_km2', 0):.3f} km²")
+                    _df_oil = pd.DataFrame([{
+                        "ID":           p["id"],
+                        "Area min km²": p.get("area_km2_min", "?"),
+                        "Area max km²": p.get("area_km2_max", "?"),
+                        "Confidence":   p["confidence"],
+                        "Lat":          p["lat"],
+                        "Lon":          p["lon"],
+                    } for p in _oil["polygons"]])
+                    st.dataframe(_df_oil, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No oil anomalies detected.")
+
+            with _col2:
+                _n_near = sum(1 for v in _ves.get("vessels", []) if v.get("near_oil"))
+                st.markdown(f"### 🛸 Vessels · {_ves.get('n_vessels', 0)}"
+                           + (f"  ·  ⚠ {_n_near} near oil" if _n_near else ""))
+                if _ves.get("vessels"):
+                    _df_ves = pd.DataFrame([{
+                        "ID":         v["id"],
+                        "Category":   v["category"],
+                        "L min (m)":  v.get("length_min_m", "?"),
+                        "L max (m)":  v.get("length_max_m", "?"),
+                        "W min (m)":  v.get("width_min_m", "?"),
+                        "W max (m)":  v.get("width_max_m", "?"),
+                        "Confidence": v["confidence"],
+                        "Near oil":   "⚠" if v.get("near_oil") else "",
+                    } for v in _ves["vessels"]])
+                    st.dataframe(_df_ves, use_container_width=True, hide_index=True)
+                else:
+                    st.info("No vessels detected.")
+
+            st.caption(
+                f"🛰 Sentinel-1 SAR · {_date} · {_s1_sel_orbit} orbit  "
+                "·  ⚠ Oil detection requires optical validation  "
+                "·  Vessel dimensions ±40%"
+            )
+        else:
+            st.info(f"👈 Select a date and click **{_run_label}** in the sidebar.")
+
+        # Stop here — don't render Water Quality below
+        st.stop()
+
+    # ==========================================================================
+    # WATER QUALITY MODULE — lazy loading starts here
+    # ==========================================================================
+
     # Date selector
     # Auto-select latest available date
     with st.spinner("Finding latest satellite data..."):
@@ -465,18 +685,18 @@ if mode == MODE_ISRAEL:
     # All monitoring areas now unified under user_zones
     city_wqi = {}
 
-    # Compute user-defined zone WQI (today + 30-day history)
+    # Compute user-defined zone WQI — LAZY: history only loads on demand
     user_zone_wqi = {}
     user_zone_history = {}
     if st.session_state.get("user_zones"):
         import json as _juz
         zones_json = _juz.dumps(st.session_state.user_zones)
-        with st.spinner("Loading zone history (30 days)..."):
-            user_zone_history = compute_zone_history_range(zones_json, 30)
-        # Extract latest value per zone for current stats
-        for zname, zhistory in user_zone_history.items():
-            vals = [e["wqi"] for e in zhistory if e["wqi"] is not None]
-            user_zone_wqi[zname] = vals[-1] if vals else None
+        # Use cached history if already loaded, else leave empty until user requests
+        if st.session_state.get("zone_history_loaded"):
+            user_zone_history = st.session_state.get("zone_history_cache", {})
+            for zname, zhistory in user_zone_history.items():
+                vals = [e["wqi"] for e in zhistory if e["wqi"] is not None]
+                user_zone_wqi[zname] = vals[-1] if vals else None
 
 
 
@@ -1684,6 +1904,25 @@ if mode == MODE_ISRAEL:
                     )
                 except Exception:
                     pass  # Confidence scores are optional — don't break the dashboard
+
+                # ── Load 30-day History button (lazy) ────────────────────────
+                if st.session_state.user_zones and not st.session_state.get("zone_history_loaded"):
+                    _h_col1, _h_col2 = st.columns([3, 1])
+                    with _h_col1:
+                        st.caption("📊 30-day zone history not loaded (saves ~30s on startup)")
+                    with _h_col2:
+                        if st.button("Load History", key="load_zone_history", use_container_width=True):
+                            import json as _jhist
+                            _zj = _jhist.dumps(st.session_state.user_zones)
+                            with st.spinner("Loading zone history (30 days)..."):
+                                _loaded = compute_zone_history_range(_zj, 30)
+                            st.session_state["zone_history_cache"]  = _loaded
+                            st.session_state["zone_history_loaded"] = True
+                            user_zone_history = _loaded
+                            for _zn, _zh in _loaded.items():
+                                _vs = [e["wqi"] for e in _zh if e["wqi"] is not None]
+                                user_zone_wqi[_zn] = _vs[-1] if _vs else None
+                            st.rerun()
 
                 # Pre-merge zone history into beach_history so all_dates is correct
                 for zname, zhistory in user_zone_history.items():
