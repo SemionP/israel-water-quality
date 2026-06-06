@@ -89,7 +89,13 @@ def get_available_s1_dates(days_back: int = 30) -> list:
 
 @st.cache_data(ttl=7200)
 def get_s1_layers(date_str: str, aoi_coords: list = None) -> dict:
-    """Return GEE tile URLs for SAR visualisation layers."""
+    """
+    Return GEE tile URLs for SAR visualisation layers.
+    Layers:
+      vv    — raw VV backscatter (dB), greyscale
+      ratio — VV/VH ratio
+      orm   — Oil Risk Map composite (your colorBlend formula)
+    """
     _aoi_coords = aoi_coords or [33.0, 31.2, 35.0, 33.15]
     result = {}
     try:
@@ -97,17 +103,52 @@ def get_s1_layers(date_str: str, aoi_coords: list = None) -> dict:
         if img is None:
             return result
 
-        vv    = img.select("VV")
-        vh    = img.select("VH")
-        ratio = vv.subtract(vh)
+        vv = img.select("VV")
+        vh = img.select("VH")
 
+        # ── Layer 1: Raw VV (dB) ──────────────────────────────────────────
         mid = vv.getMapId({"min": -25, "max": 0,
-                           "palette": ["#000014","#0a1520","#152840","#1e3a5a","#5aaacf","#c8e8f8"]})
+                           "palette": ["#000014","#0a1520","#152840",
+                                       "#1e3a5a","#5aaacf","#c8e8f8"]})
         result["vv"] = mid["tile_fetcher"].url_format
 
-        mid = ratio.getMapId({"min": 0, "max": 15,
+        # ── Layer 2: VV/VH ratio ──────────────────────────────────────────
+        mid = vv.subtract(vh).getMapId({"min": 0, "max": 15,
                               "palette": ["#041e33","#1D9E75","#fdae61","#d73027"]})
         result["ratio"] = mid["tile_fetcher"].url_format
+
+        # ── Layer 3: ORM — Oil Risk Map ───────────────────────────────────
+        # Your formula: ORM = log(0.01 / (0.01 + VV_linear * 2))
+        # Displayed only where: ORM < 0 AND VV_lin < 0.018 AND VH_lin < 0.00126
+        vv_lin = ee.Image(10).pow(vv.divide(10))   # dB → linear
+        vh_lin = ee.Image(10).pow(vh.divide(10))
+        orm    = (ee.Image(0.01)
+                  .divide(ee.Image(0.01).add(vv_lin.multiply(2)))
+                  .log())
+
+        # Oil candidate mask (your exact thresholds)
+        oil_candidate = (orm.lt(0)
+                         .And(vv_lin.lt(0.018))
+                         .And(vh_lin.lt(0.00126)))
+
+        # ORM colorBlend: [-1.6, -1.4, -1.2, -1, -.8, -.6, -.4, -.2, 0]
+        # Colors: dark blue → blue → red → orange → yellow → green
+        orm_vis = orm.updateMask(oil_candidate)
+        mid_orm = orm_vis.getMapId({
+            "min": -1.6, "max": 0,
+            "palette": [
+                "#00001a",  # -1.6  dark blue
+                "#0000cc",  # -1.4  blue
+                "#cc0080",  # -1.2  purple-red (1,0,.5)
+                "#ff0000",  # -1.0  red
+                "#ff8033",  # -0.8  orange
+                "#ffcc33",  # -0.6  yellow-orange
+                "#ffff66",  # -0.4  yellow
+                "#80cc4d",  # -0.2  yellow-green
+                "#80cc4d",  #  0.0  green
+            ]
+        })
+        result["orm"] = mid_orm["tile_fetcher"].url_format
 
     except Exception:
         pass
@@ -117,40 +158,34 @@ def get_s1_layers(date_str: str, aoi_coords: list = None) -> dict:
 @st.cache_data(ttl=7200)
 def detect_oil_spills(date_str: str, aoi_coords: list = None,
                       days_back: int = 6,
-                      vv_threshold: float = -16.0,
                       min_area_m2: int = 20000,
                       max_area_m2: int = 80000000) -> dict:
     """
-    Detect oil spill candidates in a Sentinel-1 SAR image.
+    Detect oil spill candidates using ORM (Oil Risk Map) index.
 
-    Algorithm (standard EMSA/ESA approach):
-    1. Dark spot: VV < vv_threshold  (oil dampens Bragg scattering)
-    2. Low cross-pol ratio: VV - VH < 10 dB  (oil suppresses both, unlike wind shadows)
-    3. Sea mask: JRC permanent water only
-    4. Size filter: min_area_m2 to max_area_m2
+    Algorithm based on user-provided formula:
+        ORM = log(0.01 / (0.01 + VV_linear * 2))
+        Candidate if: ORM < 0  AND  VV_linear < 0.018  AND  VH_linear < 0.00126
 
-    Parameters
-    ----------
-    date_str     : target date (searches ±days_back)
-    aoi_coords   : [lon_min, lat_min, lon_max, lat_max]
-    days_back    : look-back window in days
-    vv_threshold : detection threshold in dB (default -16 is standard for Med Sea)
-    min_area_m2  : minimum polygon area (removes noise)
-    max_area_m2  : maximum polygon area (removes cloud/land confusion)
+    Probability is derived from ORM value:
+        ORM in [-0.2,  0.0) → 30% (Low)
+        ORM in [-0.6, -0.2) → 55% (Medium)
+        ORM in [-1.0, -0.6) → 80% (High)
+        ORM <  -1.0         → 95% (Very High)
     """
     _aoi_coords = aoi_coords or [33.0, 31.2, 35.0, 33.15]
     aoi = ee.Geometry.Rectangle(_aoi_coords)
     wm  = _sea_mask()
 
     result = {
-        "polygons":      [],
-        "tile_url":      None,
-        "tile_url_raw":  None,
+        "polygons":       [],
+        "tile_url_orm":   None,
+        "tile_url_raw":   None,
         "total_area_km2": 0,
-        "n_anomalies":   0,
-        "actual_date":   None,
-        "age_h":         None,
-        "error":         None,
+        "n_anomalies":    0,
+        "actual_date":    None,
+        "age_h":          None,
+        "error":          None,
     }
 
     try:
@@ -165,35 +200,44 @@ def detect_oil_spills(date_str: str, aoi_coords: list = None,
         vv = img.select("VV")
         vh = img.select("VH")
 
-        # ── Detection mask ────────────────────────────────────────────────
-        # Criterion 1: dark spot (oil dampens backscatter)
-        dark = vv.lt(vv_threshold)
+        # ── Convert dB → linear ───────────────────────────────────────────
+        vv_lin = ee.Image(10).pow(vv.divide(10))
+        vh_lin = ee.Image(10).pow(vh.divide(10))
 
-        # Criterion 2: low cross-pol difference (distinguishes oil from wind shadows)
-        # Wind shadows: VV low but VH also very low → ratio small
-        # Oil: VV low but VH slightly less suppressed → ratio moderate
-        # Using VV-VH < 10 follows EMSA OSN guidelines
-        ratio_ok = vv.subtract(vh).lt(10.0)
+        # ── ORM index (your formula) ──────────────────────────────────────
+        orm = (ee.Image(0.01)
+               .divide(ee.Image(0.01).add(vv_lin.multiply(2)))
+               .log())
 
-        oil_mask = dark.And(ratio_ok).And(wm).clip(aoi)
+        # ── Oil candidate mask (your exact thresholds) ────────────────────
+        oil_mask = (orm.lt(0)
+                    .And(vv_lin.lt(0.018))
+                    .And(vh_lin.lt(0.00126))
+                    .And(wm)
+                    .clip(aoi))
 
-        # ── Tile URL for map overlay ──────────────────────────────────────
-        mid = oil_mask.updateMask(oil_mask).getMapId(
-            {"min": 0, "max": 1, "palette": ["#ff4444"]})
-        result["tile_url"] = mid["tile_fetcher"].url_format
+        # ── ORM visualization tile (colorBlend) ───────────────────────────
+        orm_vis = orm.updateMask(oil_mask)
+        mid_orm = orm_vis.getMapId({
+            "min": -1.6, "max": 0,
+            "palette": ["#00001a","#0000cc","#6600cc","#cc0080",
+                        "#ff0000","#ff8033","#ffcc33","#ffff66","#80cc4d"]
+        })
+        result["tile_url_orm"] = mid_orm["tile_fetcher"].url_format
 
-        # Raw VV layer for context
-        mid_raw = vv.getMapId(
-            {"min": -25, "max": 0,
-             "palette": ["#000014","#0a1520","#152840","#1e3a5a","#5aaacf","#c8e8f8"]})
+        # Raw VV for context
+        mid_raw = vv.getMapId({
+            "min": -25, "max": 0,
+            "palette": ["#000014","#0a1520","#152840","#1e3a5a","#5aaacf","#c8e8f8"]
+        })
         result["tile_url_raw"] = mid_raw["tile_fetcher"].url_format
 
-        # ── Vectorise ─────────────────────────────────────────────────────
+        # ── Vectorise oil_mask → polygons ─────────────────────────────────
         vectors = (oil_mask
                    .updateMask(oil_mask)
                    .reduceToVectors(
                        geometry=aoi,
-                       scale=40,           # 40m — faster than 10m, fine for oil polygons
+                       scale=40,
                        maxPixels=1e8,
                        bestEffort=True,
                        geometryType="polygon",
@@ -208,9 +252,9 @@ def detect_oil_spills(date_str: str, aoi_coords: list = None,
         feats = vectors.getInfo().get("features", [])
 
         total_area = 0.0
-        for f in feats[:15]:   # cap at 15 polygons
-            geom   = f.get("geometry", {})
-            props  = f.get("properties", {})
+        for f in feats[:15]:
+            geom    = f.get("geometry", {})
+            props   = f.get("properties", {})
             area_m2 = props.get("area_m2", 0) or 0
             area_km2 = area_m2 / 1e6
 
@@ -223,43 +267,48 @@ def detect_oil_spills(date_str: str, aoi_coords: list = None,
             clon = sum(lons) / len(lons)
             clat = sum(lats) / len(lats)
 
-            # Sanity: centroid must be in sea (west of Israeli coast)
+            # Centroid must be in Mediterranean sea
             if clon > 35.15 or clon < 32.0:
                 continue
 
-            # Confidence based on area and VV intensity
+            # ── Sample mean ORM value inside polygon ──────────────────────
             try:
-                vv_mean_val = (vv
-                               .reduceRegion(
-                                   reducer=ee.Reducer.mean(),
-                                   geometry=f.get("geometry"),
-                                   scale=100,
-                                   bestEffort=True)
-                               .get("VV").getInfo())
+                orm_mean = (orm
+                            .reduceRegion(
+                                reducer=ee.Reducer.mean(),
+                                geometry=f["geometry"],
+                                scale=100,
+                                bestEffort=True)
+                            .get("constant").getInfo())
             except Exception:
-                vv_mean_val = None
+                orm_mean = None
 
-            if vv_mean_val is not None and vv_mean_val < -20:
-                conf = "High"
-            elif area_km2 > 0.5:
-                conf = "High"
-            elif area_km2 > 0.1:
-                conf = "Medium"
+            # ── Probability from ORM value ────────────────────────────────
+            if orm_mean is None:
+                prob, conf, color = 50, "Medium", "#f0a500"
+            elif orm_mean < -1.0:
+                prob, conf, color = 95, "Very High", "#e03c3c"
+            elif orm_mean < -0.6:
+                prob, conf, color = 80, "High",      "#e03c3c"
+            elif orm_mean < -0.2:
+                prob, conf, color = 55, "Medium",    "#f0a500"
             else:
-                conf = "Low"
+                prob, conf, color = 30, "Low",       "#5aaacf"
 
             result["polygons"].append({
-                "id":          f"OIL-{len(result['polygons']) + 1}",
-                "area_km2":    round(area_km2, 3),
+                "id":           f"OIL-{len(result['polygons']) + 1}",
+                "area_km2":     round(area_km2, 3),
                 "area_km2_min": round(area_km2 * 0.7, 3),
                 "area_km2_max": round(area_km2 * 1.3, 3),
-                "confidence":  conf,
-                "lat":         round(clat, 4),
-                "lon":         round(clon, 4),
-                "coords":      coords,
-                "vv_mean_db":  round(vv_mean_val, 1) if vv_mean_val else None,
-                "date":        actual_date,
-                "age_h":       age_h,
+                "probability":  prob,       # 30 / 55 / 80 / 95
+                "confidence":   conf,       # Low / Medium / High / Very High
+                "color":        color,      # hex for bounding box
+                "orm_mean":     round(orm_mean, 3) if orm_mean else None,
+                "lat":          round(clat, 4),
+                "lon":          round(clon, 4),
+                "coords":       coords,
+                "date":         actual_date,
+                "age_h":        age_h,
             })
             total_area += area_km2
 
