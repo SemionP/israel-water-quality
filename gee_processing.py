@@ -213,7 +213,7 @@ def process_israel_s2(target_date_str):
     Uses mosaic() of all available tiles in the last 10 days to cover
     the entire coast (not just a single tile).
     """
-    wm  = _sea_mask()
+    wm  = ee.Image(1)
     aoi = _israel_clip()
     now = datetime.utcnow()
     end = ee.Date(now.strftime("%Y-%m-%d")).advance(1, "day")
