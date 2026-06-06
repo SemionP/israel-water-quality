@@ -830,7 +830,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
         wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(10)
         t  = ee.Date(target_date_str)
         # Use a wider display area — full Mediterranean coast + some inland
-        DISPLAY_BOX = ee.Geometry.Rectangle([33.5, 29.5, 36.5, 33.5])
+        DISPLAY_BOX = ee.Geometry.Rectangle([33.0, 31.2, 35.1, 33.2])  # Med coast only
         try:
             if source == "S3":
                 coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
@@ -890,7 +890,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
     def _get_spectral_index_tiles(source: str, target_date_str: str):
         """Return dict of {index_name: tile_url} for normalized spectral indices.
         Uses the SAME normalization as the WQI pipeline so values are meaningful 0-1."""
-        DISPLAY_BOX = ee.Geometry.Rectangle([33.5, 29.5, 36.5, 33.5])
+        DISPLAY_BOX = ee.Geometry.Rectangle([33.0, 31.2, 35.1, 33.2])  # Med coast only
         wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(10)
         t  = ee.Date(target_date_str)
         # Shared palettes for normalized 0→1 indices
@@ -999,7 +999,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
         history = _cj.loads(history_json) if history_json else {}
 
         results = {}
-        DISPLAY_BOX = ee.Geometry.Rectangle([33.5, 29.5, 36.5, 33.5])
+        DISPLAY_BOX = ee.Geometry.Rectangle([33.0, 31.2, 35.1, 33.2])  # Med coast only
         wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(10)
         t = ee.Date(date_str)
 
