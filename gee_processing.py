@@ -14,25 +14,19 @@ from config import BEACHES, HAIFA_BBOX_COORDS, ISRAEL_CLIP_COORDS
 def _haifa_bbox(): return ee.Geometry.Rectangle(HAIFA_BBOX_COORDS)
 
 # Mediterranean coast only — excludes Kinneret, Dead Sea, Red Sea
-_MED_COAST_COORDS = [
-    [33.0,  31.2],   # SW — open Mediterranean
-    [35.0,  31.2],   # SE — Gaza/Egypt border
-    [35.0,  31.55],  # Ashkelon
-    [34.90, 31.70],  # Ashdod
-    [34.85, 32.10],  # Tel Aviv
-    [34.80, 32.35],  # Netanya
-    [34.85, 32.55],  # Caesarea
-    [34.90, 32.82],  # Haifa
-    [35.00, 33.05],  # Rosh HaNikra
-    [35.00, 33.15],  # Lebanese border
-    [33.0,  33.15],  # NW — open sea
-    [33.0,  31.2],   # close
-]
-def _israel_clip(): return ee.Geometry.Polygon([_MED_COAST_COORDS])
+# Israeli Mediterranean — covers territorial waters (12nm) + EEZ offshore
+# West edge 33.0°E = ~200km offshore, covers full EEZ
+# East edge 35.15°E = Israeli coastline
+# South 31.2°N = Gaza/Egypt border | North 33.15°N = Lebanese border
+_MED_TERRITORIAL_BBOX = [33.0, 31.2, 35.15, 33.15]
 
-# Wide AOI for satellite collection filtering (includes full coast + offshore)
-_MED_WIDE_BBOX = [33.0, 31.2, 35.1, 33.2]
-def _med_wide(): return ee.Geometry.Rectangle(_MED_WIDE_BBOX)
+def _israel_clip():
+    """Rectangle covering Israeli Mediterranean territorial waters + EEZ."""
+    return ee.Geometry.Rectangle(_MED_TERRITORIAL_BBOX)
+
+def _med_wide():
+    """Same as _israel_clip — kept for backward compatibility."""
+    return ee.Geometry.Rectangle(_MED_TERRITORIAL_BBOX)
 
 def _to_ee_geom(raw):
     """Convert raw geometry dict from config to ee.Geometry."""
