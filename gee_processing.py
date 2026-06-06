@@ -14,29 +14,25 @@ from config import BEACHES, HAIFA_BBOX_COORDS, ISRAEL_CLIP_COORDS
 def _haifa_bbox(): return ee.Geometry.Rectangle(HAIFA_BBOX_COORDS)
 
 # Mediterranean coast only — excludes Kinneret, Dead Sea, Red Sea
-# Israeli Mediterranean — covers territorial waters (12nm) + EEZ offshore
-# West edge 33.0°E = ~200km offshore, covers full EEZ
-# East edge 35.15°E = Israeli coastline
-# South 31.2°N = Gaza/Egypt border | North 33.15°N = Lebanese border
-_MED_TERRITORIAL_BBOX = [33.0, 31.2, 35.15, 33.15]
+_MED_COAST_COORDS = [
+    [33.0,  31.2],   # SW — open Mediterranean
+    [35.0,  31.2],   # SE — Gaza/Egypt border
+    [35.0,  31.55],  # Ashkelon
+    [34.90, 31.70],  # Ashdod
+    [34.85, 32.10],  # Tel Aviv
+    [34.80, 32.35],  # Netanya
+    [34.85, 32.55],  # Caesarea
+    [34.90, 32.82],  # Haifa
+    [35.00, 33.05],  # Rosh HaNikra
+    [35.00, 33.15],  # Lebanese border
+    [33.0,  33.15],  # NW — open sea
+    [33.0,  31.2],   # close
+]
+def _israel_clip(): return ee.Geometry.Polygon([_MED_COAST_COORDS])
 
-def _israel_clip():
-    """Rectangle covering Israeli Mediterranean territorial waters + EEZ."""
-    return ee.Geometry.Rectangle(_MED_TERRITORIAL_BBOX)
-
-def _med_wide():
-    """Same as _israel_clip — kept for backward compatibility."""
-    return ee.Geometry.Rectangle(_MED_TERRITORIAL_BBOX)
-
-def _sea_mask():
-    """
-    Proper sea mask for open Mediterranean water.
-    Uses SRTM elevation <= 0 (below sea level) as sea proxy.
-    JRC GlobalSurfaceWater is NOT suitable for open ocean — it only detects
-    inland/coastal permanent water bodies, not the open sea.
-    """
-    srtm = ee.Image("USGS/SRTMGL1_003").select("elevation")
-    return srtm.lte(0).clip(_israel_clip())
+# Wide AOI for satellite collection filtering (includes full coast + offshore)
+_MED_WIDE_BBOX = [33.0, 31.2, 35.1, 33.2]
+def _med_wide(): return ee.Geometry.Rectangle(_MED_WIDE_BBOX)
 
 def _to_ee_geom(raw):
     """Convert raw geometry dict from config to ee.Geometry."""
@@ -109,7 +105,7 @@ def get_modis_sst_anomaly(target_date_str):
     anomaly = today SST - 30-day mean SST
     Returns: ee.Image with band 'SST_anomaly' (degrees C) + scalar mean anomaly
     """
-    wm = _sea_mask()
+    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t   = ee.Date(target_date_str)
 
     # Today SST (LST_Day_1km in Kelvin × 0.02 → Celsius)
@@ -154,7 +150,7 @@ def process_modis_wqi(target_date_str):
     Used as fallback when S3 not available, or as supplement.
     Returns: (wqi_layer, df_beaches, error, age_hours, source_label)
     """
-    wm = _sea_mask()
+    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t  = ee.Date(target_date_str)
     # Merge Terra (MOD) + Aqua (MYD) for better daily coverage
     now_m = datetime.utcnow()
@@ -212,42 +208,71 @@ def process_modis_wqi(target_date_str):
 
 @st.cache_data(ttl=21600)
 def process_israel_s2(target_date_str):
-    """Sentinel-2 MSI SR - 10m WQI for Israel coast. Always uses latest available."""
-    wm   = _sea_mask()
-    now  = datetime.utcnow()
-    end  = ee.Date(now.strftime("%Y-%m-%d")).advance(1,"day")
-    start= ee.Date((now - timedelta(days=10)).strftime("%Y-%m-%d"))
+    """
+    Sentinel-2 MSI SR — 10m WQI for full Israeli Mediterranean coast.
+    Uses mosaic() of all available tiles in the last 10 days to cover
+    the entire coast (not just a single tile).
+    """
+    wm  = _sea_mask()
+    aoi = _israel_clip()
+    now = datetime.utcnow()
+    end = ee.Date(now.strftime("%Y-%m-%d")).advance(1, "day")
+    start = ee.Date((now - timedelta(days=10)).strftime("%Y-%m-%d"))
+
+    # filterBounds on full AOI — not just Haifa — to get all coastal tiles
     coll = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-            .filterBounds(_haifa_bbox())
+            .filterBounds(aoi)
             .filterDate(start, end)
             .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 30))
             .sort("system:time_start", False))
+
     if coll.size().getInfo() == 0:
         return None, None, "No Sentinel-2 data.", None, "Sentinel-2"
+
+    # Get age from most recent image
     img_first   = coll.first()
     img_time_ms = img_first.get("system:time_start").getInfo()
-    img_dt      = datetime.utcfromtimestamp(img_time_ms/1000)
-    age_hours   = (datetime.utcnow()-img_dt).total_seconds()/3600
-    water = img_first.select("SCL").eq(6)
-    img   = img_first.updateMask(water).updateMask(wm)
-    b3,b4,b5,b8,b8a = (img.select("B3").divide(10000), img.select("B4").divide(10000),
-                        img.select("B5").divide(10000), img.select("B8").divide(10000),
-                        img.select("B8A").divide(10000))
-    ndwi_n = b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
-    chl_n  = b5.divide(b4.add(1e-6)).unitScale(1.0,3.5).clamp(0,1)
-    turb_n = ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0,0.15)).clamp(0,1)
-    wqi    = ndwi_n.add(chl_n).add(turb_n).divide(3).multiply(100).clip(_israel_clip()).updateMask(wm).rename("WQI")
+    img_dt      = datetime.utcfromtimestamp(img_time_ms / 1000)
+    age_hours   = (datetime.utcnow() - img_dt).total_seconds() / 3600
+
+    # Mosaic all tiles — covers full coast
+    # Use NDWI > 0 as water mask instead of SCL (SCL is per-tile and misses open sea)
+    img_mosaic = coll.mosaic()
+    b3  = img_mosaic.select("B3").divide(10000)
+    b4  = img_mosaic.select("B4").divide(10000)
+    b5  = img_mosaic.select("B5").divide(10000)
+    b8  = img_mosaic.select("B8").divide(10000)
+    b8a = img_mosaic.select("B8A").divide(10000)
+
+    # NDWI > 0 = water pixel (removes land without relying on SCL)
+    ndwi_raw = b3.subtract(b8).divide(b3.add(b8).add(1e-6))
+    water_px  = ndwi_raw.gt(0).And(wm)
+
+    ndwi_n = ndwi_raw.unitScale(-0.3, 0.5).clamp(0, 1)
+    chl_n  = b5.divide(b4.add(1e-6)).unitScale(1.0, 3.5).clamp(0, 1)
+    turb_n = ee.Image(1).subtract(b4.add(b8a).divide(2).unitScale(0, 0.15)).clamp(0, 1)
+
+    wqi = (ndwi_n.add(chl_n).add(turb_n)
+           .divide(3).multiply(100)
+           .clip(aoi)
+           .updateMask(water_px)
+           .rename("WQI"))
+
     def _pt(pt):
         try:
-            v  = wqi.reduceRegion(reducer=ee.Reducer.mean(),
-                geometry=ee.Geometry.Point([pt["lon"],pt["lat"]]).buffer(300),
-                scale=10,bestEffort=True).getInfo()
+            v  = wqi.reduceRegion(
+                reducer=ee.Reducer.mean(),
+                geometry=ee.Geometry.Point([pt["lon"], pt["lat"]]).buffer(300),
+                scale=10, bestEffort=True).getInfo()
             wv = v.get("WQI")
-            return {**pt,"wqi":round(wv,1) if wv else None}
-        except: return {**pt,"wqi":None}
+            return {**pt, "wqi": round(wv, 1) if wv else None}
+        except:
+            return {**pt, "wqi": None}
+
     with ThreadPoolExecutor(max_workers=4) as ex:
-        pts = list(ex.map(_pt,BEACHES))
-    return wqi, pd.DataFrame(pts), None, round(age_hours,1), "Sentinel-2"
+        pts = list(ex.map(_pt, BEACHES))
+
+    return wqi, pd.DataFrame(pts), None, round(age_hours, 1), "Sentinel-2"
 
 
 
@@ -286,7 +311,7 @@ def get_available_dates_combined(days_back=7):
 
 @st.cache_data(ttl=7200)
 def process_israel_wqi(target_date_str):
-    wm = _sea_mask()
+    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t=ee.Date(target_date_str)
     coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(_haifa_bbox())
           .filterDate(t.advance(-2,'day'),t.advance(1,'day')))
@@ -323,7 +348,12 @@ def compute_beach_history_7d():
     end   = datetime.utcnow()
     start = end - timedelta(days=15)
     wide     = _med_wide()
-    wm = _sea_mask()
+    wm_gsw = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
+    # Ocean-only: exclude inland water (use SRTM elevation > 0 as land proxy)
+    # Keep only pixels where distance to ocean shoreline is small
+    # Simple: use GSW "transition" band - permanent sea water
+    # Mediterranean-only mask — Kinneret/Dead Sea/Red Sea excluded by clip geometry
+    wm = wm_gsw.clip(_israel_clip())
 
     # Get S3 dates
     s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
@@ -373,7 +403,7 @@ def compute_beach_history_7d():
                            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE",30))
                            .sort("system:time_start",False))
                     if s2c.size().getInfo() == 0: return date_str, None
-                    im2 = s2c.first().updateMask(_sea_mask())
+                    im2 = s2c.first().updateMask(ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30))
                     b3,b4,b5,b8,b8a=(im2.select("B3").divide(10000),im2.select("B4").divide(10000),
                                      im2.select("B5").divide(10000),im2.select("B8").divide(10000),im2.select("B8A").divide(10000))
                     ndwi_n=b3.subtract(b8).divide(b3.add(b8)).unitScale(-0.3,0.5).clamp(0,1)
@@ -462,7 +492,7 @@ def process_port_medi(port_key, target_date_str):
     """Compute WQI + SST anomaly for a specific port zone."""
     port = PORTS[port_key]
     bbox = port["bbox"]
-    wm   = _sea_mask()
+    wm   = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t    = ee.Date(target_date_str)
 
     # S3 WQI
@@ -513,7 +543,7 @@ def process_port_medi(port_key, target_date_str):
 def get_global_wqi_layer(target_date_str, bbox_rect):
     lon_min,lat_min,lon_max,lat_max=bbox_rect
     bbox=ee.Geometry.Rectangle([lon_min,lat_min,lon_max,lat_max])
-    wm = _sea_mask()
+    wm=ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t=ee.Date(target_date_str)
     coll=(ee.ImageCollection("COPERNICUS/S3/OLCI").filterBounds(bbox)
           .filterDate(t.advance(-1,'day'),t.advance(1,'day')))
@@ -557,7 +587,7 @@ def compute_point_wqi(lat: float, lon: float, target_date_str: str, source: str 
     Uses a small buffer (500m) and takes only pixels where GSW >= 30%.
     Returns scalar WQI or None.
     """
-    wm = _sea_mask()
+    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     pt    = ee.Geometry.Point([lon, lat])
     buf   = pt.buffer(500)
     t     = ee.Date(target_date_str)
@@ -611,7 +641,7 @@ def compute_city_wqi(target_date_str, source="S3"):
     Compute WQI for each city's maritime zone polygon.
     Returns dict: {city_name: wqi_value}
     """
-    wm = _sea_mask()
+    wm = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     t  = ee.Date(target_date_str)
 
     def _get_wqi_image():
@@ -676,7 +706,7 @@ def compute_beach_history_range(days_back: int):
     end   = datetime.utcnow()
     start = end - timedelta(days=days_back+1)
     wide  = ee.Geometry.Rectangle([34.0,29.0,36.0,33.5])
-    wm = _sea_mask()
+    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     fmt   = "%Y-%m-%d"
 
     s3_coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
@@ -807,7 +837,7 @@ def compute_zone_history_range(zones_json: str, days_back: int):
     end   = datetime.utcnow()
     start = end - timedelta(days=days_back+1)
     wide     = _med_wide()
-    wm = _sea_mask()
+    wm    = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
     fmt   = "%Y-%m-%d"
 
     # ── Discover available dates per sensor ──────────────────────────────────
@@ -961,7 +991,7 @@ def get_satellite_layers(source: str, target_date_str: str) -> dict:
     Returns dict: {layer_name: tile_url}
     """
     aoi = _israel_clip()
-    wm  = _sea_mask()
+    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30).clip(aoi)
     t   = ee.Date(target_date_str)
     result = {}
 
