@@ -402,10 +402,8 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
 ▸ SELECT MODULE
 </div>""", unsafe_allow_html=True)
 
-        # No default — user must choose explicitly
         if "active_module" not in st.session_state:
             st.session_state.active_module = None
-
         _radio_choice = st.radio(
             label="module",
             options=[
@@ -413,7 +411,7 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
                 "🛢️  Oil Spill Detection",
                 "🛸  Vessel Detection",
             ],
-            index=None,   # no pre-selection
+            index=None,
             label_visibility="collapsed",
         )
         if _radio_choice is not None:
@@ -478,14 +476,18 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
             if not st.session_state.get(_cache_key):
                 with st.spinner(f"🛰 Processing S1 SAR · {_s1_sel_date}..."):
                     from s1_processing import (
-                        get_s1_layers        as _gsl,
-                        detect_oil_spills    as _dos,
-                        detect_vessels       as _dv,
+                        get_s1_layers              as _gsl,
+                        detect_oil_spills          as _dos,
+                        detect_vessels             as _dv,
                         check_vessel_oil_proximity as _cvop,
                     )
-                    _layers  = _gsl(_s1_sel_date)
-                    _oil_res = _dos(_s1_sel_date)
-                    _ves_res = _dv(_s1_sel_date)
+                    _layers = _gsl(_s1_sel_date)
+                    if _is_oil:
+                        _oil_res = _dos(_s1_sel_date)
+                        _ves_res = {"vessels": [], "n_vessels": 0}
+                    else:
+                        _ves_res = _dv(_s1_sel_date)
+                        _oil_res = {"polygons": [], "n_anomalies": 0, "total_area_km2": 0}
                     _ves_res["vessels"] = _cvop(
                         _ves_res.get("vessels", []),
                         _oil_res.get("polygons", []),
@@ -618,25 +620,19 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
     # WATER QUALITY MODULE — lazy loading starts here
     # ==========================================================================
 
-    # Nothing selected yet — show landing page
+    # Nothing selected yet — show landing page, no GEE calls
     if active_module is None:
         st.markdown("""
 <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
-height:60vh;gap:24px;opacity:0.7;">
-  <div style="font-family:'Rajdhani',sans-serif;font-size:2rem;font-weight:700;
-  color:#00c8c8;letter-spacing:0.1em;text-align:center;">⬡ MEDI PLATFORM</div>
-  <div style="font-family:'Share Tech Mono',monospace;font-size:0.85rem;color:#7fb3d3;
-  letter-spacing:0.15em;text-align:center;">SELECT A MODULE FROM THE SIDEBAR TO BEGIN</div>
-  <div style="display:flex;gap:32px;margin-top:8px;">
-    <div style="text-align:center;color:#7fb3d3;font-size:0.8rem;">🌊<br>Water Quality</div>
-    <div style="text-align:center;color:#7fb3d3;font-size:0.8rem;">🛢️<br>Oil Spill Detection</div>
-    <div style="text-align:center;color:#7fb3d3;font-size:0.8rem;">🛸<br>Vessel Detection</div>
-  </div>
+height:60vh;gap:20px;">
+  <div style="font-family:'Rajdhani',sans-serif;font-size:2.2rem;font-weight:700;
+  color:#00c8c8;letter-spacing:0.12em;">⬡ MEDI PLATFORM</div>
+  <div style="font-family:'Share Tech Mono',monospace;font-size:0.82rem;color:#7fb3d3;
+  letter-spacing:0.16em;">SELECT A MODULE FROM THE SIDEBAR TO BEGIN</div>
 </div>""", unsafe_allow_html=True)
         st.stop()
 
-    # Date selector
-    # Auto-select latest available date
+    # Date selector — only runs after module selected
     with st.spinner("Finding latest satellite data..."):
         date_options = get_available_dates_combined()
     if date_options:
