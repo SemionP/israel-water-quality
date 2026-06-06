@@ -620,16 +620,53 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
     # WATER QUALITY MODULE — lazy loading starts here
     # ==========================================================================
 
-    # Nothing selected yet — show landing page, no GEE calls
+    # Nothing selected — show clickable landing page
     if active_module is None:
         st.markdown("""
-<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
-height:60vh;gap:20px;">
+<div style="text-align:center;padding:48px 0 32px;">
   <div style="font-family:'Rajdhani',sans-serif;font-size:2.2rem;font-weight:700;
-  color:#00c8c8;letter-spacing:0.12em;">⬡ MEDI PLATFORM</div>
-  <div style="font-family:'Share Tech Mono',monospace;font-size:0.82rem;color:#7fb3d3;
-  letter-spacing:0.16em;">SELECT A MODULE FROM THE SIDEBAR TO BEGIN</div>
+  color:#00c8c8;letter-spacing:0.12em;margin-bottom:12px;">⬡ MEDI PLATFORM</div>
+  <div style="font-family:'Share Tech Mono',monospace;font-size:0.78rem;color:#7fb3d3;
+  letter-spacing:0.16em;margin-bottom:40px;">SELECT A MODULE TO BEGIN</div>
 </div>""", unsafe_allow_html=True)
+
+        _lc1, _lc2, _lc3 = st.columns(3, gap="large")
+        with _lc1:
+            st.markdown("""<div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.2);
+border-radius:10px;padding:32px 16px;text-align:center;margin-bottom:8px;">
+<div style="font-size:2.4rem;margin-bottom:12px;">🌊</div>
+<div style="font-family:'Rajdhani',sans-serif;font-size:1.1rem;font-weight:700;
+color:#00c8c8;letter-spacing:0.06em;">Water Quality</div>
+<div style="font-family:'Exo 2',sans-serif;font-size:0.75rem;color:#7fb3d3;margin-top:8px;">
+S3 · S2 · MODIS · WQI</div></div>""", unsafe_allow_html=True)
+            if st.button("Open →", key="land_wq", use_container_width=True):
+                st.session_state.active_module = "🌊  Water Quality"
+                st.rerun()
+
+        with _lc2:
+            st.markdown("""<div style="background:rgba(226,75,74,0.06);border:1px solid rgba(226,75,74,0.2);
+border-radius:10px;padding:32px 16px;text-align:center;margin-bottom:8px;">
+<div style="font-size:2.4rem;margin-bottom:12px;">🛢️</div>
+<div style="font-family:'Rajdhani',sans-serif;font-size:1.1rem;font-weight:700;
+color:#e24b4a;letter-spacing:0.06em;">Oil Spill Detection</div>
+<div style="font-family:'Exo 2',sans-serif;font-size:0.75rem;color:#7fb3d3;margin-top:8px;">
+Sentinel-1 SAR · Dark spot analysis</div></div>""", unsafe_allow_html=True)
+            if st.button("Open →", key="land_oil", use_container_width=True):
+                st.session_state.active_module = "🛢️  Oil Spill Detection"
+                st.rerun()
+
+        with _lc3:
+            st.markdown("""<div style="background:rgba(55,138,221,0.06);border:1px solid rgba(55,138,221,0.2);
+border-radius:10px;padding:32px 16px;text-align:center;margin-bottom:8px;">
+<div style="font-size:2.4rem;margin-bottom:12px;">🛸</div>
+<div style="font-family:'Rajdhani',sans-serif;font-size:1.1rem;font-weight:700;
+color:#5aaacf;letter-spacing:0.06em;">Vessel Detection</div>
+<div style="font-family:'Exo 2',sans-serif;font-size:0.75rem;color:#7fb3d3;margin-top:8px;">
+Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True)
+            if st.button("Open →", key="land_ves", use_container_width=True):
+                st.session_state.active_module = "🛸  Vessel Detection"
+                st.rerun()
+
         st.stop()
 
     # Date selector — only runs after module selected
