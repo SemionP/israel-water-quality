@@ -402,16 +402,23 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
 ▸ SELECT MODULE
 </div>""", unsafe_allow_html=True)
 
-        active_module = st.radio(
+        # No default — user must choose explicitly
+        if "active_module" not in st.session_state:
+            st.session_state.active_module = None
+
+        _radio_choice = st.radio(
             label="module",
             options=[
                 "🌊  Water Quality",
                 "🛢️  Oil Spill Detection",
                 "🛸  Vessel Detection",
             ],
-            index=0,
+            index=None,   # no pre-selection
             label_visibility="collapsed",
         )
+        if _radio_choice is not None:
+            st.session_state.active_module = _radio_choice
+        active_module = st.session_state.active_module
         st.divider()
 
         # ── Controls: SAR modules share date picker ────────────────────────
@@ -460,30 +467,25 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
             f" — Sentinel-1 SAR"
         )
 
-        # ── Only load when user explicitly clicks Detect ────────────────
-        if _run_sar:
-            # Clear previous cache for this module only
-            for k in list(st.session_state.keys()):
-                if k.startswith(f"s1_result_{_module_key}_"):
-                    del st.session_state[k]
-
+        # Load on button press or if cached result exists for this date
         if _run_sar or st.session_state.get(_cache_key):
+            if _run_sar:
+                # clear cache for new run
+                for k in list(st.session_state.keys()):
+                    if k.startswith("s1_result_"):
+                        del st.session_state[k]
+
             if not st.session_state.get(_cache_key):
                 with st.spinner(f"🛰 Processing S1 SAR · {_s1_sel_date}..."):
                     from s1_processing import (
-                        get_s1_layers              as _gsl,
-                        detect_oil_spills          as _dos,
-                        detect_vessels             as _dv,
+                        get_s1_layers        as _gsl,
+                        detect_oil_spills    as _dos,
+                        detect_vessels       as _dv,
                         check_vessel_oil_proximity as _cvop,
                     )
-                    _layers = _gsl(_s1_sel_date)
-                    # Run ONLY the relevant detector
-                    if _is_oil:
-                        _oil_res = _dos(_s1_sel_date)
-                        _ves_res = {"vessels": [], "n_vessels": 0}
-                    else:
-                        _ves_res = _dv(_s1_sel_date)
-                        _oil_res = {"polygons": [], "n_anomalies": 0, "total_area_km2": 0}
+                    _layers  = _gsl(_s1_sel_date)
+                    _oil_res = _dos(_s1_sel_date)
+                    _ves_res = _dv(_s1_sel_date)
                     _ves_res["vessels"] = _cvop(
                         _ves_res.get("vessels", []),
                         _oil_res.get("polygons", []),
@@ -500,83 +502,111 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
             _ves  = _r["vessels"]
             _date = _r["date"]
 
-            # ── Map ──────────────────────────────────────────────────────
+            # ── Map ──────────────────────────────────────────────────────────
             _m = folium.Map(location=[32.0, 34.85], zoom_start=8,
-                            tiles="CartoDB dark_matter")
-            if _r["layers"].get("vv"):
-                folium.TileLayer(_r["layers"]["vv"], attr="S1 VV",
-                    name="SAR VV (dB)", overlay=True, opacity=0.7).add_to(_m)
-            if _r["layers"].get("ratio"):
-                folium.TileLayer(_r["layers"]["ratio"], attr="VV/VH",
-                    name="VV/VH ratio", overlay=True, opacity=0.6).add_to(_m)
+                           tiles="CartoDB dark_matter")
 
-            if _is_oil:
-                for _p in _oil.get("polygons", []):
-                    if _p.get("coords"):
-                        folium.Polygon(
-                            locations=[(c[1], c[0]) for c in _p["coords"]],
-                            color="#e24b4a", fill=True, fill_opacity=0.35, weight=2,
-                            popup=folium.Popup(
-                                f"<b>{_p['id']}</b><br>"
-                                f"Area: {_p.get('area_km2_min','?')}–{_p.get('area_km2_max','?')} km²<br>"
-                                f"Confidence: {_p['confidence']}",
-                                max_width=220),
-                        ).add_to(_m)
-                        folium.Marker(
-                            [_p["lat"], _p["lon"]],
-                            icon=folium.DivIcon(html=(
-                                f'<div style="color:#e24b4a;font-size:11px;font-weight:bold;'
-                                f'white-space:nowrap;text-shadow:0 0 4px #000;">'
-                                f'🛢 {_p.get("area_km2_min","?")} km²</div>'
-                            ))
-                        ).add_to(_m)
-            else:
-                for _v in _ves.get("vessels", []):
-                    if _v.get("bbox_coords"):
-                        _vc = "#FAC775" if _v.get("near_oil") else "#c8e8f8"
-                        folium.Polygon(
-                            locations=[(c[1], c[0]) for c in _v["bbox_coords"]],
-                            color=_vc, fill=False, weight=2,
-                            popup=folium.Popup(
-                                f"<b>{_v['id']}</b><br>"
-                                f"Category: {_v['category']}<br>"
-                                f"Length: {_v.get('length_m','?')} m  Width: {_v.get('width_m','?')} m<br>"
-                                f"Confidence: {_v['confidence']}",
-                                max_width=220),
-                        ).add_to(_m)
+            if _r["layers"].get("vv"):
+                folium.TileLayer(
+                    _r["layers"]["vv"], attr="S1 VV", name="SAR VV (dB)",
+                    overlay=True, opacity=0.7).add_to(_m)
+            if _r["layers"].get("ratio"):
+                folium.TileLayer(
+                    _r["layers"]["ratio"], attr="VV/VH", name="VV/VH ratio",
+                    overlay=True, opacity=0.6).add_to(_m)
+
+            # Oil polygons
+            for _p in _oil.get("polygons", []):
+                if _p.get("coords"):
+                    folium.Polygon(
+                        locations=[(c[1], c[0]) for c in _p["coords"]],
+                        color="#e24b4a", fill=True, fill_opacity=0.35, weight=2,
+                        popup=folium.Popup(
+                            f"<b>{_p['id']}</b><br>"
+                            f"Area: {_p.get('area_km2_min','?')}–{_p.get('area_km2_max','?')} km²<br>"
+                            f"Confidence: {_p['confidence']}",
+                            max_width=220),
+                    ).add_to(_m)
+                    folium.Marker(
+                        [_p["lat"], _p["lon"]],
+                        icon=folium.DivIcon(html=(
+                            f'<div style="color:#e24b4a;font-size:11px;'
+                            f'font-weight:bold;white-space:nowrap;'
+                            f'text-shadow:0 0 4px #000;">'
+                            f'🛢 {_p.get("area_km2_min","?")} km²</div>'
+                        ))
+                    ).add_to(_m)
+
+            # Vessel bounding boxes
+            for _v in _ves.get("vessels", []):
+                if _v.get("bbox_coords"):
+                    _vc = "#FAC775" if _v.get("near_oil") else "#c8e8f8"
+                    folium.Polygon(
+                        locations=[(c[1], c[0]) for c in _v["bbox_coords"]],
+                        color=_vc, fill=False, weight=2,
+                        popup=folium.Popup(
+                            f"<b>{_v['id']}</b><br>"
+                            f"Category: {_v['category']}<br>"
+                            f"Length: {_v.get('length_min_m','?')}–{_v.get('length_max_m','?')} m<br>"
+                            f"Width: {_v.get('width_min_m','?')}–{_v.get('width_max_m','?')} m<br>"
+                            f"Confidence: {_v['confidence']}"
+                            + (f"<br>⚠ Near {_v['near_oil_id']}" if _v.get("near_oil") else ""),
+                            max_width=220),
+                    ).add_to(_m)
+                    folium.Marker(
+                        [_v["lat"], _v["lon"]],
+                        icon=folium.DivIcon(html=(
+                            f'<div style="color:{_vc};font-size:10px;'
+                            f'white-space:nowrap;text-shadow:0 0 4px #000;">'
+                            f'⬡ {_v["id"]}</div>'
+                        ))
+                    ).add_to(_m)
 
             folium.LayerControl().add_to(_m)
             st_folium(_m, use_container_width=True, height=520,
                       key=f"sar_map_{_date}_{_module_key}")
 
-            # ── Results ──────────────────────────────────────────────────
-            if _is_oil:
+            # ── Results table ─────────────────────────────────────────────
+            _col1, _col2 = st.columns(2)
+            with _col1:
                 st.markdown(f"### 🛢️ Oil Anomalies · {_oil.get('n_anomalies', 0)}")
                 if _oil.get("polygons"):
                     st.markdown(f"**Total area:** {_oil.get('total_area_km2', 0):.3f} km²")
-                    st.dataframe(pd.DataFrame([{
-                        "ID": p["id"], "Area min km²": p.get("area_km2_min","?"),
-                        "Area max km²": p.get("area_km2_max","?"),
-                        "Confidence": p["confidence"], "Lat": p["lat"], "Lon": p["lon"],
-                    } for p in _oil["polygons"]]), use_container_width=True, hide_index=True)
+                    _df_oil = pd.DataFrame([{
+                        "ID":           p["id"],
+                        "Area min km²": p.get("area_km2_min", "?"),
+                        "Area max km²": p.get("area_km2_max", "?"),
+                        "Confidence":   p["confidence"],
+                        "Lat":          p["lat"],
+                        "Lon":          p["lon"],
+                    } for p in _oil["polygons"]])
+                    st.dataframe(_df_oil, use_container_width=True, hide_index=True)
                 else:
-                    st.info("No oil anomalies detected for this date/area.")
-            else:
-                _n_near = sum(1 for v in _ves.get("vessels",[]) if v.get("near_oil"))
+                    st.info("No oil anomalies detected.")
+
+            with _col2:
+                _n_near = sum(1 for v in _ves.get("vessels", []) if v.get("near_oil"))
                 st.markdown(f"### 🛸 Vessels · {_ves.get('n_vessels', 0)}"
-                            + (f"  ·  ⚠ {_n_near} near oil" if _n_near else ""))
+                           + (f"  ·  ⚠ {_n_near} near oil" if _n_near else ""))
                 if _ves.get("vessels"):
-                    st.dataframe(pd.DataFrame([{
-                        "ID": v["id"], "Category": v["category"],
-                        "Length (m)": v.get("length_m","?"), "Width (m)": v.get("width_m","?"),
+                    _df_ves = pd.DataFrame([{
+                        "ID":         v["id"],
+                        "Category":   v["category"],
+                        "L min (m)":  v.get("length_min_m", "?"),
+                        "L max (m)":  v.get("length_max_m", "?"),
+                        "W min (m)":  v.get("width_min_m", "?"),
+                        "W max (m)":  v.get("width_max_m", "?"),
                         "Confidence": v["confidence"],
-                    } for v in _ves["vessels"]]), use_container_width=True, hide_index=True)
+                        "Near oil":   "⚠" if v.get("near_oil") else "",
+                    } for v in _ves["vessels"]])
+                    st.dataframe(_df_ves, use_container_width=True, hide_index=True)
                 else:
-                    st.info("No vessels detected for this date/area.")
+                    st.info("No vessels detected.")
 
             st.caption(
                 f"🛰 Sentinel-1 SAR · {_date} · {_s1_sel_orbit} orbit  "
-                "·  ⚠ Oil detection requires optical validation"
+                "·  ⚠ Oil detection requires optical validation  "
+                "·  Vessel dimensions ±40%"
             )
         else:
             st.info(f"👈 Select a date and click **{_run_label}** in the sidebar.")
@@ -587,6 +617,23 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
     # ==========================================================================
     # WATER QUALITY MODULE — lazy loading starts here
     # ==========================================================================
+
+    # Nothing selected yet — show landing page
+    if active_module is None:
+        st.markdown("""
+<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;
+height:60vh;gap:24px;opacity:0.7;">
+  <div style="font-family:'Rajdhani',sans-serif;font-size:2rem;font-weight:700;
+  color:#00c8c8;letter-spacing:0.1em;text-align:center;">⬡ MEDI PLATFORM</div>
+  <div style="font-family:'Share Tech Mono',monospace;font-size:0.85rem;color:#7fb3d3;
+  letter-spacing:0.15em;text-align:center;">SELECT A MODULE FROM THE SIDEBAR TO BEGIN</div>
+  <div style="display:flex;gap:32px;margin-top:8px;">
+    <div style="text-align:center;color:#7fb3d3;font-size:0.8rem;">🌊<br>Water Quality</div>
+    <div style="text-align:center;color:#7fb3d3;font-size:0.8rem;">🛢️<br>Oil Spill Detection</div>
+    <div style="text-align:center;color:#7fb3d3;font-size:0.8rem;">🛸<br>Vessel Detection</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+        st.stop()
 
     # Date selector
     # Auto-select latest available date
