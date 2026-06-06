@@ -34,6 +34,14 @@ def _israel_clip(): return ee.Geometry.Polygon([_MED_COAST_COORDS])
 _MED_WIDE_BBOX = [33.0, 31.2, 35.1, 33.2]
 def _med_wide(): return ee.Geometry.Rectangle(_MED_WIDE_BBOX)
 
+def _sea_mask():
+    """
+    Sea mask for open Mediterranean water.
+    Uses SRTM elevation <= 0 (below sea level).
+    JRC GlobalSurfaceWater is NOT suitable for open ocean.
+    """
+    return ee.Image("USGS/SRTMGL1_003").select("elevation").lte(0).clip(_israel_clip())
+
 def _to_ee_geom(raw):
     """Convert raw geometry dict from config to ee.Geometry."""
     if isinstance(raw, dict):
