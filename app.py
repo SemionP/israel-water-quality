@@ -786,7 +786,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
         if _today_key not in st.session_state:
             try:
                 _wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
-                _img = ee.Image(wqi_layer).updateMask(_wm)
+                _img = wqi_layer.updateMask(_wm)
                 _features = []
                 for zname, zdata in st.session_state.user_zones.items():
                     try:
@@ -816,7 +816,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                         props = feat.get("properties", {})
                         nm    = props.get("name")
                         # reduceRegions with mean() puts result in "mean" key
-                        wv    = props.get("mean") or props.get("WQI")
+                        wv    = props.get("WQI") or props.get("mean") or props.get("WQI_mean")
                         _today[nm] = round(float(wv), 1) if wv else None
                     st.session_state[_today_key] = _today
                 else:
