@@ -765,7 +765,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
     # All monitoring areas now unified under user_zones
     city_wqi = {}
 
-   # Compute user-defined zone WQI — LAZY: history only loads on demand
+    # Compute user-defined zone WQI — LAZY: history only loads on demand
     user_zone_wqi = {}
     user_zone_history = {}
     if st.session_state.get("user_zones"):
@@ -778,20 +778,38 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                 vals = [e["wqi"] for e in zhistory if e["wqi"] is not None]
                 user_zone_wqi[zname] = vals[-1] if vals else None
 
-    # ── Current-date zone WQI — always computed, no "Load History" needed ──
-    # Uses reduceRegions (one GEE call for all zones) on the already-loaded WQI image.
-    # Cache key includes date + source so it refreshes when the user changes date.
+    # ── Current-date zone WQI — single reduceRegions call, no history needed ──
+    # Bust any stale cache from previous broken runs
+    for _stale_k in [k for k in st.session_state.keys() if k.startswith("zone_wqi_today_")]:
+        del st.session_state[_stale_k]
+
+    _debug_zone_wqi = st.sidebar.expander("🔍 Debug: Zone WQI", expanded=False)
+
     if st.session_state.get("user_zones") and wqi_layer is not None:
         _today_key = f"zone_wqi_today_{sel_date}_{data_source}"
+        _debug_zone_wqi.write(f"Cache key: `{_today_key}`")
+        _debug_zone_wqi.write(f"wqi_layer type: `{type(wqi_layer).__name__}`")
+        _debug_zone_wqi.write(f"Zones: {list(st.session_state.user_zones.keys())}")
+
         if _today_key not in st.session_state:
+            _debug_zone_wqi.write("→ Cache MISS — running GEE reduceRegions...")
             try:
                 _wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
                 _img = wqi_layer.updateMask(_wm)
+
+                # Log band names
+                try:
+                    _bands = _img.bandNames().getInfo()
+                    _debug_zone_wqi.write(f"Band names: {_bands}")
+                except Exception as _be:
+                    _debug_zone_wqi.write(f"Band names error: {_be}")
+
                 _features = []
                 for zname, zdata in st.session_state.user_zones.items():
                     try:
                         coords = zdata.get("coords", [])
                         if not coords:
+                            _debug_zone_wqi.write(f"⚠ {zname}: no coords, skipping")
                             continue
                         if zdata.get("type") == "point":
                             geom = ee.Geometry.Point(
@@ -802,8 +820,11 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                                 [[[c[0], c[1]] for c in coords]]
                             )
                         _features.append(ee.Feature(geom, {"name": zname}))
-                    except Exception:
-                        pass
+                    except Exception as _fe:
+                        _debug_zone_wqi.write(f"⚠ {zname} feature error: {_fe}")
+
+                _debug_zone_wqi.write(f"Features built: {len(_features)}")
+
                 if _features:
                     _fc  = ee.FeatureCollection(_features)
                     _res = _img.reduceRegions(
@@ -811,22 +832,47 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                         reducer=ee.Reducer.mean(),
                         scale=300
                     ).getInfo()
+
+                    # Log raw GEE output for first feature
+                    if _res.get("features"):
+                        _debug_zone_wqi.write("Raw GEE props (first feature):")
+                        _debug_zone_wqi.json(_res["features"][0].get("properties", {}))
+
                     _today = {}
                     for feat in _res.get("features", []):
                         props = feat.get("properties", {})
                         nm    = props.get("name")
-                        # reduceRegions with mean() puts result in "mean" key
-                        wv    = props.get("WQI") or props.get("mean") or props.get("WQI_mean")
-                        _today[nm] = round(float(wv), 1) if wv else None
+                        # reduceRegions mean() → band name is the key
+                        # Try all possible keys GEE might use
+                        wv = None
+                        for _k in ["WQI", "mean", "WQI_mean", "b1"]:
+                            if props.get(_k) is not None:
+                                wv = props[_k]
+                                break
+                        _today[nm] = round(float(wv), 1) if wv is not None else None
+
+                    _debug_zone_wqi.write(f"Computed WQI values: {_today}")
                     st.session_state[_today_key] = _today
                 else:
+                    _debug_zone_wqi.write("⚠ No features built — zones may have no coords")
                     st.session_state[_today_key] = {}
-            except Exception:
+
+            except Exception as _ze:
+                _debug_zone_wqi.write(f"❌ GEE error: {_ze}")
                 st.session_state[_today_key] = {}
-        # Merge into user_zone_wqi — history values take precedence if already loaded
+        else:
+            _debug_zone_wqi.write("→ Cache HIT")
+            _debug_zone_wqi.write(st.session_state.get(_today_key, {}))
+
+        # Merge into user_zone_wqi — history values take precedence if loaded
         for zname, wv in st.session_state.get(_today_key, {}).items():
             if zname not in user_zone_wqi:
                 user_zone_wqi[zname] = wv
+
+        _debug_zone_wqi.write(f"Final user_zone_wqi: {user_zone_wqi}")
+    else:
+        _debug_zone_wqi.write(f"Skipped: user_zones={bool(st.session_state.get('user_zones'))}, wqi_layer={wqi_layer is not None}")
+
 
 
     # Basemap definitions — full URL templates for both folium and L.tileLayer
