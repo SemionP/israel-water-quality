@@ -1817,14 +1817,29 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                 def _hex_highlight(feat):
                     return {"weight":1.5,"color":"#00c8c8","fillOpacity":0.7}
 
+                # Add WQI values to GeoJSON features for tooltip
+                import copy as _copy
+                _hgeo_rich = _copy.deepcopy(_hgeo)
+                for _feat in _hgeo_rich["features"]:
+                    _hid = _feat["properties"].get("hex_id","")
+                    _hdata = _hex_map.get(_hid)
+                    if _hdata:
+                        _feat["properties"]["wqi"] = _hdata.get("wqi","N/A")
+                        _feat["properties"]["chl"] = _hdata.get("chl","N/A")
+                        _feat["properties"]["turb"] = _hdata.get("turb","N/A")
+                    else:
+                        _feat["properties"]["wqi"] = "N/A"
+                        _feat["properties"]["chl"] = "N/A"
+                        _feat["properties"]["turb"] = "N/A"
+
                 folium.GeoJson(
-                    _hgeo,
+                    _hgeo_rich,
                     name="🗺 H3 WQI Grid",
                     style_function=_hex_style,
                     highlight_function=_hex_highlight,
                     tooltip=folium.GeoJsonTooltip(
-                        fields=["hex_id"],
-                        aliases=["Hex:"],
+                        fields=["hex_id","wqi","chl","turb"],
+                        aliases=["Hex ID:","WQI:","Chl-a:","Turbidity:"],
                         localize=True
                     ),
                     show=True,
