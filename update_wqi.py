@@ -1,8 +1,8 @@
 """
 update_wqi.py — MEDI WQI snapshot via Sentinel-3 OLCI
 ======================================================
-Computes WQI for 913 H3 R7 hexagons using S-3 OLCI (300m).
-Called from app.py sidebar button via run_update().
+Uses SAME formula as gee_processing.process_israel_wqi (line 329)
+to ensure consistent WQI values across the platform.
 """
 
 import ee, json, time, os
@@ -19,6 +19,7 @@ RETRY        = 3
 
 
 def build_s3_wqi(aoi):
+    """S-3 OLCI WQI — identical formula to gee_processing.process_israel_wqi"""
     now   = datetime.utcnow()
     end   = ee.Date(now.strftime("%Y-%m-%d")).advance(1, "day")
     start = ee.Date((now - timedelta(days=LOOKBACK)).strftime("%Y-%m-%d"))
@@ -35,26 +36,38 @@ def build_s3_wqi(aoi):
     img_dt    = datetime.utcfromtimestamp(img_ms / 1000)
     age_hours = (datetime.utcnow() - img_dt).total_seconds() / 3600
 
-    img  = coll.median()
-    b6   = img.select("Oa06_radiance").divide(65535)
-    b8   = img.select("Oa08_radiance").divide(65535)
-    b11  = img.select("Oa11_radiance").divide(65535)
-    b17  = img.select("Oa17_radiance").divide(65535)
+    img = coll.median()
 
-    ndwi = b6.subtract(b17).divide(b6.add(b17).add(1e-6))
-    wm   = ndwi.gt(0)
+    # Water mask
+    wm = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).gt(0)
 
+    # NDWI — same as process_israel_wqi
+    ndwi = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance'])
     ndwi_n = ndwi.unitScale(-0.2, 0.5).clamp(0, 1)
-    mci_n  = ee.Image(1).subtract(b11.subtract(b8).unitScale(-2, 12).clamp(0, 1))
-    turb_n = ee.Image(1).subtract(b8.unitScale(0, 0.08).clamp(0, 1))
 
-    wqi  = (ndwi_n.add(mci_n).add(turb_n)
-            .divide(3).multiply(100)
-            .rename("WQI").updateMask(wm).clip(aoi))
+    # MCI (Maximum Chlorophyll Index) — same formula
+    b10 = img.select('Oa10_radiance')
+    b11 = img.select('Oa11_radiance')
+    b12 = img.select('Oa12_radiance')
+    mci = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75 - 681.25) / (753.75 - 681.25))))
+    mci_n = ee.Image(1).subtract(mci.unitScale(-2, 12).clamp(0, 1))
+
+    # Turbidity — same as process_israel_wqi (NO divide by 65535)
+    turb = img.select('Oa08_radiance')
+    turb_n = ee.Image(1).subtract(turb.unitScale(10, 80).clamp(0, 1))
+
+    # WQI composite
+    wqi = (ndwi_n.add(mci_n).add(turb_n)
+           .divide(3).multiply(100)
+           .rename("WQI")
+           .updateMask(wm)
+           .clip(aoi))
+
+    # Also export individual components
     chl  = mci_n.multiply(100).rename("CHL").updateMask(wm)
-    turb = turb_n.multiply(100).rename("TURB").updateMask(wm)
+    turb_out = turb_n.multiply(100).rename("TURB").updateMask(wm)
 
-    return wqi.addBands(chl).addBands(turb), round(age_hours, 1)
+    return wqi.addBands(chl).addBands(turb_out), round(age_hours, 1)
 
 
 def sample_hex(img, feat):
@@ -100,7 +113,6 @@ def run_update(status_callback=None):
         else:
             print(msg)
 
-    # Use same GEE init as main app (reads from st.secrets)
     log("Initializing GEE...")
     from gee_processing import init_gee
     init_gee()
