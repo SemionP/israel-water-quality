@@ -404,19 +404,9 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
 
         if "active_module" not in st.session_state:
             st.session_state.active_module = None
-        _radio_choice = st.radio(
-            label="module",
-            options=[
-                "🌊  Water Quality",
-                "🛢️  Oil Spill Detection",
-                "🛸  Vessel Detection",
-            ],
-            index=None,
-            label_visibility="collapsed",
-        )
-        if _radio_choice is not None:
-            st.session_state.active_module = _radio_choice
-        active_module = st.session_state.active_module
+        # Auto-select Water Quality
+        st.session_state.active_module = "🌊  Water Quality"
+        active_module = "🌊  Water Quality"
         # ── H3 WQI Monitor ───────────────────────────────────────────────
         st.markdown("### 🗺 H3 WQI Monitor")
         if st.button("🔄 Update WQI (S-3)", use_container_width=True):
@@ -441,8 +431,8 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
         st.divider()
 
 
-        # ── Controls: SAR modules share date picker ────────────────────────
-        if active_module in ("🛢️  Oil Spill Detection", "🛸  Vessel Detection"):
+        # ── Controls: SAR modules share date picker (disabled) ───────────────
+        if False:  # SAR disabled
             st.markdown("### 📡 Sentinel-1 SAR")
             with st.spinner("Fetching S1 dates..."):
                 from s1_processing import get_available_s1_dates as _get_s1_dates
@@ -475,9 +465,8 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
             _run_sar = st.button(_run_label, use_container_width=True, type="primary")
 
     # ==========================================================================
-    # Early exit for SAR modules — skip all Water Quality loading
-    # ==========================================================================
-    if active_module in ("🛢️  Oil Spill Detection", "🛸  Vessel Detection"):
+    # SAR modules disabled
+    if False:
         _is_oil     = "Oil" in active_module
         _module_key = "oil" if _is_oil else "vessels"
         _cache_key  = f"s1_result_{_module_key}_{_s1_sel_date}"
@@ -665,8 +654,8 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
     # WATER QUALITY MODULE — lazy loading starts here
     # ==========================================================================
 
-    # Nothing selected — show clickable landing page
-    if active_module is None:
+    # Landing page disabled
+    if False:
         st.markdown("""
 <div style="text-align:center;padding:48px 0 32px;">
   <div style="font-family:'Rajdhani',sans-serif;font-size:2.2rem;font-weight:700;
