@@ -2,10 +2,7 @@
 update_wqi.py — MEDI WQI snapshot via Sentinel-3 OLCI
 ======================================================
 Computes WQI for 913 H3 R7 hexagons using S-3 OLCI (300m).
-Saves result to Google Drive via storage.save_snapshot().
-
-Called from app.py sidebar button OR run standalone:
-  python update_wqi.py
+Called from app.py sidebar button via run_update().
 """
 
 import ee, json, time, os
@@ -15,14 +12,13 @@ from concurrent.futures import ThreadPoolExecutor
 GRID_FILE    = "medi_h3_grid_final_913.geojson"
 BATCH_SIZE   = 50
 MAX_WORKERS  = 4
-LOOKBACK     = 5     # days back for S-3 composite
-COVERAGE_MIN = 0.30  # min valid pixel fraction per hex
-HEX_RADIUS   = 650   # metres (R7 inradius)
+LOOKBACK     = 5
+COVERAGE_MIN = 0.30
+HEX_RADIUS   = 650
 RETRY        = 3
 
 
 def build_s3_wqi(aoi):
-    """S-3 OLCI WQI image — same formula as gee_processing.process_israel_wqi"""
     now   = datetime.utcnow()
     end   = ee.Date(now.strftime("%Y-%m-%d")).advance(1, "day")
     start = ee.Date((now - timedelta(days=LOOKBACK)).strftime("%Y-%m-%d"))
@@ -40,22 +36,17 @@ def build_s3_wqi(aoi):
     age_hours = (datetime.utcnow() - img_dt).total_seconds() / 3600
 
     img  = coll.median()
-    # S-3 OLCI band indices (same as gee_processing.py)
-    b6   = img.select("Oa06_radiance").divide(65535)   # ~560nm green
-    b8   = img.select("Oa08_radiance").divide(65535)   # ~665nm red
-    b11  = img.select("Oa11_radiance").divide(65535)   # ~709nm red-edge
-    b17  = img.select("Oa17_radiance").divide(65535)   # ~865nm NIR
+    b6   = img.select("Oa06_radiance").divide(65535)
+    b8   = img.select("Oa08_radiance").divide(65535)
+    b11  = img.select("Oa11_radiance").divide(65535)
+    b17  = img.select("Oa17_radiance").divide(65535)
 
-    # NDWI (water mask proxy)
     ndwi = b6.subtract(b17).divide(b6.add(b17).add(1e-6))
-    wm   = ndwi.gt(0)  # water mask
+    wm   = ndwi.gt(0)
 
-    # WQI components (normalised 0-1, higher = better quality)
     ndwi_n = ndwi.unitScale(-0.2, 0.5).clamp(0, 1)
-    mci_n  = ee.Image(1).subtract(
-                b11.subtract(b8).unitScale(-2, 12).clamp(0, 1))  # MCI: low=good
-    turb_n = ee.Image(1).subtract(
-                b8.unitScale(0, 0.08).clamp(0, 1))               # turbidity: low=good
+    mci_n  = ee.Image(1).subtract(b11.subtract(b8).unitScale(-2, 12).clamp(0, 1))
+    turb_n = ee.Image(1).subtract(b8.unitScale(0, 0.08).clamp(0, 1))
 
     wqi  = (ndwi_n.add(mci_n).add(turb_n)
             .divide(3).multiply(100)
@@ -103,28 +94,16 @@ def sample_hex(img, feat):
 
 
 def run_update(status_callback=None):
-    """
-    Main update function. Called from:
-    - CLI: python update_wqi.py
-    - Streamlit button: run_update(status_callback=st.write)
-    Returns snapshot dict.
-    """
     def log(msg):
         if status_callback:
             status_callback(msg)
         else:
             print(msg)
 
+    # Use same GEE init as main app (reads from st.secrets)
     log("Initializing GEE...")
-    try:
-        ee.Initialize()
-    except Exception:
-        sa  = os.environ.get("GEE_SERVICE_ACCOUNT")
-        key = os.environ.get("GEE_KEY_FILE")
-        if sa and key:
-            ee.Initialize(ee.ServiceAccountCredentials(sa, key))
-        else:
-            raise
+    from gee_processing import init_gee
+    init_gee()
 
     with open(GRID_FILE) as f:
         grid = json.load(f)
@@ -139,10 +118,10 @@ def run_update(status_callback=None):
     log("Building S-3 OLCI WQI mosaic...")
     img, age_hours = build_s3_wqi(aoi)
     if img is None:
-        log("No S-3 data available. Aborting.")
+        log("No S-3 data available.")
         return None
 
-    log(f"S-3 mosaic ready (age: {age_hours:.1f}h). Processing {len(hexes)} hex...")
+    log(f"Mosaic ready ({age_hours:.1f}h old). Processing {len(hexes)} hex...")
 
     results = []
     n_batches = (len(hexes) + BATCH_SIZE - 1) // BATCH_SIZE
@@ -153,10 +132,10 @@ def run_update(status_callback=None):
             batch_res = list(ex.map(lambda h: sample_hex(img, h), batch))
         results.extend(batch_res)
         ok = sum(1 for r in batch_res if r["wqi"] is not None)
-        log(f"  Batch {bi+1}/{n_batches}: {ok}/{len(batch)} valid ({time.time()-t0:.1f}s)")
+        log(f"Batch {bi+1}/{n_batches}: {ok}/{len(batch)} valid ({time.time()-t0:.1f}s)")
 
     valid = [r for r in results if r["wqi"] is not None]
-    log(f"Valid WQI: {len(valid)}/{len(results)} hexagons")
+    log(f"Done: {len(valid)}/{len(results)} hex valid")
 
     snapshot = {
         "generated_utc": datetime.utcnow().isoformat(),
@@ -167,16 +146,12 @@ def run_update(status_callback=None):
         "hexes": results,
     }
 
-    # Save
     try:
         from storage import save_snapshot
         save_snapshot(snapshot)
         log("Saved to Google Drive.")
-    except Exception:
-        # CLI fallback — save locally
-        with open("medi_wqi_snapshot.json", "w") as f:
-            json.dump(snapshot, f)
-        log("Saved locally: medi_wqi_snapshot.json")
+    except Exception as _e:
+        log(f"Drive save failed: {_e}")
 
     return snapshot
 
