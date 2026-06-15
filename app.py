@@ -1794,8 +1794,9 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
             _hex_map = {h["hex_id"]: h for h in _snap["hexes"] if h.get("wqi") is not None}
             if "wqi_hex_geojson" not in st.session_state:
                 try:
-                    import json as _jh3
-                    with open("medi_h3_grid_final_913.geojson") as _f:
+                    import json as _jh3, os as _os
+                    _grid_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "medi_h3_grid_final_913.geojson")
+                    with open(_grid_path) as _f:
                         st.session_state["wqi_hex_geojson"] = _jh3.load(_f)
                 except Exception:
                     st.session_state["wqi_hex_geojson"] = None
