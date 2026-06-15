@@ -417,7 +417,26 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
         if _radio_choice is not None:
             st.session_state.active_module = _radio_choice
         active_module = st.session_state.active_module
+        # ── H3 WQI Monitor ───────────────────────────────────────────────
+        st.markdown("### 🗺 H3 WQI Monitor")
+        if st.button("🔄 Update WQI (S-3)", use_container_width=True):
+            from update_wqi import run_update
+            with st.spinner("Computing S-3 WQI for 913 hex..."):
+                _snap = run_update(status_callback=st.write)
+            if _snap:
+                st.session_state["wqi_snapshot"] = _snap
+                st.success(f"✅ {_snap['valid_count']}/{_snap['hex_count']} hex updated")
+            else:
+                st.error("No S-3 data available.")
+        if "wqi_snapshot" not in st.session_state:
+            from storage import load_snapshot
+            st.session_state["wqi_snapshot"] = load_snapshot()
+        _snap = st.session_state.get("wqi_snapshot")
+        if _snap:
+            _ts = _snap.get("generated_utc","")[:16].replace("T"," ")
+            st.caption(f"Last update: {_ts} UTC · {_snap.get('valid_count',0)} hex valid")
         st.divider()
+
 
         # ── Controls: SAR modules share date picker ────────────────────────
         if active_module in ("🛢️  Oil Spill Detection", "🛸  Vessel Detection"):
@@ -1764,6 +1783,48 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                                 icon_size=(0, 0), icon_anchor=(0, 0)
                             )
                         ).add_to(m)
+
+
+        # ── H3 WQI snapshot layer ────────────────────────────────────────────
+        _snap = st.session_state.get("wqi_snapshot")
+        if _snap and _snap.get("hexes"):
+            _hex_map = {h["hex_id"]: h for h in _snap["hexes"] if h.get("wqi") is not None}
+            if "wqi_hex_geojson" not in st.session_state:
+                try:
+                    import json as _jh3
+                    with open("medi_h3_grid_final_913.geojson") as _f:
+                        st.session_state["wqi_hex_geojson"] = _jh3.load(_f)
+                except Exception:
+                    st.session_state["wqi_hex_geojson"] = None
+            _hgeo = st.session_state.get("wqi_hex_geojson")
+            if _hgeo:
+                def _hex_style(feat):
+                    hid = feat["properties"].get("hex_id","")
+                    h   = _hex_map.get(hid)
+                    if not h:
+                        return {"fillColor":"#333","color":"#555","weight":0.3,"fillOpacity":0.15}
+                    wqi = h["wqi"]
+                    if wqi >= 70:   fc = "#1ecb7b"
+                    elif wqi >= 50: fc = "#f0a500"
+                    elif wqi >= 30: fc = "#f46d43"
+                    else:           fc = "#d73027"
+                    return {"fillColor":fc,"color":"#000","weight":0.3,"fillOpacity":0.5}
+
+                def _hex_highlight(feat):
+                    return {"weight":1.5,"color":"#00c8c8","fillOpacity":0.7}
+
+                folium.GeoJson(
+                    _hgeo,
+                    name="🗺 H3 WQI Grid",
+                    style_function=_hex_style,
+                    highlight_function=_hex_highlight,
+                    tooltip=folium.GeoJsonTooltip(
+                        fields=["hex_id"],
+                        aliases=["Hex:"],
+                        localize=True
+                    ),
+                    show=True,
+                ).add_to(m)
 
         # Native folium.LayerControl removed — replaced by custom 30×30 basemap
         # button injected via JS (topleft, matching the other toolbar buttons).
