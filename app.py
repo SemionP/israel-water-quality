@@ -1938,6 +1938,14 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                 # ── S1 SAR mode active indicator ──────────────────────────
                 if st.session_state.get("s1_mode") and not st.session_state.get("s1_result"):
                     st.info("🛰 Loading SAR data...")
+                # Ensure snapshot loaded before building map
+                if "wqi_snapshot" not in st.session_state:
+                    try:
+                        from storage import load_snapshot as _ls
+                        st.session_state["wqi_snapshot"] = _ls()
+                    except Exception:
+                        st.session_state["wqi_snapshot"] = None
+
                 map_data_wqi = st_folium(
                     _build_map(),
                     use_container_width=True, height=740,
