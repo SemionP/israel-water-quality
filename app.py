@@ -429,8 +429,11 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
             else:
                 st.error("No S-3 data available.")
         if "wqi_snapshot" not in st.session_state:
-            from storage import load_snapshot
-            st.session_state["wqi_snapshot"] = load_snapshot()
+            try:
+                from storage import load_snapshot
+                st.session_state["wqi_snapshot"] = load_snapshot()
+            except Exception:
+                st.session_state["wqi_snapshot"] = None
         _snap = st.session_state.get("wqi_snapshot")
         if _snap:
             _ts = _snap.get("generated_utc","")[:16].replace("T"," ")
