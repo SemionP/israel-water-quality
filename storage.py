@@ -213,3 +213,96 @@ def load_points() -> dict:
 
 def save_points(points: dict):
     pass
+
+
+# =============================================================================
+# WQI Snapshot Storage — Google Drive (same folder as zones)
+# =============================================================================
+SNAPSHOT_FILENAME = "medi_wqi_snapshot.json"
+
+
+def _find_snapshot_id(token: str) -> str | None:
+    """Search Drive for medi_wqi_snapshot.json in the target folder."""
+    q   = f"name='{SNAPSHOT_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
+    url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode({
+        "q": q, "fields": "files(id)", "pageSize": "5",
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
+    })
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        res   = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        files = res.get("files", [])
+        return files[0]["id"] if files else None
+    except Exception:
+        return None
+
+
+def load_snapshot() -> dict | None:
+    """Load WQI snapshot from Google Drive. Returns dict or None if not found."""
+    try:
+        token = _gdrive_token()
+        if not token:
+            return None
+        fid = _find_snapshot_id(token)
+        if not fid:
+            return None
+        req = urllib.request.Request(
+            f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        raw = urllib.request.urlopen(req, timeout=15).read().decode()
+        return json.loads(raw)
+    except Exception:
+        pass
+
+    # /tmp fallback
+    try:
+        with open("/tmp/medi_wqi_snapshot.json") as f:
+            return json.loads(f.read())
+    except Exception:
+        return None
+
+
+def save_snapshot(snapshot: dict):
+    """Save WQI snapshot to Google Drive + /tmp fallback."""
+    data = json.dumps(snapshot, ensure_ascii=False).encode()
+
+    # /tmp first (fast)
+    try:
+        with open("/tmp/medi_wqi_snapshot.json", "w") as f:
+            f.write(data.decode())
+    except Exception:
+        pass
+
+    # Google Drive
+    try:
+        token = _gdrive_token()
+        if not token:
+            return
+        fid = _find_snapshot_id(token)
+        if fid:
+            url = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
+            req = urllib.request.Request(
+                url, data=data, method="PATCH",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req, timeout=30)
+        else:
+            # Create new file
+            meta = json.dumps({"name": SNAPSHOT_FILENAME, "parents": [GDRIVE_FOLDER]}).encode()
+            req1 = urllib.request.Request(
+                "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
+                data=meta, method="POST",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+            res1 = json.loads(urllib.request.urlopen(req1, timeout=10).read())
+            new_fid = res1.get("id")
+            if new_fid:
+                url2 = f"https://www.googleapis.com/upload/drive/v3/files/{new_fid}?uploadType=media&supportsAllDrives=true"
+                req2 = urllib.request.Request(
+                    url2, data=data, method="PATCH",
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                )
+                urllib.request.urlopen(req2, timeout=30)
+    except Exception:
+        pass
