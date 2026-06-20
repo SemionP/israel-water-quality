@@ -411,13 +411,21 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
         st.markdown("### 🗺 H3 WQI Monitor")
         if st.button("🔄 Update WQI (S-3)", use_container_width=True):
             from update_wqi import run_update
-            with st.spinner("Computing S-3 WQI for 913 hex..."):
+            with st.spinner("Computing S-3 WQI..."):
                 _snap = run_update(status_callback=st.write)
             if _snap:
                 st.session_state["wqi_snapshot"] = _snap
                 st.success(f"✅ {_snap['valid_count']}/{_snap['hex_count']} hex updated")
             else:
                 st.error("No S-3 data available.")
+        if st.button("🎯 Calibrate (1 year)", use_container_width=True):
+            from calibrate_wqi import run_calibration
+            with st.spinner("Self-calibrating from 365 days of S-3..."):
+                _cal = run_calibration(status_callback=st.write)
+            if _cal:
+                st.success(f"✅ MCI: [{_cal['mci']['unit_scale_min']:.1f}, {_cal['mci']['unit_scale_max']:.1f}] | Turb: [{_cal['turbidity']['unit_scale_min']:.1f}, {_cal['turbidity']['unit_scale_max']:.1f}]")
+            else:
+                st.error("Calibration failed.")
         if "wqi_snapshot" not in st.session_state:
             try:
                 from storage import load_snapshot
