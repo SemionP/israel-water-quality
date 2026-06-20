@@ -1,8 +1,10 @@
 """
 update_wqi.py — MEDI WQI snapshot via Sentinel-3 OLCI
 ======================================================
-Uses SAME formula as gee_processing.process_israel_wqi (line 329)
-to ensure consistent WQI values across the platform.
+- NDWI removed from WQI (used only as water mask)
+- WQI = (Chl_norm + Turb_norm) / 2 × 100
+- Uses calibrated unitScale from calibration JSON
+- Falls back to defaults if no calibration exists
 """
 
 import ee, json, time, os
@@ -17,9 +19,35 @@ COVERAGE_MIN = 0.30
 HEX_RADIUS   = 650
 RETRY        = 3
 
+# Default unitScale (used if no calibration file)
+DEFAULT_MCI_MIN  = -2
+DEFAULT_MCI_MAX  = 12
+DEFAULT_TURB_MIN = 10
+DEFAULT_TURB_MAX = 80
 
-def build_s3_wqi(aoi):
-    """S-3 OLCI WQI — identical formula to gee_processing.process_israel_wqi"""
+
+def load_cal():
+    """Load calibration values from storage or use defaults."""
+    try:
+        from storage import load_calibration
+        cal = load_calibration()
+        if cal:
+            return {
+                "mci_min":  cal["mci"]["unit_scale_min"],
+                "mci_max":  cal["mci"]["unit_scale_max"],
+                "turb_min": cal["turbidity"]["unit_scale_min"],
+                "turb_max": cal["turbidity"]["unit_scale_max"],
+            }
+    except Exception:
+        pass
+    return {
+        "mci_min": DEFAULT_MCI_MIN, "mci_max": DEFAULT_MCI_MAX,
+        "turb_min": DEFAULT_TURB_MIN, "turb_max": DEFAULT_TURB_MAX,
+    }
+
+
+def build_s3_wqi(aoi, cal):
+    """S-3 OLCI WQI — NDWI as mask only, WQI = (Chl + Turb) / 2"""
     now   = datetime.utcnow()
     end   = ee.Date(now.strftime("%Y-%m-%d")).advance(1, "day")
     start = ee.Date((now - timedelta(days=LOOKBACK)).strftime("%Y-%m-%d"))
@@ -38,32 +66,29 @@ def build_s3_wqi(aoi):
 
     img = coll.median()
 
-    # Water mask
+    # Water mask only (NDWI not in WQI formula)
     wm = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).gt(0)
 
-    # NDWI — same as process_israel_wqi
-    ndwi = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance'])
-    ndwi_n = ndwi.unitScale(-0.2, 0.5).clamp(0, 1)
-
-    # MCI (Maximum Chlorophyll Index) — same formula
+    # MCI — calibrated
     b10 = img.select('Oa10_radiance')
     b11 = img.select('Oa11_radiance')
     b12 = img.select('Oa12_radiance')
-    mci = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75 - 681.25) / (753.75 - 681.25))))
-    mci_n = ee.Image(1).subtract(mci.unitScale(-2, 12).clamp(0, 1))
+    mci = b11.subtract(b10.add(b12.subtract(b10).multiply(0.39)))
+    mci_n = ee.Image(1).subtract(
+        mci.unitScale(cal["mci_min"], cal["mci_max"]).clamp(0, 1))
 
-    # Turbidity — same as process_israel_wqi (NO divide by 65535)
+    # Turbidity — calibrated
     turb = img.select('Oa08_radiance')
-    turb_n = ee.Image(1).subtract(turb.unitScale(10, 80).clamp(0, 1))
+    turb_n = ee.Image(1).subtract(
+        turb.unitScale(cal["turb_min"], cal["turb_max"]).clamp(0, 1))
 
-    # WQI composite
-    wqi = (ndwi_n.add(mci_n).add(turb_n)
-           .divide(3).multiply(100)
+    # WQI = average of two components (no NDWI)
+    wqi = (mci_n.add(turb_n)
+           .divide(2).multiply(100)
            .rename("WQI")
            .updateMask(wm)
            .clip(aoi))
 
-    # Also export individual components
     chl  = mci_n.multiply(100).rename("CHL").updateMask(wm)
     turb_out = turb_n.multiply(100).rename("TURB").updateMask(wm)
 
@@ -117,6 +142,10 @@ def run_update(status_callback=None):
     from gee_processing import init_gee
     init_gee()
 
+    # Load calibration
+    cal = load_cal()
+    log(f"Calibration: MCI [{cal['mci_min']:.1f}, {cal['mci_max']:.1f}] | Turb [{cal['turb_min']:.1f}, {cal['turb_max']:.1f}]")
+
     with open(GRID_FILE) as f:
         grid = json.load(f)
     hexes = grid["features"]
@@ -127,8 +156,8 @@ def run_update(status_callback=None):
     aoi  = ee.Geometry.Rectangle([min(lngs)-0.1, min(lats)-0.1,
                                    max(lngs)+0.1, max(lats)+0.1])
 
-    log("Building S-3 OLCI WQI mosaic...")
-    img, age_hours = build_s3_wqi(aoi)
+    log("Building S-3 OLCI WQI mosaic (calibrated, no NDWI)...")
+    img, age_hours = build_s3_wqi(aoi, cal)
     if img is None:
         log("No S-3 data available.")
         return None
@@ -153,6 +182,8 @@ def run_update(status_callback=None):
         "generated_utc": datetime.utcnow().isoformat(),
         "data_age_hours": age_hours,
         "source": "Sentinel-3 OLCI",
+        "calibrated": cal != {"mci_min": DEFAULT_MCI_MIN, "mci_max": DEFAULT_MCI_MAX,
+                               "turb_min": DEFAULT_TURB_MIN, "turb_max": DEFAULT_TURB_MAX},
         "hex_count": len(results),
         "valid_count": len(valid),
         "hexes": results,
