@@ -66,7 +66,7 @@ def run_calibration(status_callback=None):
             if not logged_first and all(v is not None for v in [oa08, oa10, oa11, oa12]):
                 log(f"Sample bands: Oa08={oa08:.1f} Oa10={oa10:.1f} Oa11={oa11:.1f} Oa12={oa12:.1f}")
                 logged_first = True
-            if all(v is not None for v in [oa08, oa10, oa11, oa12]):
+            if all(v is not None and v < 10000 for v in [oa08, oa10, oa11, oa12]):
                 samples.append({"oa08": oa08, "oa10": oa10, "oa11": oa11, "oa12": oa12})
         except Exception:
             pass
