@@ -3,26 +3,16 @@
 import json, os, time, urllib.request, urllib.parse, urllib.error
 import streamlit as st
 
-# =============================================================================
-# Persistent Zone Storage — Google Drive (primary) + /tmp fallback
-# =============================================================================
 ZONES_KEY       = "medi-zones-v1"
 GDRIVE_FILENAME = "medi_zones.json"
 GDRIVE_FOLDER   = "1VU11P0UCzeMiVsn0k1RiIHuEu8bBLUFH"
 GDRIVE_FILE_ID  = "1KTI_oRHIrvRJNtfZYrWMkhNi2D-34Y9v"
 
-# -----------------------------------------------------------------------------
-# Token — cached in session_state with expiry, NOT @st.cache_resource
-# (cache_resource keeps the token forever; Drive tokens expire after 1 hour)
-# -----------------------------------------------------------------------------
 def _gdrive_token() -> str | None:
-    """Return a valid OAuth2 access token, refreshing when within 5 min of expiry."""
     cache = st.session_state.setdefault("_gdrive_token_cache", {})
     now   = int(time.time())
-    # Reuse cached token if it has more than 5 minutes left
     if cache.get("token") and cache.get("exp", 0) - now > 300:
         return cache["token"]
-    # Fetch a fresh token
     try:
         import base64, json as _j
         from cryptography.hazmat.primitives import hashes, serialization
@@ -66,18 +56,11 @@ def _gdrive_token() -> str | None:
         return None
 
 
-# -----------------------------------------------------------------------------
-# Internal helpers
-# -----------------------------------------------------------------------------
 def _find_file_id(token: str) -> str | None:
-    """Search Drive for medi_zones.json in the target folder."""
     q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
     url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode({
-        "q":                        q,
-        "fields":                   "files(id)",
-        "pageSize":                 "5",
-        "supportsAllDrives":        "true",
-        "includeItemsFromAllDrives":"true",
+        "q": q, "fields": "files(id)", "pageSize": "5",
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
     })
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     try:
@@ -89,29 +72,19 @@ def _find_file_id(token: str) -> str | None:
 
 
 def _create_file(token: str, data: bytes) -> str | None:
-    """Create medi_zones.json in the target folder. Returns new file ID or None."""
-    # Step 1: create metadata
-    meta = json.dumps({
-        "name":    GDRIVE_FILENAME,
-        "parents": [GDRIVE_FOLDER],
-    }).encode()
+    meta = json.dumps({"name": GDRIVE_FILENAME, "parents": [GDRIVE_FOLDER]}).encode()
     req1 = urllib.request.Request(
         "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
-        data=meta,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type":  "application/json",
-        },
+        data=meta, method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
     )
     try:
-        res1  = json.loads(urllib.request.urlopen(req1, timeout=10).read())
-        fid   = res1.get("id")
+        res1 = json.loads(urllib.request.urlopen(req1, timeout=10).read())
+        fid  = res1.get("id")
         if not fid:
             return None
-        # Step 2: upload content
-        url2  = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
-        req2  = urllib.request.Request(
+        url2 = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
+        req2 = urllib.request.Request(
             url2, data=data, method="PATCH",
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         )
@@ -121,86 +94,108 @@ def _create_file(token: str, data: bytes) -> str | None:
         return None
 
 
-# -----------------------------------------------------------------------------
-# Public API
-# -----------------------------------------------------------------------------
+# ── Generic Drive helpers ──────────────────────────────────────────────────────
+
+def _drive_find(token: str, filename: str) -> str | None:
+    q   = f"name='{filename}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
+    url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode({
+        "q": q, "fields": "files(id)", "pageSize": "5",
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
+    })
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        res   = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        files = res.get("files", [])
+        return files[0]["id"] if files else None
+    except Exception:
+        return None
+
+
+def _drive_read(token: str, fid: str) -> str | None:
+    req = urllib.request.Request(
+        f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        return urllib.request.urlopen(req, timeout=15).read().decode()
+    except Exception:
+        return None
+
+
+def _drive_write(token: str, filename: str, data: bytes, fid: str | None = None):
+    if fid:
+        url = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
+        req = urllib.request.Request(
+            url, data=data, method="PATCH",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=30)
+        return fid
+    else:
+        meta = json.dumps({"name": filename, "parents": [GDRIVE_FOLDER]}).encode()
+        req1 = urllib.request.Request(
+            "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
+            data=meta, method="POST",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        res1    = json.loads(urllib.request.urlopen(req1, timeout=10).read())
+        new_fid = res1.get("id")
+        if new_fid:
+            url2 = f"https://www.googleapis.com/upload/drive/v3/files/{new_fid}?uploadType=media&supportsAllDrives=true"
+            req2 = urllib.request.Request(
+                url2, data=data, method="PATCH",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req2, timeout=30)
+        return new_fid
+
+
+# ── Zones ─────────────────────────────────────────────────────────────────────
+
 def load_zones() -> dict:
-    """Load zones from Google Drive, falling back to /tmp then st.secrets."""
     try:
         token = _gdrive_token()
         if not token:
             raise RuntimeError("no token")
         fid = _find_file_id(token)
         if fid:
-            req = urllib.request.Request(
-                f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            raw = urllib.request.urlopen(req, timeout=10).read().decode()
-            return json.loads(raw)
+            raw = _drive_read(token, fid)
+            if raw:
+                return json.loads(raw)
     except Exception:
         pass
-
-    # /tmp fallback (survives within the same container session)
     try:
         with open("/tmp/medi_zones.json") as f:
             return json.loads(f.read())
     except Exception:
         pass
-
-    # st.secrets fallback (manually pasted backup)
     try:
         raw = st.secrets.get("saved_zones", None)
         if raw:
             return json.loads(raw)
     except Exception:
         pass
-
     return {}
 
 
 def save_zones(zones: dict):
-    """
-    Persist zones to:
-      1. /tmp (always, instant)
-      2. Google Drive (primary, durable)
-         - Updates existing file if found
-         - Creates new file if not found (handles first-time or missing file)
-    """
     data = json.dumps(zones, ensure_ascii=False, indent=2).encode()
-
-    # Always write to /tmp first (fast, no network)
     try:
         with open("/tmp/medi_zones.json", "w") as f:
             f.write(data.decode())
     except Exception:
         pass
-
-    # Drive
     try:
         token = _gdrive_token()
         if not token:
             return
-
         fid = _find_file_id(token)
-
         if fid:
-            # Update existing file
-            url = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
-            req = urllib.request.Request(
-                url, data=data, method="PATCH",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type":  "application/json",
-                },
-            )
-            urllib.request.urlopen(req, timeout=15)
+            _drive_write(token, GDRIVE_FILENAME, data, fid)
         else:
-            # File doesn't exist yet — create it
             _create_file(token, data)
-
     except Exception:
-        pass  # Drive write failed; /tmp copy still intact for this session
+        pass
 
 
 def load_zones_from_all() -> dict:
@@ -215,47 +210,23 @@ def save_points(points: dict):
     pass
 
 
-# =============================================================================
-# WQI Snapshot Storage — Google Drive (same folder as zones)
-# =============================================================================
+# ── WQI Snapshot ──────────────────────────────────────────────────────────────
+
 SNAPSHOT_FILENAME = "medi_wqi_snapshot.json"
 
 
-def _find_snapshot_id(token: str) -> str | None:
-    """Search Drive for medi_wqi_snapshot.json in the target folder."""
-    q   = f"name='{SNAPSHOT_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
-    url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode({
-        "q": q, "fields": "files(id)", "pageSize": "5",
-        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
-    })
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        res   = json.loads(urllib.request.urlopen(req, timeout=10).read())
-        files = res.get("files", [])
-        return files[0]["id"] if files else None
-    except Exception:
-        return None
-
-
 def load_snapshot() -> dict | None:
-    """Load WQI snapshot from Google Drive. Returns dict or None if not found."""
     try:
         token = _gdrive_token()
         if not token:
             return None
-        fid = _find_snapshot_id(token)
-        if not fid:
-            return None
-        req = urllib.request.Request(
-            f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        raw = urllib.request.urlopen(req, timeout=15).read().decode()
-        return json.loads(raw)
+        fid = _drive_find(token, SNAPSHOT_FILENAME)
+        if fid:
+            raw = _drive_read(token, fid)
+            if raw:
+                return json.loads(raw)
     except Exception:
         pass
-
-    # /tmp fallback
     try:
         with open("/tmp/medi_wqi_snapshot.json") as f:
             return json.loads(f.read())
@@ -264,69 +235,25 @@ def load_snapshot() -> dict | None:
 
 
 def save_snapshot(snapshot: dict):
-    """Save WQI snapshot to Google Drive + /tmp fallback."""
     data = json.dumps(snapshot, ensure_ascii=False).encode()
-
-    # /tmp first (fast)
     try:
         with open("/tmp/medi_wqi_snapshot.json", "w") as f:
             f.write(data.decode())
     except Exception:
         pass
-
-    # Google Drive
     try:
         token = _gdrive_token()
         if not token:
             return
-        fid = _find_snapshot_id(token)
-        if fid:
-            url = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
-            req = urllib.request.Request(
-                url, data=data, method="PATCH",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            )
-            urllib.request.urlopen(req, timeout=30)
-        else:
-            # Create new file
-            meta = json.dumps({"name": SNAPSHOT_FILENAME, "parents": [GDRIVE_FOLDER]}).encode()
-            req1 = urllib.request.Request(
-                "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
-                data=meta, method="POST",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            )
-            res1 = json.loads(urllib.request.urlopen(req1, timeout=10).read())
-            new_fid = res1.get("id")
-            if new_fid:
-                url2 = f"https://www.googleapis.com/upload/drive/v3/files/{new_fid}?uploadType=media&supportsAllDrives=true"
-                req2 = urllib.request.Request(
-                    url2, data=data, method="PATCH",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                )
-                urllib.request.urlopen(req2, timeout=30)
+        fid = _drive_find(token, SNAPSHOT_FILENAME)
+        _drive_write(token, SNAPSHOT_FILENAME, data, fid)
     except Exception:
         pass
 
 
-# =============================================================================
-# WQI Calibration Storage
-# =============================================================================
+# ── WQI Calibration ───────────────────────────────────────────────────────────
+
 CALIBRATION_FILENAME = "medi_calibration.json"
-
-
-def _find_calibration_id(token: str) -> str | None:
-    q   = f"name='{CALIBRATION_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
-    url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode({
-        "q": q, "fields": "files(id)", "pageSize": "5",
-        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
-    })
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        res   = json.loads(urllib.request.urlopen(req, timeout=10).read())
-        files = res.get("files", [])
-        return files[0]["id"] if files else None
-    except Exception:
-        return None
 
 
 def load_calibration() -> dict | None:
@@ -334,15 +261,11 @@ def load_calibration() -> dict | None:
         token = _gdrive_token()
         if not token:
             return None
-        fid = _find_calibration_id(token)
-        if not fid:
-            return None
-        req = urllib.request.Request(
-            f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        raw = urllib.request.urlopen(req, timeout=15).read().decode()
-        return json.loads(raw)
+        fid = _drive_find(token, CALIBRATION_FILENAME)
+        if fid:
+            raw = _drive_read(token, fid)
+            if raw:
+                return json.loads(raw)
     except Exception:
         pass
     try:
@@ -363,29 +286,68 @@ def save_calibration(calibration: dict):
         token = _gdrive_token()
         if not token:
             return
-        fid = _find_calibration_id(token)
+        fid = _drive_find(token, CALIBRATION_FILENAME)
+        _drive_write(token, CALIBRATION_FILENAME, data, fid)
+    except Exception:
+        pass
+
+
+# ── WQI History (daily mean WQI log) ──────────────────────────────────────────
+
+HISTORY_FILENAME = "medi_wqi_history.json"
+
+
+def load_history() -> list:
+    """Load WQI daily history. Returns list of dicts [{date, mean_wqi, valid_hex, source}]."""
+    try:
+        token = _gdrive_token()
+        if not token:
+            return []
+        fid = _drive_find(token, HISTORY_FILENAME)
         if fid:
-            url = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
-            req = urllib.request.Request(
-                url, data=data, method="PATCH",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            )
-            urllib.request.urlopen(req, timeout=30)
-        else:
-            meta = json.dumps({"name": CALIBRATION_FILENAME, "parents": [GDRIVE_FOLDER]}).encode()
-            req1 = urllib.request.Request(
-                "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
-                data=meta, method="POST",
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            )
-            res1 = json.loads(urllib.request.urlopen(req1, timeout=10).read())
-            new_fid = res1.get("id")
-            if new_fid:
-                url2 = f"https://www.googleapis.com/upload/drive/v3/files/{new_fid}?uploadType=media&supportsAllDrives=true"
-                req2 = urllib.request.Request(
-                    url2, data=data, method="PATCH",
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                )
-                urllib.request.urlopen(req2, timeout=30)
+            raw = _drive_read(token, fid)
+            if raw:
+                return json.loads(raw)
+    except Exception:
+        pass
+    try:
+        with open("/tmp/medi_wqi_history.json") as f:
+            return json.loads(f.read())
+    except Exception:
+        return []
+
+
+def append_history(entry: dict):
+    """
+    Append one entry to WQI history. Entry format:
+    {"date": "2026-06-22", "mean_wqi": 82.3, "median_wqi": 87.0,
+     "valid_hex": 739, "source": "Sentinel-3 OLCI"}
+    Deduplicates by date — only one entry per date kept (latest wins).
+    Keeps last 365 entries.
+    """
+    history = load_history()
+
+    # Remove existing entry for same date if exists
+    date = entry.get("date", "")
+    history = [h for h in history if h.get("date") != date]
+
+    history.append(entry)
+    history.sort(key=lambda x: x.get("date", ""))
+    history = history[-365:]  # keep max 1 year
+
+    data = json.dumps(history, ensure_ascii=False).encode()
+
+    try:
+        with open("/tmp/medi_wqi_history.json", "w") as f:
+            f.write(data.decode())
+    except Exception:
+        pass
+
+    try:
+        token = _gdrive_token()
+        if not token:
+            return
+        fid = _drive_find(token, HISTORY_FILENAME)
+        _drive_write(token, HISTORY_FILENAME, data, fid)
     except Exception:
         pass
