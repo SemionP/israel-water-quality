@@ -1,222 +1,353 @@
-"""
-update_wqi.py — MEDI WQI snapshot via Sentinel-3 OLCI
-======================================================
-- NDWI removed from WQI (used only as water mask)
-- WQI = (Chl_norm + Turb_norm) / 2 × 100
-- Uses calibrated unitScale from calibration JSON
-- Falls back to defaults if no calibration exists
-- Appends daily mean WQI to history on each run
-"""
+"""MEDI Platform — Zone Storage (Google Drive + fallback)"""
 
-import ee, json, time, os
-from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
+import json, os, time, urllib.request, urllib.parse, urllib.error
+import streamlit as st
 
-GRID_FILE    = "medi_h3_grid_final_913.geojson"
-BATCH_SIZE   = 50
-MAX_WORKERS  = 4
-LOOKBACK     = 5
-COVERAGE_MIN = 0.30
-HEX_RADIUS   = 650
-RETRY        = 3
+ZONES_KEY       = "medi-zones-v1"
+GDRIVE_FILENAME = "medi_zones.json"
+GDRIVE_FOLDER   = "1VU11P0UCzeMiVsn0k1RiIHuEu8bBLUFH"
+GDRIVE_FILE_ID  = "1KTI_oRHIrvRJNtfZYrWMkhNi2D-34Y9v"
 
-DEFAULT_MCI_MIN  = -2
-DEFAULT_MCI_MAX  = 12
-DEFAULT_TURB_MIN = 10
-DEFAULT_TURB_MAX = 80
-
-
-def load_cal():
+def _gdrive_token():
+    cache = st.session_state.setdefault("_gdrive_token_cache", {})
+    now   = int(time.time())
+    if cache.get("token") and cache.get("exp", 0) - now > 300:
+        return cache["token"]
     try:
-        from storage import load_calibration
-        cal = load_calibration()
-        if cal:
-            return {
-                "mci_min":  cal["mci"]["unit_scale_min"],
-                "mci_max":  cal["mci"]["unit_scale_max"],
-                "turb_min": cal["turbidity"]["unit_scale_min"],
-                "turb_max": cal["turbidity"]["unit_scale_max"],
-            }
+        import base64, json as _j
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding as _pad
+
+        creds    = dict(st.secrets["gee_credentials"])
+        sa_email = creds["client_email"]
+        priv_key = creds["private_key"]
+
+        def b64(d): return base64.urlsafe_b64encode(d).rstrip(b"=")
+
+        iat = now
+        exp = now + 3600
+        hdr = b64(_j.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+        pay = b64(_j.dumps({
+            "iss":   sa_email,
+            "scope": "https://www.googleapis.com/auth/drive",
+            "aud":   "https://oauth2.googleapis.com/token",
+            "iat":   iat,
+            "exp":   exp,
+        }).encode())
+        msg = hdr + b"." + pay
+        key = serialization.load_pem_private_key(priv_key.encode(), password=None)
+        sig = b64(key.sign(msg, _pad.PKCS1v15(), hashes.SHA256()))
+        jwt = (msg + b"." + sig).decode()
+
+        body = urllib.parse.urlencode({
+            "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+            "assertion":  jwt,
+        }).encode()
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        token = _j.loads(urllib.request.urlopen(req, timeout=10).read())["access_token"]
+        cache["token"] = token
+        cache["exp"]   = exp
+        return token
     except Exception:
-        pass
-    return {
-        "mci_min": DEFAULT_MCI_MIN, "mci_max": DEFAULT_MCI_MAX,
-        "turb_min": DEFAULT_TURB_MIN, "turb_max": DEFAULT_TURB_MAX,
-    }
-
-
-def build_s3_wqi(aoi, cal):
-    now   = datetime.utcnow()
-    end   = ee.Date(now.strftime("%Y-%m-%d")).advance(1, "day")
-    start = ee.Date((now - timedelta(days=LOOKBACK)).strftime("%Y-%m-%d"))
-
-    coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
-            .filterBounds(aoi)
-            .filterDate(start, end)
-            .sort("system:time_start", False))
-
-    if coll.size().getInfo() == 0:
-        return None, None
-
-    img_ms    = coll.first().get("system:time_start").getInfo()
-    img_dt    = datetime.utcfromtimestamp(img_ms / 1000)
-    age_hours = (datetime.utcnow() - img_dt).total_seconds() / 3600
-
-    img = coll.median()
-
-    # Water mask
-    wm = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).gt(0)
-
-    # Mask fill values before band math
-    def mask_fill(i):
-        return i.updateMask(i.lt(10000))
-
-    b10 = mask_fill(img.select('Oa10_radiance'))
-    b11 = mask_fill(img.select('Oa11_radiance'))
-    b12 = mask_fill(img.select('Oa12_radiance'))
-    b08 = mask_fill(img.select('Oa08_radiance'))
-
-    mci = b11.subtract(b10.add(b12.subtract(b10).multiply(0.39)))
-    mci_n = ee.Image(1).subtract(
-        mci.unitScale(cal["mci_min"], cal["mci_max"]).clamp(0, 1))
-
-    turb_n = ee.Image(1).subtract(
-        b08.unitScale(cal["turb_min"], cal["turb_max"]).clamp(0, 1))
-
-    wqi = (mci_n.add(turb_n)
-           .divide(2).multiply(100)
-           .rename("WQI")
-           .updateMask(wm)
-           .clip(aoi))
-
-    chl      = mci_n.multiply(100).rename("CHL").updateMask(wm)
-    turb_out = turb_n.multiply(100).rename("TURB").updateMask(wm)
-
-    return wqi.addBands(chl).addBands(turb_out), round(age_hours, 1)
-
-
-def sample_hex(img, feat):
-    props = feat["properties"]
-    lat, lng = props["lat"], props["lng"]
-    pt = ee.Geometry.Point([lng, lat]).buffer(HEX_RADIUS)
-
-    for attempt in range(RETRY):
-        try:
-            stats = img.reduceRegion(
-                reducer=ee.Reducer.mean().combine(
-                    ee.Reducer.count(), sharedInputs=True),
-                geometry=pt, scale=300, bestEffort=True).getInfo()
-
-            wqi  = stats.get("WQI_mean")
-            chl  = stats.get("CHL_mean")
-            turb = stats.get("TURB_mean")
-            cnt  = stats.get("WQI_count") or 0
-            nominal  = (3.14159 * HEX_RADIUS**2) / (300*300)
-            coverage = min(1.0, cnt / nominal) if nominal else 0
-
-            if coverage < COVERAGE_MIN or wqi is None:
-                return {"hex_id": props["hex_id"], "wqi": None,
-                        "chl": None, "turb": None,
-                        "coverage": round(coverage, 2)}
-            return {"hex_id": props["hex_id"],
-                    "wqi":      round(wqi, 1),
-                    "chl":      round(chl, 1) if chl else None,
-                    "turb":     round(turb, 1) if turb else None,
-                    "coverage": round(coverage, 2)}
-        except Exception as e:
-            if attempt == RETRY - 1:
-                return {"hex_id": props["hex_id"], "wqi": None,
-                        "chl": None, "turb": None, "coverage": 0,
-                        "error": str(e)[:80]}
-            time.sleep(1.5 * (attempt + 1))
-
-
-def run_update(status_callback=None):
-    def log(msg):
-        if status_callback:
-            status_callback(msg)
-        else:
-            print(msg)
-
-    log("Initializing GEE...")
-    from gee_processing import init_gee
-    init_gee()
-
-    cal = load_cal()
-    log(f"Calibration: MCI [{cal['mci_min']:.1f}, {cal['mci_max']:.1f}] | Turb [{cal['turb_min']:.1f}, {cal['turb_max']:.1f}]")
-
-    with open(GRID_FILE) as f:
-        grid = json.load(f)
-    hexes = grid["features"]
-    log(f"Loaded {len(hexes)} hexagons.")
-
-    lats = [h["properties"]["lat"] for h in hexes]
-    lngs = [h["properties"]["lng"] for h in hexes]
-    aoi  = ee.Geometry.Rectangle([min(lngs)-0.1, min(lats)-0.1,
-                                   max(lngs)+0.1, max(lats)+0.1])
-
-    log("Building S-3 OLCI WQI mosaic (calibrated, no NDWI)...")
-    img, age_hours = build_s3_wqi(aoi, cal)
-    if img is None:
-        log("No S-3 data available.")
         return None
 
-    log(f"Mosaic ready ({age_hours:.1f}h old). Processing {len(hexes)} hex...")
 
-    results = []
-    n_batches = (len(hexes) + BATCH_SIZE - 1) // BATCH_SIZE
-    for bi in range(n_batches):
-        batch = hexes[bi*BATCH_SIZE:(bi+1)*BATCH_SIZE]
-        t0 = time.time()
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            batch_res = list(ex.map(lambda h: sample_hex(img, h), batch))
-        results.extend(batch_res)
-        ok = sum(1 for r in batch_res if r["wqi"] is not None)
-        log(f"Batch {bi+1}/{n_batches}: {ok}/{len(batch)} valid ({time.time()-t0:.1f}s)")
+def _find_file_id(token: str):
+    q   = f"name='{GDRIVE_FILENAME}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
+    url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode({
+        "q": q, "fields": "files(id)", "pageSize": "5",
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
+    })
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        res = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        files = res.get("files", [])
+        return files[0]["id"] if files else None
+    except Exception:
+        return None
 
-    valid = [r for r in results if r["wqi"] is not None]
-    log(f"Done: {len(valid)}/{len(results)} hex valid")
 
-    snapshot = {
-        "generated_utc": datetime.utcnow().isoformat(),
-        "data_age_hours": age_hours,
-        "source": "Sentinel-3 OLCI",
-        "calibrated": True,
-        "hex_count": len(results),
-        "valid_count": len(valid),
-        "hexes": results,
-    }
+def _create_file(token: str, data: bytes):
+    meta = json.dumps({"name": GDRIVE_FILENAME, "parents": [GDRIVE_FOLDER]}).encode()
+    req1 = urllib.request.Request(
+        "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
+        data=meta, method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        res1 = json.loads(urllib.request.urlopen(req1, timeout=10).read())
+        fid  = res1.get("id")
+        if not fid:
+            return None
+        url2 = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
+        req2 = urllib.request.Request(
+            url2, data=data, method="PATCH",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req2, timeout=15)
+        return fid
+    except Exception:
+        return None
+
+
+# ── Generic Drive helpers ──────────────────────────────────────────────────────
+
+def _drive_find(token: str, filename: str):
+    q   = f"name='{filename}' and '{GDRIVE_FOLDER}' in parents and trashed=false"
+    url = "https://www.googleapis.com/drive/v3/files?" + urllib.parse.urlencode({
+        "q": q, "fields": "files(id)", "pageSize": "5",
+        "supportsAllDrives": "true", "includeItemsFromAllDrives": "true",
+    })
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        res   = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        files = res.get("files", [])
+        return files[0]["id"] if files else None
+    except Exception:
+        return None
+
+
+def _drive_read(token: str, fid: str):
+    req = urllib.request.Request(
+        f"https://www.googleapis.com/drive/v3/files/{fid}?alt=media&supportsAllDrives=true",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        return urllib.request.urlopen(req, timeout=15).read().decode()
+    except Exception:
+        return None
+
+
+def _drive_write(token: str, filename: str, data: bytes, fid=None):
+    if fid:
+        url = f"https://www.googleapis.com/upload/drive/v3/files/{fid}?uploadType=media&supportsAllDrives=true"
+        req = urllib.request.Request(
+            url, data=data, method="PATCH",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=30)
+        return fid
+    else:
+        meta = json.dumps({"name": filename, "parents": [GDRIVE_FOLDER]}).encode()
+        req1 = urllib.request.Request(
+            "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
+            data=meta, method="POST",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        res1    = json.loads(urllib.request.urlopen(req1, timeout=10).read())
+        new_fid = res1.get("id")
+        if new_fid:
+            url2 = f"https://www.googleapis.com/upload/drive/v3/files/{new_fid}?uploadType=media&supportsAllDrives=true"
+            req2 = urllib.request.Request(
+                url2, data=data, method="PATCH",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+            urllib.request.urlopen(req2, timeout=30)
+        return new_fid
+
+
+# ── Zones ─────────────────────────────────────────────────────────────────────
+
+def load_zones() -> dict:
+    try:
+        token = _gdrive_token()
+        if not token:
+            raise RuntimeError("no token")
+        fid = _find_file_id(token)
+        if fid:
+            raw = _drive_read(token, fid)
+            if raw:
+                return json.loads(raw)
+    except Exception:
+        pass
+    try:
+        with open("/tmp/medi_zones.json") as f:
+            return json.loads(f.read())
+    except Exception:
+        pass
+    try:
+        raw = st.secrets.get("saved_zones", None)
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return {}
+
+
+def save_zones(zones: dict):
+    data = json.dumps(zones, ensure_ascii=False, indent=2).encode()
+    try:
+        with open("/tmp/medi_zones.json", "w") as f:
+            f.write(data.decode())
+    except Exception:
+        pass
+    try:
+        token = _gdrive_token()
+        if not token:
+            return
+        fid = _find_file_id(token)
+        if fid:
+            _drive_write(token, GDRIVE_FILENAME, data, fid)
+        else:
+            _create_file(token, data)
+    except Exception:
+        pass
+
+
+def load_zones_from_all() -> dict:
+    return load_zones()
+
+
+def load_points() -> dict:
+    return {}
+
+
+def save_points(points: dict):
+    pass
+
+
+# ── WQI Snapshot ──────────────────────────────────────────────────────────────
+
+SNAPSHOT_FILENAME = "medi_wqi_snapshot.json"
+
+
+def load_snapshot():
+    try:
+        token = _gdrive_token()
+        if not token:
+            return None
+        fid = _drive_find(token, SNAPSHOT_FILENAME)
+        if fid:
+            raw = _drive_read(token, fid)
+            if raw:
+                return json.loads(raw)
+    except Exception:
+        pass
+    try:
+        with open("/tmp/medi_wqi_snapshot.json") as f:
+            return json.loads(f.read())
+    except Exception:
+        return None
+
+
+def save_snapshot(snapshot: dict):
+    data = json.dumps(snapshot, ensure_ascii=False).encode()
+    try:
+        with open("/tmp/medi_wqi_snapshot.json", "w") as f:
+            f.write(data.decode())
+    except Exception:
+        pass
+    try:
+        token = _gdrive_token()
+        if not token:
+            return
+        fid = _drive_find(token, SNAPSHOT_FILENAME)
+        _drive_write(token, SNAPSHOT_FILENAME, data, fid)
+    except Exception:
+        pass
+
+
+# ── WQI Calibration ───────────────────────────────────────────────────────────
+
+CALIBRATION_FILENAME = "medi_calibration.json"
+
+
+def load_calibration():
+    try:
+        token = _gdrive_token()
+        if not token:
+            return None
+        fid = _drive_find(token, CALIBRATION_FILENAME)
+        if fid:
+            raw = _drive_read(token, fid)
+            if raw:
+                return json.loads(raw)
+    except Exception:
+        pass
+    try:
+        with open("/tmp/medi_calibration.json") as f:
+            return json.loads(f.read())
+    except Exception:
+        return None
+
+
+def save_calibration(calibration: dict):
+    data = json.dumps(calibration, ensure_ascii=False, indent=2).encode()
+    try:
+        with open("/tmp/medi_calibration.json", "w") as f:
+            f.write(data.decode())
+    except Exception:
+        pass
+    try:
+        token = _gdrive_token()
+        if not token:
+            return
+        fid = _drive_find(token, CALIBRATION_FILENAME)
+        _drive_write(token, CALIBRATION_FILENAME, data, fid)
+    except Exception:
+        pass
+
+
+# ── WQI History (daily mean WQI log) ──────────────────────────────────────────
+
+HISTORY_FILENAME = "medi_wqi_history.json"
+
+
+def load_history() -> list:
+    """Load WQI daily history. Returns list of dicts [{date, mean_wqi, valid_hex, source}]."""
+    try:
+        token = _gdrive_token()
+        if not token:
+            return []
+        fid = _drive_find(token, HISTORY_FILENAME)
+        if fid:
+            raw = _drive_read(token, fid)
+            if raw:
+                return json.loads(raw)
+    except Exception:
+        pass
+    try:
+        with open("/tmp/medi_wqi_history.json") as f:
+            return json.loads(f.read())
+    except Exception:
+        return []
+
+
+def append_history(entry: dict):
+    """
+    Append one entry to WQI history. Entry format:
+    {"date": "2026-06-22", "mean_wqi": 82.3, "median_wqi": 87.0,
+     "valid_hex": 739, "source": "Sentinel-3 OLCI"}
+    Deduplicates by date — only one entry per date kept (latest wins).
+    Keeps last 365 entries.
+    """
+    history = load_history()
+
+    # Remove existing entry for same date if exists
+    date = entry.get("date", "")
+    history = [h for h in history if h.get("date") != date]
+
+    history.append(entry)
+    history.sort(key=lambda x: x.get("date", ""))
+    history = history[-365:]  # keep max 1 year
+
+    data = json.dumps(history, ensure_ascii=False).encode()
 
     try:
-        from storage import save_snapshot
-        save_snapshot(snapshot)
-        log("Saved to Google Drive.")
-    except Exception as _e:
-        log(f"Drive save failed: {_e}")
+        with open("/tmp/medi_wqi_history.json", "w") as f:
+            f.write(data.decode())
+    except Exception:
+        pass
 
-    # ── Append to daily history ────────────────────────────────────────────────
-    if valid:
-        import statistics
-        wqi_vals = [r["wqi"] for r in valid]
-        mean_wqi   = round(sum(wqi_vals) / len(wqi_vals), 1)
-        median_wqi = round(statistics.median(wqi_vals), 1)
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        history_entry = {
-            "date":       today,
-            "mean_wqi":   mean_wqi,
-            "median_wqi": median_wqi,
-            "valid_hex":  len(valid),
-            "source":     "Sentinel-3 OLCI",
-        }
-        try:
-            from storage import append_history
-            append_history(history_entry)
-            log(f"History updated: {today} mean={mean_wqi} median={median_wqi}")
-        except Exception as _e:
-            log(f"History save failed: {_e}")
-
-    return snapshot
-
-
-if __name__ == "__main__":
-    run_update()
+    try:
+        token = _gdrive_token()
+        if not token:
+            return
+        fid = _drive_find(token, HISTORY_FILENAME)
+        _drive_write(token, HISTORY_FILENAME, data, fid)
+    except Exception:
+        pass
