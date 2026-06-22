@@ -1805,11 +1805,13 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                     if not h:
                         return {"fillColor":"#333","color":"#555","weight":0.3,"fillOpacity":0.15}
                     wqi = h["wqi"]
-                    if wqi >= 70:   fc = "#1ecb7b"
-                    elif wqi >= 50: fc = "#f0a500"
-                    elif wqi >= 30: fc = "#f46d43"
-                    else:           fc = "#d73027"
-                    return {"fillColor":fc,"color":"#000","weight":0.3,"fillOpacity":0.5}
+                    if wqi >= 80:   fc = "#4575b4"   # deep blue — very clean
+                    elif wqi >= 65: fc = "#74add1"   # light blue — clean
+                    elif wqi >= 50: fc = "#abd9e9"   # cyan — moderate
+                    elif wqi >= 40: fc = "#fee090"   # yellow — fair
+                    elif wqi >= 30: fc = "#f46d43"   # orange — poor
+                    else:           fc = "#d73027"   # red — polluted
+                    return {"fillColor":fc,"color":"#000","weight":0.3,"fillOpacity":0.55}
 
                 def _hex_highlight(feat):
                     return {"weight":1.5,"color":"#00c8c8","fillOpacity":0.7}
