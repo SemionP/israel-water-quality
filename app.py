@@ -67,6 +67,14 @@ RECOMMENDATION: <text>"""
 # =============================================================================
 st.set_page_config(page_title="MEDI Platform - Maritime Environmental Decision Intelligence", page_icon="🌊", layout="wide")
 
+st.markdown("""<style>
+#MainMenu {visibility: hidden;}
+header[data-testid="stHeader"] {display: none;}
+footer {visibility: hidden;}
+</style>""", unsafe_allow_html=True)
+
+
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=Share+Tech+Mono&family=Exo+2:wght@300;400;600&display=swap');
@@ -802,7 +810,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
     for _stale_k in [k for k in st.session_state.keys() if k.startswith("zone_wqi_today_")]:
         del st.session_state[_stale_k]
 
-    _debug_zone_wqi = st.sidebar.expander("🔍 Debug: Zone WQI", expanded=False)
+    _debug_zone_wqi = st.expander("🔍 Debug", expanded=False)
 
     if st.session_state.get("user_zones") and wqi_layer is not None:
         _today_key = f"zone_wqi_today_{sel_date}_{data_source}"
@@ -1884,33 +1892,6 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
             if all_candidates:
                 if "img_idx" not in st.session_state:
                     st.session_state.img_idx = 0
-                cur = all_candidates[st.session_state.img_idx]
-                cur_dt = (datetime.utcnow()-timedelta(hours=cur[0])).strftime("%b %d %H:%M UTC")
-                dots_html = ""
-                for i,(age,_,_,_,short,_) in enumerate(all_candidates):
-                    col_s = src_colors.get(short,"#888")
-                    sz = "10px" if i == st.session_state.img_idx else "7px"
-                    bd = "2px solid white" if i == st.session_state.img_idx else "none"
-                    dots_html += f'<span style="display:inline-block;width:{sz};height:{sz};border-radius:50%;background:{col_s};border:{bd};margin:0 2px;vertical-align:middle;"></span>'
-
-                nav_l, nav_center, nav_r = st.columns([1, 10, 1])
-                with nav_l:
-                    if st.button("◀", key="nav_prev", use_container_width=True):
-                        n = len(all_candidates)
-                        st.session_state.img_idx = (st.session_state.img_idx - 1) % n
-                        st.rerun()
-                with nav_center:
-                    st.markdown(
-                        f'<div style="text-align:center;font-size:13px;color:#7fb3d3;padding:5px 0;">' +
-                        dots_html +
-                        f' <b style="color:#d6eaf8;">{cur[5]}</b> · {cur_dt} · {cur[0]:.0f}h ago</div>',
-                        unsafe_allow_html=True
-                    )
-                with nav_r:
-                    if st.button("▶", key="nav_next", use_container_width=True):
-                        n = len(all_candidates)
-                        st.session_state.img_idx = (st.session_state.img_idx + 1) % n
-                        st.rerun()
 
             # Load history for user zones
             history_days  = 30
