@@ -1,5 +1,5 @@
 """
-calibrate_wqi.py — Self-calibration v3
+calibrate_wqi.py — Self-calibration v4
 =======================================
 Samples raw S-3 OLCI bands at hex centers,
 computes MCI and Turbidity in Python (avoids GEE band math issues).
@@ -37,7 +37,8 @@ def run_calibration(status_callback=None):
         log("No data.")
         return None
 
-    img = coll.first()
+    # FIX: median mosaic covers full AOI (first() may miss Israel)
+    img = coll.median()
 
     # Select raw bands — no band math in GEE
     raw = img.select(['Oa08_radiance', 'Oa10_radiance', 'Oa11_radiance', 'Oa12_radiance'])
@@ -55,9 +56,10 @@ def run_calibration(status_callback=None):
         pt = ee.Geometry.Point([lng, lat]).buffer(500)
         try:
             vals = raw.reduceRegion(
-                reducer=ee.Reducer.first(),
+                reducer=ee.Reducer.mean(),
                 geometry=pt,
-                scale=300
+                scale=300,
+                bestEffort=True
             ).getInfo()
             oa08 = vals.get("Oa08_radiance")
             oa10 = vals.get("Oa10_radiance")
