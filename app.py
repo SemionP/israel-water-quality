@@ -2064,77 +2064,135 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                         st.rerun()
                     st.markdown("---")
 
-                # ── WQI Histogram ─────────────────────────────────────────────
+                # ── WQI Dashboard (gauge + anomalies + history trend) ──────────
                 if not st.session_state.get("s1_mode"):
                     _snap_h = st.session_state.get("wqi_snapshot")
                     if _snap_h and _snap_h.get("hexes"):
+                        import numpy as _np
                         _wqi_vals = [h["wqi"] for h in _snap_h["hexes"] if h.get("wqi") is not None]
                         if _wqi_vals:
-                            import numpy as _np
-                            _bins = list(range(0, 105, 5))
-                            _counts, _ = _np.histogram(_wqi_vals, bins=_bins)
-                            _bin_labels = [str(b) for b in _bins[:-1]]
-                            _max_c = max(_counts) if _counts.max() > 0 else 1
+                            _mean   = round(float(_np.mean(_wqi_vals)), 1)
+                            _med    = round(float(_np.median(_wqi_vals)), 1)
+                            _n_clean  = sum(1 for v in _wqi_vals if v >= 65)
+                            _n_mod    = sum(1 for v in _wqi_vals if 40 <= v < 65)
+                            _n_poor   = sum(1 for v in _wqi_vals if v < 40)
 
-                            # Color per bin matching hex color scheme
-                            def _wqi_color(wqi):
-                                if wqi >= 80: return "#4575b4"
-                                elif wqi >= 65: return "#74add1"
-                                elif wqi >= 50: return "#abd9e9"
-                                elif wqi >= 40: return "#fee090"
-                                elif wqi >= 30: return "#f46d43"
-                                else: return "#d73027"
+                            # Gauge color by mean WQI
+                            _gc = "#4575b4" if _mean >= 80 else "#74add1" if _mean >= 65 else "#abd9e9" if _mean >= 50 else "#fee090" if _mean >= 40 else "#f46d43" if _mean >= 30 else "#d73027"
 
-                            _bar_colors = [_wqi_color(b) for b in _bins[:-1]]
+                            # History trend (last 10 days)
+                            _hist_trend = ""
+                            try:
+                                from storage import load_history
+                                _history = load_history()
+                                if _history:
+                                    _last10 = _history[-10:]
+                                    _h_dates = [h["date"][-5:] for h in _last10]
+                                    _h_means = [h["mean_wqi"] for h in _last10]
+                                    _h_max = max(_h_means) if _h_means else 100
+                                    _h_min = min(_h_means) if _h_means else 0
+                                    _h_range = max(_h_max - _h_min, 10)
+                                    # Sparkline SVG
+                                    _sw, _sh = 280, 60
+                                    _spark = f'<svg width="100%" viewBox="0 0 {_sw} {_sh}" xmlns="http://www.w3.org/2000/svg" style="display:block;">'
+                                    _pts = []
+                                    for _hi, _hv in enumerate(_h_means):
+                                        _hx = 10 + _hi * (_sw - 20) / max(len(_h_means) - 1, 1)
+                                        _hy = _sh - 20 - int((_hv - _h_min) / _h_range * (_sh - 28))
+                                        _pts.append((_hx, _hy))
+                                    if len(_pts) > 1:
+                                        _pstr = " ".join(f"{x:.0f},{y:.0f}" for x,y in _pts)
+                                        _spark += f'<polyline points="{_pstr}" fill="none" stroke="#00c8c8" stroke-width="1.5" stroke-linejoin="round"/>'
+                                    for _hx, _hy in _pts:
+                                        _spark += f'<circle cx="{_hx:.0f}" cy="{_hy:.0f}" r="3" fill="#00c8c8"/>'
+                                    # Labels
+                                    if _pts:
+                                        _spark += f'<text x="{_pts[0][0]:.0f}" y="{_sh-4}" text-anchor="middle" font-size="8" fill="#4a7fa5">{_h_dates[0]}</text>'
+                                        _spark += f'<text x="{_pts[-1][0]:.0f}" y="{_sh-4}" text-anchor="middle" font-size="8" fill="#4a7fa5">{_h_dates[-1]}</text>'
+                                    _spark += '</svg>'
+                                    # Delta vs 10d ago
+                                    _delta = round(_mean - _h_means[0], 1) if len(_h_means) > 1 else 0
+                                    _delta_col = "#74add1" if _delta >= 0 else "#f46d43"
+                                    _delta_sign = "+" if _delta >= 0 else ""
+                                    _hist_trend = f"""
+                                        <div style="margin-top:10px;border-top:1px solid rgba(0,200,200,0.12);padding-top:8px;">
+                                        <div style="font-size:10px;color:#00c8c8;font-family:monospace;letter-spacing:0.08em;margin-bottom:4px;">10-DAY TREND</div>
+                                        {_spark}
+                                        <div style="font-size:10px;color:{_delta_col};margin-top:2px;">vs 10d ago: {_delta_sign}{_delta}</div>
+                                        </div>"""
+                            except Exception:
+                                pass
+
+                            # Top 3 worst hex with coordinates
+                            _sorted_hex = sorted(
+                                [h for h in _snap_h["hexes"] if h.get("wqi") is not None],
+                                key=lambda x: x["wqi"]
+                            )[:3]
+
+                            # Build anomaly rows with coordinates from geojson
+                            _anom_html = ""
+                            try:
+                                import json as _jj
+                                if "wqi_hex_geojson" in st.session_state:
+                                    _geo = st.session_state["wqi_hex_geojson"]
+                                    _coord_map = {f["properties"]["hex_id"]: (f["properties"].get("lat",0), f["properties"].get("lng",0)) for f in _geo["features"]}
+                                    for _ah in _sorted_hex:
+                                        _awqi = _ah["wqi"]
+                                        _acid = _ah["hex_id"]
+                                        _alat, _alng = _coord_map.get(_acid, (0, 0))
+                                        _ac = "#d73027" if _awqi < 30 else "#f46d43" if _awqi < 40 else "#fee090"
+                                        _abc = "rgba(215,48,39,0.12)" if _awqi < 30 else ("rgba(244,109,67,0.10)" if _awqi < 40 else "rgba(254,224,144,0.10)")
+                                        _anom_html += f'<div style="font-size:11px;color:#c8e8f8;background:{_abc};border:0.5px solid {_ac};border-radius:5px;padding:5px 8px;margin-bottom:4px;">WQI {_awqi:.0f} &nbsp;·&nbsp; <span style="color:#7fb3d3;">{_alat:.2f}°N {_alng:.2f}°E</span></div>'
+                            except Exception:
+                                for _ah in _sorted_hex:
+                                    _awqi = _ah["wqi"]
+                                    _ac = "#d73027" if _awqi < 30 else "#f46d43"
+                                    _anom_html += f'<div style="font-size:11px;color:#c8e8f8;border:0.5px solid {_ac};border-radius:5px;padding:5px 8px;margin-bottom:4px;">WQI {_awqi:.0f}</div>'
+
+                            # Gauge SVG
+                            _gw, _gh = 160, 100
+                            _angle = (_mean / 100) * 180
+                            import math as _math
+                            _rad = _math.radians(180 - _angle)
+                            _nx = 80 + 55 * _math.cos(_rad)
+                            _ny = 85 - 55 * _math.sin(_rad)
+                            _gauge_svg = f"""<svg width="100%" viewBox="0 0 {_gw} {_gh}" xmlns="http://www.w3.org/2000/svg" style="display:block;">
+                              <path d="M 15 85 A 65 65 0 0 1 145 85" fill="none" stroke="rgba(0,200,200,0.12)" stroke-width="12" stroke-linecap="round"/>
+                              <path d="M 15 85 A 65 65 0 0 1 {_nx:.1f} {_ny:.1f}" fill="none" stroke="{_gc}" stroke-width="12" stroke-linecap="round"/>
+                              <text x="80" y="72" text-anchor="middle" font-size="22" font-weight="bold" fill="#d6eaf8">{_mean:.0f}</text>
+                              <text x="80" y="84" text-anchor="middle" font-size="8" fill="#7fb3d3">mean WQI</text>
+                              <text x="18" y="98" text-anchor="middle" font-size="8" fill="#7fb3d3">0</text>
+                              <text x="142" y="98" text-anchor="middle" font-size="8" fill="#7fb3d3">100</text>
+                            </svg>"""
+
+                            # Metric cards
+                            _cards_html = f"""
+                            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin:8px 0;">
+                              <div style="background:rgba(69,117,180,0.12);border:0.5px solid rgba(69,117,180,0.3);border-radius:6px;padding:6px;text-align:center;">
+                                <div style="font-size:10px;color:#7fb3d3;">clean</div>
+                                <div style="font-size:18px;font-weight:500;color:#74add1;">{_n_clean}</div>
+                              </div>
+                              <div style="background:rgba(254,224,144,0.08);border:0.5px solid rgba(254,224,144,0.25);border-radius:6px;padding:6px;text-align:center;">
+                                <div style="font-size:10px;color:#7fb3d3;">moderate</div>
+                                <div style="font-size:18px;font-weight:500;color:#fee090;">{_n_mod}</div>
+                              </div>
+                              <div style="background:rgba(215,48,39,0.08);border:0.5px solid rgba(215,48,39,0.25);border-radius:6px;padding:6px;text-align:center;">
+                                <div style="font-size:10px;color:#7fb3d3;">poor</div>
+                                <div style="font-size:18px;font-weight:500;color:#d73027;">{_n_poor}</div>
+                              </div>
+                            </div>"""
 
                             st.markdown(
-                                '<div style="font-size:11px;color:#00c8c8;font-family:monospace;'
-                                'letter-spacing:0.08em;margin-bottom:6px;margin-top:4px;">'
-                                f'📊 WQI DISTRIBUTION · {len(_wqi_vals)} hex</div>',
+                                f'<div style="font-size:10px;color:#00c8c8;font-family:monospace;letter-spacing:0.08em;margin-bottom:4px;margin-top:4px;">WQI OVERVIEW · {len(_wqi_vals)} hex</div>',
                                 unsafe_allow_html=True
                             )
-
-                            # Build SVG histogram — full height to match map
-                            _svg_w, _svg_h = 320, 640
-                            _pad_top, _pad_bot, _pad_left = 20, 30, 32
-                            _plot_h = _svg_h - _pad_top - _pad_bot
-                            _plot_w = _svg_w - _pad_left - 8
-                            _bar_w = _plot_w / len(_counts)
-                            _svg = (f'<svg width="100%" height="{_svg_h}" viewBox="0 0 {_svg_w} {_svg_h}" '
-                                    f'xmlns="http://www.w3.org/2000/svg" '
-                                    f'style="background:rgba(0,20,40,0.4);border-radius:6px;'
-                                    f'border:1px solid rgba(0,200,200,0.12);display:block;">')
-                            for _g in [25, 50, 75, 100]:
-                                _gy = _pad_top + _plot_h - int((_g / _max_c) * _plot_h)
-                                if _gy > _pad_top:
-                                    _svg += f'<line x1="{_pad_left}" y1="{_gy}" x2="{_svg_w-4}" y2="{_gy}" stroke="rgba(0,200,200,0.08)" stroke-width="1"/>'
-                                    _svg += f'<text x="{_pad_left-2}" y="{_gy+4}" text-anchor="end" font-size="9" fill="#7fb3d3">{_g}</text>'
-                            for _i, (_c, _col) in enumerate(zip(_counts, _bar_colors)):
-                                _bh = int((_c / _max_c) * _plot_h)
-                                _x = _pad_left + _i * _bar_w
-                                _y = _pad_top + _plot_h - _bh
-                                _svg += f'<rect x="{_x+1}" y="{_y}" width="{_bar_w-2}" height="{_bh}" fill="{_col}" rx="2" opacity="0.85"/>'
-                                _svg += f'<title>{_bin_labels[_i]}-{int(_bin_labels[_i])+5}: {_c} hex</title>'
-                                if int(_bin_labels[_i]) % 20 == 0:
-                                    _svg += f'<text x="{_x + _bar_w/2}" y="{_svg_h - 6}" text-anchor="middle" font-size="9" fill="#7fb3d3">{_bin_labels[_i]}</text>'
-                            _svg += f'<text x="{_svg_w//2}" y="{_svg_h-1}" text-anchor="middle" font-size="8" fill="#4a7fa5">WQI</text>'
-                            _svg += '</svg>'
-
-                            st.markdown(_svg, unsafe_allow_html=True)
-
-                            _mean = float(_np.mean(_wqi_vals))
-                            _med  = float(_np.median(_wqi_vals))
-                            _pct_clean = sum(1 for v in _wqi_vals if v >= 65) / len(_wqi_vals) * 100
-                            _pct_poor  = sum(1 for v in _wqi_vals if v < 40) / len(_wqi_vals) * 100
-                            st.markdown(
-                                f'<div style="font-size:10px;color:#7fb3d3;margin-top:6px;line-height:1.8;">'
-                                f'Mean: <span style="color:#c8e8f8;">{_mean:.1f}</span> &nbsp;·&nbsp; '
-                                f'Median: <span style="color:#c8e8f8;">{_med:.1f}</span><br>'
-                                f'Clean (≥65): <span style="color:#74add1;">{_pct_clean:.0f}%</span> &nbsp;·&nbsp; '
-                                f'Poor (<40): <span style="color:#f46d43;">{_pct_poor:.0f}%</span>'
-                                f'</div>',
-                                unsafe_allow_html=True
-                            )
+                            st.markdown(_gauge_svg, unsafe_allow_html=True)
+                            st.markdown(_cards_html, unsafe_allow_html=True)
+                            if _anom_html:
+                                st.markdown('<div style="font-size:10px;color:#00c8c8;font-family:monospace;letter-spacing:0.08em;margin:8px 0 4px;">TOP ANOMALIES</div>', unsafe_allow_html=True)
+                                st.markdown(_anom_html, unsafe_allow_html=True)
+                            if _hist_trend:
+                                st.markdown(_hist_trend, unsafe_allow_html=True)
 
                 # Detect drawings → unified pending_zone (point or polygon)
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
