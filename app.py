@@ -1719,7 +1719,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
         m.add_child(MEDIControls(_js_body))
 
         m.add_child(folium.Element('<!-- WQI legend removed -->'))
-        if st.session_state.get("show_zones_on_map", True):
+        if False:  # zone markers hidden for demo
             _vis_grps = st.session_state.get("visible_groups", {""})
             for zname, zdata in st.session_state.get("user_zones", {}).items():
                 # Skip zones from hidden groups
@@ -1843,6 +1843,30 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                     ),
                     show=True,
                 ).add_to(m)
+
+
+        # ── WQI Legend ──────────────────────────────────────────────────────
+        legend_js = """
+        (function() {
+            var legend = L.control({position: 'bottomleft'});
+            legend.onAdd = function(map) {
+                var div = L.DomUtil.create('div');
+                div.innerHTML = '<div style="background:rgba(2,13,24,0.88);border:1px solid rgba(0,200,200,0.25);border-radius:6px;padding:10px 13px;font-family:monospace;">'
+                    + '<div style="font-size:10px;color:#00c8c8;letter-spacing:0.1em;margin-bottom:8px;">WQI INDEX</div>'
+                    + '<div style="display:flex;flex-direction:column;gap:4px;">'
+                    + '<div style="display:flex;align-items:center;gap:7px;"><div style="width:14px;height:14px;border-radius:2px;background:#4575b4;"></div><span style="font-size:10px;color:#c8e8f8;">≥ 80 clean</span></div>'
+                    + '<div style="display:flex;align-items:center;gap:7px;"><div style="width:14px;height:14px;border-radius:2px;background:#74add1;"></div><span style="font-size:10px;color:#c8e8f8;">≥ 65 good</span></div>'
+                    + '<div style="display:flex;align-items:center;gap:7px;"><div style="width:14px;height:14px;border-radius:2px;background:#abd9e9;"></div><span style="font-size:10px;color:#c8e8f8;">≥ 50 moderate</span></div>'
+                    + '<div style="display:flex;align-items:center;gap:7px;"><div style="width:14px;height:14px;border-radius:2px;background:#fee090;"></div><span style="font-size:10px;color:#c8e8f8;">≥ 40 fair</span></div>'
+                    + '<div style="display:flex;align-items:center;gap:7px;"><div style="width:14px;height:14px;border-radius:2px;background:#f46d43;"></div><span style="font-size:10px;color:#c8e8f8;">≥ 30 poor</span></div>'
+                    + '<div style="display:flex;align-items:center;gap:7px;"><div style="width:14px;height:14px;border-radius:2px;background:#d73027;"></div><span style="font-size:10px;color:#c8e8f8;">< 30 polluted</span></div>'
+                    + '</div></div>';
+                return div;
+            };
+            legend.addTo(__MAP_VAR__);
+        })();
+        """
+        m.add_child(MEDIControls(legend_js))
 
         # Native folium.LayerControl removed — replaced by custom 30×30 basemap
         # button injected via JS (topleft, matching the other toolbar buttons).
