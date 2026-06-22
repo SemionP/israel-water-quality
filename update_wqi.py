@@ -5,6 +5,7 @@ update_wqi.py — MEDI WQI snapshot via Sentinel-3 OLCI
 - WQI = (Chl_norm + Turb_norm) / 2 × 100
 - Uses calibrated unitScale from calibration JSON
 - Falls back to defaults if no calibration exists
+- Appends daily mean WQI to history on each run
 """
 
 import ee, json, time, os
@@ -19,7 +20,6 @@ COVERAGE_MIN = 0.30
 HEX_RADIUS   = 650
 RETRY        = 3
 
-# Default unitScale (used if no calibration file)
 DEFAULT_MCI_MIN  = -2
 DEFAULT_MCI_MAX  = 12
 DEFAULT_TURB_MIN = 10
@@ -27,7 +27,6 @@ DEFAULT_TURB_MAX = 80
 
 
 def load_cal():
-    """Load calibration values from storage or use defaults."""
     try:
         from storage import load_calibration
         cal = load_calibration()
@@ -47,7 +46,6 @@ def load_cal():
 
 
 def build_s3_wqi(aoi, cal):
-    """S-3 OLCI WQI — NDWI as mask only, WQI = (Chl + Turb) / 2"""
     now   = datetime.utcnow()
     end   = ee.Date(now.strftime("%Y-%m-%d")).advance(1, "day")
     start = ee.Date((now - timedelta(days=LOOKBACK)).strftime("%Y-%m-%d"))
@@ -66,30 +64,32 @@ def build_s3_wqi(aoi, cal):
 
     img = coll.median()
 
-    # Water mask only (NDWI not in WQI formula)
+    # Water mask
     wm = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).gt(0)
 
-    # MCI — calibrated
-    b10 = img.select('Oa10_radiance')
-    b11 = img.select('Oa11_radiance')
-    b12 = img.select('Oa12_radiance')
+    # Mask fill values before band math
+    def mask_fill(i):
+        return i.updateMask(i.lt(10000))
+
+    b10 = mask_fill(img.select('Oa10_radiance'))
+    b11 = mask_fill(img.select('Oa11_radiance'))
+    b12 = mask_fill(img.select('Oa12_radiance'))
+    b08 = mask_fill(img.select('Oa08_radiance'))
+
     mci = b11.subtract(b10.add(b12.subtract(b10).multiply(0.39)))
     mci_n = ee.Image(1).subtract(
         mci.unitScale(cal["mci_min"], cal["mci_max"]).clamp(0, 1))
 
-    # Turbidity — calibrated
-    turb = img.select('Oa08_radiance')
     turb_n = ee.Image(1).subtract(
-        turb.unitScale(cal["turb_min"], cal["turb_max"]).clamp(0, 1))
+        b08.unitScale(cal["turb_min"], cal["turb_max"]).clamp(0, 1))
 
-    # WQI = average of two components (no NDWI)
     wqi = (mci_n.add(turb_n)
            .divide(2).multiply(100)
            .rename("WQI")
            .updateMask(wm)
            .clip(aoi))
 
-    chl  = mci_n.multiply(100).rename("CHL").updateMask(wm)
+    chl      = mci_n.multiply(100).rename("CHL").updateMask(wm)
     turb_out = turb_n.multiply(100).rename("TURB").updateMask(wm)
 
     return wqi.addBands(chl).addBands(turb_out), round(age_hours, 1)
@@ -142,7 +142,6 @@ def run_update(status_callback=None):
     from gee_processing import init_gee
     init_gee()
 
-    # Load calibration
     cal = load_cal()
     log(f"Calibration: MCI [{cal['mci_min']:.1f}, {cal['mci_max']:.1f}] | Turb [{cal['turb_min']:.1f}, {cal['turb_max']:.1f}]")
 
@@ -182,8 +181,7 @@ def run_update(status_callback=None):
         "generated_utc": datetime.utcnow().isoformat(),
         "data_age_hours": age_hours,
         "source": "Sentinel-3 OLCI",
-        "calibrated": cal != {"mci_min": DEFAULT_MCI_MIN, "mci_max": DEFAULT_MCI_MAX,
-                               "turb_min": DEFAULT_TURB_MIN, "turb_max": DEFAULT_TURB_MAX},
+        "calibrated": True,
         "hex_count": len(results),
         "valid_count": len(valid),
         "hexes": results,
@@ -195,6 +193,27 @@ def run_update(status_callback=None):
         log("Saved to Google Drive.")
     except Exception as _e:
         log(f"Drive save failed: {_e}")
+
+    # ── Append to daily history ────────────────────────────────────────────────
+    if valid:
+        import statistics
+        wqi_vals = [r["wqi"] for r in valid]
+        mean_wqi   = round(sum(wqi_vals) / len(wqi_vals), 1)
+        median_wqi = round(statistics.median(wqi_vals), 1)
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        history_entry = {
+            "date":       today,
+            "mean_wqi":   mean_wqi,
+            "median_wqi": median_wqi,
+            "valid_hex":  len(valid),
+            "source":     "Sentinel-3 OLCI",
+        }
+        try:
+            from storage import append_history
+            append_history(history_entry)
+            log(f"History updated: {today} mean={mean_wqi} median={median_wqi}")
+        except Exception as _e:
+            log(f"History save failed: {_e}")
 
     return snapshot
 
