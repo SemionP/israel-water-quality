@@ -1858,9 +1858,8 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
             # Compact inline navigator
             src_colors = {"S3":"#00c8c8","S2":"#1ecb7b","MOD":"#f0a500"}
             if all_candidates:
-                        if "img_idx" not in st.session_state:
-                st.session_state.img_idx = 0
-            cur = all_candidates[st.session_state.img_idx]
+                if "img_idx" not in st.session_state:
+                    st.session_state.img_idx = 0
                 cur = all_candidates[st.session_state.img_idx]
                 cur_dt = (datetime.utcnow()-timedelta(hours=cur[0])).strftime("%b %d %H:%M UTC")
                 dots_html = ""
