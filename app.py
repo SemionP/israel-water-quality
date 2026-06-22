@@ -2090,7 +2090,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                             )
 
                             # Build SVG histogram
-                            _svg_w, _svg_h = 320, 500
+                            _svg_w, _svg_h = 280, 120
                             _bar_w = _svg_w / len(_counts)
                             _svg = f'<svg width="{_svg_w}" height="{_svg_h}" xmlns="http://www.w3.org/2000/svg" style="background:rgba(0,20,40,0.4);border-radius:6px;border:1px solid rgba(0,200,200,0.12);">'
                             for _i, (_c, _col) in enumerate(zip(_counts, _bar_colors)):
@@ -2176,8 +2176,1000 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                             st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon, "hash": draw_hash}
                             st.rerun()
 
-                if False:  # Dashboard hidden — demo mode
+                if False:  # Dashboard hidden — demo mode shows map + histogram only
                     pass
+                if False:
+                    visible_beaches = list(user_zone_history.keys())
+                for zname in st.session_state.user_zones:
+                    if zname not in visible_beaches:
+                        visible_beaches.append(zname)
+
+                # Filter by visible groups
+                _vis_grps = st.session_state.get("visible_groups", {""})
+                visible_beaches = [
+                    vb for vb in visible_beaches
+                    if st.session_state.user_zones.get(vb, {}).get("group", "") in _vis_grps
+                ]
+
+                # ── Compute MEDI Confidence Scores ─────────────────────────────
+                _conf_scores = {}
+                try:
+                    import json as _cjconf
+                    _zones_j = _cjconf.dumps(st.session_state.user_zones)
+                    # Build per-sensor WQI dicts from current_vals or df
+                    _s3_wqi_j = _cjconf.dumps({n: float(current_vals.get(n)) for n in st.session_state.user_zones if current_vals.get(n) is not None}) if s3_df is not None else "{}"
+                    _s2_wqi_j = _cjconf.dumps({n: float(current_vals.get(n)) for n in st.session_state.user_zones if current_vals.get(n) is not None}) if s2_df is not None else "{}"
+                    _mod_wqi_j = _cjconf.dumps({n: float(current_vals.get(n)) for n in st.session_state.user_zones if current_vals.get(n) is not None}) if mod_df is not None else "{}"
+                    # History: extract just WQI values per zone for the function
+                    _hist_j = _cjconf.dumps({
+                        n: [e.get("wqi") for e in beach_history.get(n, []) if e.get("wqi") is not None]
+                        for n in st.session_state.user_zones
+                    })
+                    _conf_scores = compute_confidence_scores(
+                        data_source, sel_date, _zones_j,
+                        img_age_hours,
+                        _s3_wqi_j, _s2_wqi_j, _mod_wqi_j, _hist_j
+                    )
+                except Exception:
+                    pass  # Confidence scores are optional — don't break the dashboard
+
+                # ── Load 30-day History button (lazy) ────────────────────────
+                if st.session_state.user_zones and not st.session_state.get("zone_history_loaded"):
+                    _h_col1, _h_col2 = st.columns([3, 1])
+                    with _h_col1:
+                        st.caption("📊 30-day zone history not loaded (saves ~30s on startup)")
+                    with _h_col2:
+                        if st.button("Load History", key="load_zone_history", use_container_width=True):
+                            import json as _jhist
+                            _zj = _jhist.dumps(st.session_state.user_zones)
+                            with st.spinner("Loading zone history (30 days)..."):
+                                _loaded = compute_zone_history_range(_zj, 30)
+                            st.session_state["zone_history_cache"]  = _loaded
+                            st.session_state["zone_history_loaded"] = True
+                            user_zone_history = _loaded
+                            for _zn, _zh in _loaded.items():
+                                _vs = [e["wqi"] for e in _zh if e["wqi"] is not None]
+                                user_zone_wqi[_zn] = _vs[-1] if _vs else None
+                            st.rerun()
+
+                # Pre-merge zone history into beach_history so all_dates is correct
+                for zname, zhistory in user_zone_history.items():
+                    if zname not in beach_history:
+                        beach_history[zname] = []
+                    existing = {e["date"] for e in beach_history[zname]}
+                    for entry in zhistory:
+                        if entry["date"] not in existing and entry["wqi"] is not None:
+                            beach_history[zname].append(entry)
+                            existing.add(entry["date"])
+
+                # Build comparison chart
+                if visible_beaches:
+                    import json as _json
+
+                    # Add current df as latest data point if history missing
+                    if df is not None and not df.empty:
+                        for _, row in df.iterrows():
+                            if row["name"] in beach_history and row["wqi"]:
+                                existing_dates = {e["date"] for e in beach_history[row["name"]]}
+                                if sel_date not in existing_dates:
+                                    beach_history[row["name"]].append({"date": sel_date, "wqi": row["wqi"], "source": data_source[:2]})
+                            elif row["name"] not in beach_history and row["wqi"]:
+                                beach_history[row["name"]] = [{"date": sel_date, "wqi": row["wqi"], "source": data_source[:2]}]
+
+                    # Merge city_wqi into beach_history for chart
+                    for city_name, cwqi in (city_wqi or {}).items():
+                        if cwqi is not None:
+                            if city_name not in beach_history:
+                                beach_history[city_name] = []
+                            existing = {e["date"] for e in beach_history[city_name]}
+                            if sel_date not in existing:
+                                beach_history[city_name].append({"date": sel_date, "wqi": cwqi, "source": "S3"})
+
+                    all_dates = sorted(set(
+                        e["date"] for name in visible_beaches
+                        for e in beach_history.get(name, [])
+                    ))
+
+                    def _get_current(name):
+                        if city_wqi and name in city_wqi and city_wqi[name] is not None:
+                            return float(city_wqi[name])
+                        if user_zone_wqi and name in user_zone_wqi and user_zone_wqi[name] is not None:
+                            return float(user_zone_wqi[name])
+                        hist_vals = [e["wqi"] for e in beach_history.get(name,[]) if e["wqi"] and str(e["wqi"]) != "nan"]
+                        return hist_vals[-1] if hist_vals else None
+
+                    # PALETTE imported from config
+
+                    # ── Task 8: Group-aware chart building ────────────────────
+                    chart_view_mode = st.session_state.get("chart_view_mode", "All zones (individual)")
+                    selected_group  = None
+                    if chart_view_mode.startswith("Group: "):
+                        selected_group = chart_view_mode[len("Group: "):]
+
+                    if selected_group:
+                        # Build one averaged line per group (only show selected group's zones aggregated)
+                        # Also show zones NOT in any group individually, and other groups as their average
+                        grp_map = {}   # group_name -> [zone_names]
+                        ungrouped = []
+                        for zn in visible_beaches:
+                            zg = st.session_state.user_zones.get(zn, {}).get("group", "")
+                            if zg:
+                                grp_map.setdefault(zg, []).append(zn)
+                            else:
+                                ungrouped.append(zn)
+
+                        # For the selected group: one line per member zone (individual)
+                        # For other groups: one averaged line
+                        # For ungrouped: individual lines
+                        chart_names = []
+                        chart_names += ungrouped
+                        for g, members in grp_map.items():
+                            if g == selected_group:
+                                chart_names += members   # individual lines for selected group
+                            else:
+                                chart_names.append(f"[{g}] avg")  # averaged line for other groups
+
+                        beach_colors = {}
+                        for i, nm in enumerate(chart_names):
+                            beach_colors[nm] = PALETTE[i % len(PALETTE)]
+
+                        datasets = []
+                        for nm in chart_names:
+                            if nm.startswith("[") and nm.endswith("] avg"):
+                                # Averaged group line
+                                grp_name = nm[1:nm.index("] avg")]
+                                members  = grp_map.get(grp_name, [])
+                                data = []
+                                srcs = []
+                                for d in all_dates:
+                                    vals = [beach_history[m][0]["wqi"] if m in beach_history else None
+                                            for m in members]
+                                    # per-date lookup
+                                    day_vals = []
+                                    day_srcs = []
+                                    for m in members:
+                                        hm = {e["date"]: e for e in beach_history.get(m, [])}
+                                        if d in hm and hm[d]["wqi"] is not None:
+                                            day_vals.append(hm[d]["wqi"])
+                                            day_srcs.append(hm[d].get("source",""))
+                                    avg = round(sum(day_vals)/len(day_vals), 1) if day_vals else None
+                                    data.append(avg)
+                                    srcs.append(",".join(set(day_srcs)) if day_srcs else "")
+                                datasets.append({
+                                    "label": nm,
+                                    "data": data,
+                                    "sources": srcs,
+                                    "borderColor": beach_colors[nm],
+                                    "borderDash": [4, 2],
+                                    "_isGroupAvg": True,
+                                })
+                            else:
+                                hmap = {e["date"]: e for e in beach_history.get(nm, [])}
+                                data = [hmap[d]["wqi"] if d in hmap else None for d in all_dates]
+                                srcs = [hmap[d].get("source","") if d in hmap else "" for d in all_dates]
+                                datasets.append({
+                                    "label": nm,
+                                    "data": data,
+                                    "sources": srcs,
+                                    "borderColor": beach_colors[nm],
+                                    "borderDash": [],
+                                })
+
+                        current_vals = {}
+                        for nm in chart_names:
+                            if nm.startswith("[") and nm.endswith("] avg"):
+                                grp_name = nm[1:nm.index("] avg")]
+                                members  = grp_map.get(grp_name, [])
+                                mvs = [_get_current(m) for m in members if _get_current(m)]
+                                current_vals[nm] = round(sum(mvs)/len(mvs),1) if mvs else None
+                            else:
+                                current_vals[nm] = _get_current(nm)
+
+                        display_names = chart_names
+
+                    else:
+                        # Original individual mode
+                        beach_colors = {name: PALETTE[i % len(PALETTE)] for i,name in enumerate(visible_beaches)}
+                        current_vals = {n: _get_current(n) for n in visible_beaches}
+                        datasets = []
+                        for name in visible_beaches:
+                            hist_map = {e["date"]: e for e in beach_history.get(name,[])}
+                            data = [hist_map[d]["wqi"] if d in hist_map else None for d in all_dates]
+                            src_map = [hist_map[d].get("source","") if d in hist_map else "" for d in all_dates]
+                            datasets.append({
+                                "label": name,
+                                "data": data,
+                                "sources": src_map,
+                                "borderColor": beach_colors[name],
+                                "borderDash": [5,3] if (current_vals.get(name,100) or 100) < 30 else [],
+                            })
+                        display_names = visible_beaches
+
+                    valid_vals = {n:v for n,v in current_vals.items() if v}
+                    best  = max(valid_vals, key=valid_vals.get) if valid_vals else None
+                    worst = min(valid_vals, key=valid_vals.get) if valid_vals else None
+
+                    legend_items = []
+                    for name in display_names:
+                        v   = current_vals.get(name)
+                        col = "#1ecb7b" if v and v>=70 else "#f0a500" if v and v>=55 else "#e03c3c" if v else "#888"
+                        legend_items.append({
+                            "name": name,
+                            "color": beach_colors[name],
+                            "wqi": round(v,1) if v else "---",
+                            "wqiColor": col,
+                        })
+
+                    # Task 6: Identify territorial waters zone — must come before chart_json
+                    TW_KEYWORDS = ["territorial", "טריטוריאל", "ים ישראל", "israel water",
+                                   "territorial water", "tw_", "terr_"]
+                    tw_zone_name = None
+                    for zn in display_names:
+                        if any(kw in zn.lower() for kw in TW_KEYWORDS):
+                            tw_zone_name = zn
+                            break
+
+                    # Build source label for chart subtitle from actual data used
+                    sources_used = sorted(set(
+                        e.get("source","") for name in display_names
+                        for e in beach_history.get(name, []) if e.get("source")
+                    ))
+                    src_label = " · ".join(sources_used) if sources_used else "S3 · S2 · MODIS"
+
+                    # Task 8: Add group mode indicator to subtitle
+                    if selected_group:
+                        src_label = f"Group: {selected_group} · " + src_label
+
+                    chart_json  = _json.dumps(datasets)
+                    labels_json = _json.dumps(all_dates)  # full YYYY-MM-DD for tooltip
+                    labels_short_json = _json.dumps([d[5:].replace("-","/") for d in all_dates])  # MM/DD for axis
+                    legend_json = _json.dumps(legend_items)
+
+                    # Task 6: compute territorial waters series after beach_history is ready
+                    tw_avg_json = "null"
+                    tw_label_js = "null"
+                    if tw_zone_name and tw_zone_name in beach_history:
+                        tw_map = {e["date"]: e["wqi"] for e in beach_history[tw_zone_name] if e["wqi"] is not None}
+                        tw_series = [tw_map.get(d) for d in all_dates]
+                        tw_avg_json = _json.dumps(tw_series)
+                        tw_label_js = _json.dumps(tw_zone_name)
+
+                    best_name   = best or "---"
+                    best_val    = round(valid_vals[best],1) if best else "---"
+                    worst_name  = worst or "---"
+                    worst_val   = round(valid_vals[worst],1) if worst else "---"
+                    n_beaches   = len(visible_beaches)
+
+                    # Coast statistics — pull from current_vals (includes user zones + cities)
+                    # and exclude territorial-waters reference zone from "cleanest/most-polluted"
+                    # comparisons so the benchmark line doesn't dominate.
+                    TW_KEYS = ["territorial","טריטוריאל","ים ישראל","israel water","tw_","terr_"]
+                    def _is_tw(n):
+                        return any(k in n.lower() for k in TW_KEYS)
+
+                    # Combine: user zones (current_vals) + predefined cities (city_wqi)
+                    combined = {}
+                    for k, v in (current_vals or {}).items():
+                        if v is not None and not _is_tw(k) and not (k.startswith("[") and k.endswith("] avg")):
+                            combined[k] = float(v)
+                    for k, v in (city_wqi or {}).items():
+                        if v is not None and k not in combined:
+                            combined[k] = float(v)
+
+                    cst_valid   = combined
+                    cst_avg     = f"{sum(cst_valid.values())/len(cst_valid):.1f}" if cst_valid else "N/A"
+                    cst_best    = max(cst_valid, key=cst_valid.get) if cst_valid else "N/A"
+                    cst_best_v  = f"{cst_valid[cst_best]:.1f}" if cst_valid else ""
+                    cst_worst   = min(cst_valid, key=cst_valid.get) if cst_valid else "N/A"
+                    cst_worst_v = f"{cst_valid[cst_worst]:.1f}" if cst_valid else ""
+                    cst_nclean  = sum(1 for v in cst_valid.values() if v>=70)
+                    cst_nmod    = sum(1 for v in cst_valid.values() if 50<=v<70)
+                    cst_npoll   = sum(1 for v in cst_valid.values() if v<50)
+
+                    # ── Health Status Strip: trends + anomalies ──────────────
+                    _health_items = []  # list of {name, wqi, trend, trend_val, category}
+                    for _hn, _hv in sorted(cst_valid.items(), key=lambda x: x[1]):
+                        # 7-day average from history
+                        _hist = beach_history.get(_hn, [])
+                        _recent7 = [e["wqi"] for e in _hist if e.get("wqi") is not None][-7:]
+                        _avg7 = sum(_recent7)/len(_recent7) if _recent7 else _hv
+                        _trend_val = round(_hv - _avg7, 1)
+                        _trend = "↑" if _trend_val > 3 else "↓" if _trend_val < -3 else "→"
+                        _cat = "critical" if _hv < 30 else "poor" if _hv < 50 else "moderate" if _hv < 70 else "good" if _hv < 85 else "excellent"
+                        _health_items.append({"name":_hn,"wqi":round(_hv,1),"trend":_trend,"trend_val":_trend_val,"cat":_cat})
+
+                    _improving = [h for h in _health_items if h["trend_val"] > 5]
+                    _degrading = [h for h in _health_items if h["trend_val"] < -5]
+                    _critical  = [h for h in _health_items if h["cat"] == "critical"]
+
+                    # Build health strip HTML
+                    _health_html = ""
+                    if _health_items:
+                        _trend_parts = []
+                        if _degrading:
+                            _dnames = ", ".join(f'{d["name"]} ({d["trend_val"]:+.1f})' for d in _degrading[:3])
+                            _trend_parts.append(f'<span style="color:#f46d43;">📉 {_dnames}</span>')
+                        if _improving:
+                            _inames = ", ".join(f'{i["name"]} ({i["trend_val"]:+.1f})' for i in _improving[:3])
+                            _trend_parts.append(f'<span style="color:#74add1;">📈 {_inames}</span>')
+                        if _critical:
+                            _cnames = ", ".join(f'{c["name"]}' for c in _critical)
+                            _trend_parts.append(f'<span style="color:#d73027;">⚠️ Critical: {_cnames}</span>')
+
+                        _trend_html = " &nbsp;|&nbsp; ".join(_trend_parts) if _trend_parts else '<span style="color:#7fb3d3;">All stations stable</span>'
+                        _health_html = f'''<div style="display:flex;align-items:center;gap:8px;padding:3px 8px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.12);border-radius:4px;margin-bottom:6px;font-size:11px;overflow-x:auto;white-space:nowrap;">{_trend_html}</div>'''
+
+                    chart_html = f"""
+<!DOCTYPE html><html style="height:100%;"><body style="margin:0;padding:0;background:#020d18;overflow:hidden;height:100%;">
+<div style="padding:0.4rem 0.5rem 0.25rem;height:100vh;box-sizing:border-box;display:flex;flex-direction:column;gap:0;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+    <p style="font-size:14px;color:#7fb3d3;margin:0;">איכות פני המים · {history_label} · {src_label}</p>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <p style="font-size:13px;color:#7fb3d3;margin:0;">{n_beaches} אזורים</p>
+      <button id="chartFsBtn" onclick="(function(){{var el=document.documentElement;if(!document.fullscreenElement){{el.requestFullscreen&&el.requestFullscreen();document.getElementById('chartFsBtn').textContent='✕';}}else{{document.exitFullscreen&&document.exitFullscreen();document.getElementById('chartFsBtn').textContent='⛶';}}}})()" style="background:rgba(0,200,200,0.1);border:1px solid rgba(0,200,200,0.35);border-radius:4px;color:#00c8c8;cursor:pointer;font-size:15px;padding:2px 7px;line-height:1.4;" title="Full Screen">⛶</button>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:7px;">
+    <div style="background:rgba(0,200,200,0.06);border:1px solid rgba(0,200,200,0.15);border-radius:5px;padding:5px;text-align:center;">
+      <p style="font-size:12px;color:#7fb3d3;margin:0;">ממוצע חוף ישראל</p>
+      <p style="font-size:24px;font-weight:700;margin:1px 0;color:#d6eaf8;">{cst_avg}</p>
+      <p style="font-size:12px;color:#7fb3d3;margin:0;">WQI</p>
+    </div>
+    <div style="background:rgba(69,117,180,0.08);border:1px solid rgba(69,117,180,0.2);border-radius:5px;padding:5px;text-align:center;">
+      <p style="font-size:12px;color:#7fb3d3;margin:0;">הכי נקי</p>
+      <p style="font-size:13px;font-weight:600;margin:1px 0;color:#4575b4;">{cst_best}</p>
+      <p style="font-size:18px;font-weight:700;margin:0;color:#4575b4;">{cst_best_v}</p>
+    </div>
+    <div style="background:rgba(215,48,39,0.08);border:1px solid rgba(215,48,39,0.2);border-radius:5px;padding:5px;text-align:center;">
+      <p style="font-size:12px;color:#7fb3d3;margin:0;">הכי מזוהם</p>
+      <p style="font-size:13px;font-weight:600;margin:1px 0;color:#d73027;">{cst_worst}</p>
+      <p style="font-size:18px;font-weight:700;margin:0;color:#d73027;">{cst_worst_v}</p>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px;">
+    <div style="background:rgba(69,117,180,0.12);border-radius:4px;padding:3px;text-align:center;">
+      <span style="font-size:18px;font-weight:700;color:#4575b4;">{cst_nclean}</span>
+      <span style="font-size:12px;color:#7fb3d3;"> נקיים</span>
+    </div>
+    <div style="background:rgba(253,174,97,0.12);border-radius:4px;padding:3px;text-align:center;">
+      <span style="font-size:18px;font-weight:700;color:#fdae61;">{cst_nmod}</span>
+      <span style="font-size:12px;color:#7fb3d3;"> בינוניים</span>
+    </div>
+    <div style="background:rgba(215,48,39,0.12);border-radius:4px;padding:3px;text-align:center;">
+      <span style="font-size:18px;font-weight:700;color:#d73027;">{cst_npoll}</span>
+      <span style="font-size:12px;color:#7fb3d3;"> מזוהמים</span>
+    </div>
+  </div>
+  {_health_html}
+  <div style="display:flex;gap:0;align-items:flex-start;flex:1;min-height:0;">
+    <div style="position:relative;flex:1;min-height:0;height:100%;padding-bottom:40px;overflow:hidden;">
+      <canvas id="beachTrend" role="img" aria-label="Water quality trends for {n_beaches} beaches" style="width:100%;height:100%;"></canvas>
+    </div>
+    <div id="beachLegend" style="display:flex;flex-direction:column;justify-content:flex-start;gap:4px;overflow-y:auto;min-width:170px;max-width:180px;padding:4px 6px;max-height:calc(100vh - 170px);"></div>
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-zoom/2.0.1/chartjs-plugin-zoom.min.js"></script>
+<script>
+(function(){{
+  var ds    = {chart_json};
+  var lb    = {labels_json};
+  var ls    = {labels_short_json};
+  var lg    = {legend_json};
+  var twAvg = {tw_avg_json};   // Task 6: territorial waters series or null
+  var twLbl = {tw_label_js};   // Task 6: label string or null
+
+  // ── Task 2: hidden-state tracking ──────────────────────────────────────────
+  var hiddenMap = {{}};  // label -> true if hidden
+  var chartRef  = null;
+
+  // ── Task 6: Inject territorial-waters reference dataset if present ──────────
+  if (twAvg) {{
+    ds = ds.filter(function(d){{ return d.label !== twLbl; }});
+    ds.push({{
+      label: twLbl,
+      data: twAvg,
+      sources: twAvg.map(function(){{ return 'TW'; }}),
+      borderColor: '#FFD700',
+      borderDash: [],
+      borderWidth: 3.5,
+      pointRadius: 3,
+      pointBackgroundColor: '#FFD700',
+      backgroundColor: 'transparent',
+      tension: 0.35,
+      spanGaps: true,
+      _isTW: true
+    }});
+  }}
+
+  // ── Style all datasets ──────────────────────────────────────────────────────
+  ds = ds.map(function(d) {{
+    var isTW = d._isTW || false;
+    return Object.assign({{}}, d, {{
+      backgroundColor: 'transparent',
+      tension: 0.35,
+      pointRadius: isTW ? 3 : 4,
+      pointBackgroundColor: d.borderColor,
+      borderWidth: isTW ? 3.5 : 2,
+      spanGaps: true
+    }});
+  }});
+
+  // ── Auto-range Y axis: 10% padding top/bottom, clamped to [0, 100] ──────────
+  var _allVals = [];
+  ds.forEach(function(d) {{
+    (d.data || []).forEach(function(v) {{ if (v !== null && v !== undefined) _allVals.push(v); }});
+  }});
+  var yMin = 0, yMax = 100;   // fallback
+  if (_allVals.length > 0) {{
+    var minV = Math.min.apply(null, _allVals);
+    var maxV = Math.max.apply(null, _allVals);
+    var range = Math.max(maxV - minV, 1);
+    var pad = range * 0.10;
+    yMin = Math.max(0,   Math.floor(minV - pad));
+    yMax = Math.min(100, Math.ceil (maxV + pad));
+    // Guarantee a minimum visible band of 10 units
+    if (yMax - yMin < 10) {{
+      var mid = (yMax + yMin) / 2;
+      yMin = Math.max(0,   Math.floor(mid - 5));
+      yMax = Math.min(100, Math.ceil (mid + 5));
+    }}
+  }}
+
+  // ── Task 5: end-of-line label plugin ───────────────────────────────────────
+  // ── WQI Quality Bands Background Plugin ──────────────────────────────────────
+  var wqiBandsPlugin = {{
+    id: 'wqiBands',
+    beforeDraw: function(chart) {{
+      var ctx = chart.ctx;
+      var yScale = chart.scales.y;
+      var ca = chart.chartArea;
+      if (!ca) return;
+      var bands = [
+        {{ min:80, max:100, color:'rgba(69,117,180,0.20)',  label:'\u05de\u05e6\u05d5\u05d9\u05df  80\u201310' + '0' }},
+        {{ min:60, max:80,  color:'rgba(171,217,233,0.20)', label:'\u05d8\u05d5\u05d1  60\u201380' }},
+        {{ min:40, max:60,  color:'rgba(254,224,144,0.20)', label:'\u05d1\u05d9\u05e0\u05d5\u05e0\u05d9  40\u201360' }},
+        {{ min:20, max:40,  color:'rgba(244,109,67,0.20)',  label:'\u05d2\u05e8\u05d5\u05e2  20\u201340' }},
+        {{ min:0,  max:20,  color:'rgba(215,48,39,0.20)',   label:'\u05de\u05e1\u05d5\u05db\u05df  0\u201320' }}
+      ];
+      bands.forEach(function(b) {{
+        var yT = yScale.getPixelForValue(b.max);
+        var yB = yScale.getPixelForValue(b.min);
+        yT = Math.max(yT, ca.top);
+        yB = Math.min(yB, ca.bottom);
+        if (yB <= yT) return;
+        ctx.save();
+        ctx.fillStyle = b.color;
+        ctx.fillRect(ca.left, yT, ca.right - ca.left, yB - yT);
+        // Label with 40% transparency
+        ctx.fillStyle = 'rgba(255,255,255,0.40)';
+        ctx.font = 'bold 12px Arial';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'top';
+        ctx.fillText(b.label, ca.right - 8, yT + 3);
+        ctx.restore();
+      }});
+    }}
+  }};
+
+  var endLabelPlugin = {{
+    id: 'endLabel',
+    afterDatasetsDraw: function(chart) {{
+      var ctx = chart.ctx;
+      chart.data.datasets.forEach(function(dataset, i) {{
+        var meta = chart.getDatasetMeta(i);
+        if (meta.hidden) return;
+        // Find the last visible (non-null) point
+        var lastPt = null;
+        for (var j = dataset.data.length - 1; j >= 0; j--) {{
+          if (dataset.data[j] !== null && dataset.data[j] !== undefined) {{
+            var el = meta.data[j];
+            if (el) {{ lastPt = {{ x: el.x, y: el.y, val: dataset.data[j] }}; break; }}
+          }}
+        }}
+        if (!lastPt) return;
+        var isTW = dataset._isTW || false;
+        var label = dataset.label;
+        // Truncate long names
+        if (label.length > 18) label = label.substring(0, 16) + '…';
+        ctx.save();
+        ctx.font = isTW ? 'bold 11px Arial' : '10px Arial';
+        ctx.fillStyle = dataset.borderColor;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        // Draw small connecting tick
+        ctx.beginPath();
+        ctx.strokeStyle = dataset.borderColor;
+        ctx.lineWidth = 1;
+        ctx.moveTo(lastPt.x, lastPt.y);
+        ctx.lineTo(lastPt.x + 5, lastPt.y);
+        ctx.stroke();
+        ctx.fillText(label, lastPt.x + 7, lastPt.y);
+        ctx.restore();
+      }});
+    }}
+  }};
+
+  // ── Build chart ─────────────────────────────────────────────────────────────
+  chartRef = new Chart(document.getElementById('beachTrend'), {{
+    type: 'line',
+    data: {{ labels: ls, datasets: ds }},
+    plugins: [wqiBandsPlugin, endLabelPlugin],
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: {{ padding: {{ right: 110, left: 4, top: 4, bottom: 4 }} }},  // room for end labels
+      plugins: {{
+        legend: {{ display: false }},
+        tooltip: {{
+          callbacks: {{
+            title: function(items) {{ return lb[items[0].dataIndex]; }},
+            label: function(c) {{
+              var src = c.dataset.sources ? c.dataset.sources[c.dataIndex] : '';
+              var srcLabel = src ? (' · ' + src) : '';
+              return c.dataset.label + ': ' + c.parsed.y + srcLabel;
+            }}
+          }}
+        }},
+        zoom: {{
+          pan: {{
+            enabled: true,
+            mode: 'xy'
+          }},
+          zoom: {{
+            wheel: {{ enabled: true, speed: 0.05 }},
+            pinch: {{ enabled: true }},
+            mode: 'xy'
+          }},
+          limits: {{
+            x: {{ minRange: 3 }},
+            y: {{ min: 0, max: 100, minRange: 10 }}
+          }}
+        }}
+      }},
+      scales: {{
+        x: {{
+          ticks: {{
+            color: '#ffffff', font: {{size:13, weight:'600'}},
+            maxRotation: 45, minRotation: 0, autoSkip: true,
+            maxTicksLimit: 10, padding: 4
+          }},
+          grid: {{ color: 'rgba(255,255,255,0.08)' }},
+          border: {{ color: 'rgba(255,255,255,0.2)' }},
+          title: {{ display: false }}
+        }},
+        y: {{
+          min: yMin, max: yMax,
+          ticks: {{
+            color: '#cccccc', font: {{size:14, weight:'bold'}},
+            maxTicksLimit: 6,
+            callback: function(v, idx, ticks) {{
+              // Bottom-most visible tick → label "מזוהם N"
+              if (idx === 0)                  return 'מזוהם ' + Math.round(v);
+              // Top-most visible tick → label "נקי N"
+              if (idx === ticks.length - 1)   return 'נקי ' + Math.round(v);
+              return Math.round(v);
+            }}
+          }},
+          grid: {{ color: 'rgba(255,255,255,0.08)' }},
+          title: {{ display:true, text:'איכות המים (WQI)', color:'#cccccc', font:{{size:14,weight:'bold'}} }}
+        }}
+      }}
+    }}
+  }});
+
+  // ── Task 2: Clickable legend with toggle ────────────────────────────────────
+  var el = document.getElementById('beachLegend');
+  lg.forEach(function(item, idx) {{
+    var r = document.createElement('div');
+    r.style.cssText = 'display:flex;align-items:center;gap:5px;cursor:pointer;padding:2px 4px;border-radius:3px;transition:opacity 0.2s;user-select:none;';
+    r.dataset.label = item.name;
+
+    // Find matching dataset index (including TW which may have been appended)
+    function getDatasetIdx(label) {{
+      for (var i=0; i<chartRef.data.datasets.length; i++) {{
+        if (chartRef.data.datasets[i].label === label) return i;
+      }}
+      return -1;
+    }}
+
+    var isTW = twLbl && item.name === twLbl;
+    var lineW = isTW ? '20px' : '16px';
+    var lineH = isTW ? '3px' : '2px';
+    r.innerHTML =
+      '<span style="width:'+lineW+';height:'+lineH+';background:'+item.color+';flex-shrink:0;border-radius:1px;'+(isTW?'box-shadow:0 0 4px '+item.color+';':'')+'" class="leg-line"></span>' +
+      '<span style="font-size:13px;color:#7fb3d3;flex:1;" class="leg-name">'+(isTW?'<b>'+item.name+'</b>':item.name)+'</span>' +
+      '<span style="font-size:13px;font-weight:600;color:'+item.wqiColor+';" class="leg-wqi">'+item.wqi+'</span>';
+
+    // Single-click (delayed) vs double-click detection
+    var _clickTimer = null;
+    r.addEventListener('click', function(ev) {{
+      var self = this;
+      if (_clickTimer) {{ clearTimeout(_clickTimer); _clickTimer = null; return; }}
+      _clickTimer = setTimeout(function() {{
+        _clickTimer = null;
+        var label = self.dataset.label;
+        var dsIdx = getDatasetIdx(label);
+        if (dsIdx === -1) return;
+        var meta  = chartRef.getDatasetMeta(dsIdx);
+        meta.hidden = !meta.hidden;
+        hiddenMap[label] = meta.hidden;
+        self.style.opacity = meta.hidden ? '0.35' : '1.0';
+        self.querySelector('.leg-line').style.opacity = meta.hidden ? '0.3' : '1';
+        chartRef.update();
+      }}, 250);
+    }});
+
+    // Double-click → cycle line style (solid → dashed → dotted → dash-dot)
+    r.addEventListener('dblclick', function(e) {{
+      e.preventDefault();
+      if (_clickTimer) {{ clearTimeout(_clickTimer); _clickTimer = null; }}
+      var label = this.dataset.label;
+      var dsIdx = getDatasetIdx(label);
+      if (dsIdx === -1) return;
+      var ds2 = chartRef.data.datasets[dsIdx];
+      if (!_dsLineStyleIdx[label]) _dsLineStyleIdx[label] = 0;
+      _dsLineStyleIdx[label] = (_dsLineStyleIdx[label] + 1) % _lineStyles.length;
+      var sIdx = _dsLineStyleIdx[label];
+      ds2.borderDash = _lineStyles[sIdx];
+      // Update the legend line indicator
+      var legLine = this.querySelector('.leg-line');
+      if (legLine) {{
+        var dashMap = ['solid', 'dashed', 'dotted', 'dashed'];
+        legLine.style.borderTop = '2px ' + dashMap[sIdx] + ' ' + ds2.borderColor;
+        legLine.style.background = sIdx === 0 ? ds2.borderColor : 'transparent';
+        legLine.style.height = sIdx === 0 ? '2px' : '0px';
+      }}
+      chartRef.update();
+    }});
+
+    r.title = 'click: toggle \u00b7 double-click: line style';
+
+    el.appendChild(r);
+  }});
+
+  // Also add TW entry to legend if it exists but wasn't in original lg
+  if (twLbl) {{
+    var twInLg = lg.some(function(i){{ return i.name === twLbl; }});
+    if (!twInLg) {{
+      var twValid = (twAvg||[]).filter(function(v){{ return v!==null&&v!==undefined; }});
+      var twCurr  = twValid.length ? twValid[twValid.length-1] : null;
+      var twCol   = twCurr>=70?'#1ecb7b':twCurr>=55?'#f0a500':'#e03c3c';
+      var r2 = document.createElement('div');
+      r2.style.cssText='display:flex;align-items:center;gap:5px;cursor:pointer;padding:2px 4px;border-radius:3px;transition:opacity 0.2s;user-select:none;margin-top:6px;border-top:1px solid rgba(255,215,0,0.2);padding-top:6px;';
+      r2.dataset.label = twLbl;
+      r2.innerHTML =
+        '<span style="width:20px;height:3px;background:#FFD700;flex-shrink:0;border-radius:1px;box-shadow:0 0 4px #FFD700;" class="leg-line"></span>' +
+        '<span style="font-size:13px;color:#FFD700;flex:1;font-weight:bold;" class="leg-name">'+twLbl+'</span>' +
+        '<span style="font-size:13px;font-weight:600;color:'+twCol+';" class="leg-wqi">'+(twCurr?twCurr.toFixed(1):'---')+'</span>';
+      r2.addEventListener('click', function() {{
+        var dsIdx = -1;
+        for (var i=0; i<chartRef.data.datasets.length; i++) {{
+          if (chartRef.data.datasets[i].label === twLbl) {{ dsIdx=i; break; }}
+        }}
+        if (dsIdx===-1) return;
+        var meta = chartRef.getDatasetMeta(dsIdx);
+        meta.hidden = !meta.hidden;
+        this.style.opacity = meta.hidden ? '0.35' : '1.0';
+        chartRef.update();
+      }});
+      el.appendChild(r2);
+    }}
+  }}
+
+  // ── Double-click to reset zoom ───────────────────────────────────────────────
+  document.getElementById('beachTrend').addEventListener('dblclick', function() {{
+    chartRef.resetZoom();
+    chartRef.update();
+  }});
+
+  // ── Legend: double-click to cycle line style (solid → dashed → dotted → dash-dot) ──
+  var _lineStyles = [[], [8,4], [3,3], [8,4,3,4]];  // solid, dashed, dotted, dash-dot
+  var _lineStyleNames = ['solid', 'dashed', 'dotted', 'dash-dot'];
+  var _dsLineStyleIdx = {{}};  // dataset label → current style index
+
+}})();
+</script></body></html>
+"""
+                    components.html(chart_html, height=740, scrolling=False)
+
+                    # ── AI Analysis Button ─────────────────────────────────
+                    if st.button("🤖 AI Water Quality Analysis", key="ai_analysis_btn",
+                                 help="Generate AI-powered analysis of current water quality data"):
+                        _gemini_key = st.secrets.get("gemini_api_key", "")
+                        if not _gemini_key:
+                            st.warning("⚠️ Gemini API key not configured. Add `gemini_api_key` to Streamlit secrets.")
+                        else:
+                            with st.spinner("🤖 Analyzing water quality data..."):
+                                # Build data context for AI
+                                _ai_data_lines = []
+                                for _hn in sorted(cst_valid.keys(), key=lambda k: cst_valid.get(k, 0)):
+                                    _hv2 = cst_valid[_hn]
+                                    _hist2 = beach_history.get(_hn, [])
+                                    _r7 = [e["wqi"] for e in _hist2 if e.get("wqi") is not None][-7:]
+                                    _avg7_2 = round(sum(_r7)/len(_r7),1) if _r7 else _hv2
+                                    _zgrp = st.session_state.user_zones.get(_hn, {}).get("group", "")
+                                    _ai_data_lines.append(f"  {_hn} (group: {_zgrp or 'none'}): current WQI={round(_hv2,1)}, 7d avg={_avg7_2}, trend={'improving' if _hv2>_avg7_2+3 else 'degrading' if _hv2<_avg7_2-3 else 'stable'}")
+
+                                _ai_prompt = f"""You are MEDI, a maritime environmental intelligence system monitoring water quality along Israel's Mediterranean coast (Haifa Bay area). Analyze this data and provide actionable insights.
+
+MONITORING DATA ({len(cst_valid)} stations, date: {sel_date}):
+{chr(10).join(_ai_data_lines)}
+
+STATISTICS:
+- Coast average WQI: {cst_avg}
+- Cleanest: {cst_best} ({cst_best_v})
+- Most polluted: {cst_worst} ({cst_worst_v})
+- Clean (≥70): {cst_nclean} | Moderate (50-70): {cst_nmod} | Polluted (<50): {cst_npoll}
+
+WQI Scale: 0=severely polluted, 100=pristine. Based on NDWI, chlorophyll (MCI), and turbidity indices from satellite remote sensing.
+
+Provide analysis in this EXACT format (use English):
+
+## Executive Summary
+2-3 sentences summarizing overall water quality status.
+
+## Spatial Analysis
+- Identify pollution hotspots and clean zones
+- Explain spatial gradients (nearshore vs offshore, port area vs open water)
+- Note any point-source pollution indicators
+
+## Temporal Trends
+- Which stations are improving or degrading?
+- Any sudden changes or anomalies?
+- Weekly/periodic patterns if visible
+
+## Risk Assessment
+| Zone | WQI | Risk Level | Key Driver |
+For the 5 most concerning stations.
+
+## Recommended Actions
+3-5 specific, actionable recommendations for port/environmental authorities.
+"""
+                                try:
+                                    _ai_result = None
+                                    _ai_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+                                    for _model in _ai_models:
+                                        try:
+                                            _ai_client = genai_client.Client(api_key=_gemini_key)
+                                            _ai_resp = _ai_client.models.generate_content(
+                                                model=_model,
+                                                contents=_ai_prompt
+                                            )
+                                            _ai_result = _ai_resp.text.strip()
+                                            break
+                                        except Exception as _model_err:
+                                            if "429" not in str(_model_err) and "RESOURCE_EXHAUSTED" not in str(_model_err):
+                                                raise _model_err
+                                            continue
+
+                                    if not _ai_result:
+                                        # Fallback: REST API call with urllib
+                                        import urllib.request, json as _rjson
+                                        _rest_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={_gemini_key}"
+                                        _rest_body = _rjson.dumps({"contents": [{"parts": [{"text": _ai_prompt}]}]}).encode()
+                                        _req = urllib.request.Request(_rest_url, data=_rest_body, headers={"Content-Type": "application/json"})
+                                        _resp = urllib.request.urlopen(_req, timeout=30)
+                                        _rdata = _rjson.loads(_resp.read())
+                                        _ai_result = _rdata["candidates"][0]["content"]["parts"][0]["text"]
+
+                                    st.session_state["ai_analysis_result"] = _ai_result
+                                except Exception as _ai_err:
+                                    _err_str = str(_ai_err)
+                                    if "429" in _err_str or "RESOURCE_EXHAUSTED" in _err_str:
+                                        st.error("⏳ Gemini API quotas are still provisioning (this can take up to 30 min for new keys). Please wait a few minutes and try again.")
+                                    else:
+                                        st.error(f"AI analysis failed: {_ai_err}")
+
+                    # Display cached AI result
+                    if st.session_state.get("ai_analysis_result"):
+                        with st.expander("🤖 AI Analysis Report", expanded=True):
+                            st.markdown(st.session_state["ai_analysis_result"])
+                else:
+                    if st.session_state.user_zones:
+                        st.info(f"⏳ Loading history for {len(st.session_state.user_zones)} zones...")
+                    else:
+                        st.caption("Draw a shape on the map to start monitoring")
+
+                # ── Monitoring Areas (unified: points + polygons) ─────────────
+                pending_zone = st.session_state.get("pending_zone")
+                with st.expander("📍 Monitoring Areas", expanded=bool(pending_zone)):
+                    if pending_zone:
+                        if pending_zone["type"] == "polygon":
+                            st.info(f"🟦 New polygon: {len(pending_zone['coords'])} vertices")
+                        else:
+                            st.info(f"📍 New point: {pending_zone['lat']:.4f}, {pending_zone['lon']:.4f}")
+                        zone_name_inp = st.text_input("Name:", key="zone_name_inp", placeholder="e.g. Haifa Anchorage")
+
+                        # Task 8: Group assignment
+                        existing_groups = sorted(set(
+                            z.get("group","") for z in st.session_state.user_zones.values()
+                            if z.get("group","")
+                        ))
+                        group_options = ["— No group —"] + existing_groups + ["+ New group…"]
+                        grp_sel = st.selectbox("Group:", group_options, key="zone_group_sel")
+                        if grp_sel == "+ New group…":
+                            zone_group_inp = st.text_input("New group name:", key="zone_group_new_inp",
+                                                            placeholder="e.g. Ports")
+                        elif grp_sel == "— No group —":
+                            zone_group_inp = ""
+                        else:
+                            zone_group_inp = grp_sel
+
+                        zc1, zc2 = st.columns(2)
+                        with zc1:
+                            if st.button("💾 Save", use_container_width=True, key="save_zone"):
+                                if zone_name_inp.strip():
+                                    zn    = zone_name_inp.strip()
+                                    grp   = zone_group_inp.strip() if zone_group_inp else ""
+                                    if pending_zone["type"] == "polygon":
+                                        st.session_state.user_zones[zn] = {"coords": pending_zone["coords"], "type": "polygon", "group": grp}
+                                    else:
+                                        lat, lon = pending_zone["lat"], pending_zone["lon"]
+                                        d = 0.005
+                                        box = [[lon-d,lat-d],[lon+d,lat-d],[lon+d,lat+d],[lon-d,lat+d],[lon-d,lat-d]]
+                                        st.session_state.user_zones[zn] = {"coords": box, "type": "point", "lat": lat, "lon": lon, "group": grp}
+                                    save_zones(st.session_state.user_zones)
+                                    h = pending_zone.get("hash")
+                                    if h:
+                                        st.session_state.saved_drawing_hashes.add(h)
+                                    st.session_state.pop("pending_zone", None)
+                                    compute_zone_history_range.clear()
+                                    st.rerun()
+                        with zc2:
+                            if st.button("✕ Discard", use_container_width=True, key="cancel_zone"):
+                                h = pending_zone.get("hash")
+                                if h:
+                                    st.session_state.saved_drawing_hashes.add(h)
+                                st.session_state.pop("pending_zone", None)
+                                st.rerun()
+
+                    if st.session_state.user_zones:
+                        # Task 8: Group filter + chart view mode
+                        all_zone_groups = sorted(set(
+                            z.get("group","") for z in st.session_state.user_zones.values()
+                            if z.get("group","")
+                        ))
+
+                        # ── Group visibility toggles ──────────────────────────────
+                        if "visible_groups" not in st.session_state:
+                            st.session_state.visible_groups = set(all_zone_groups) | {""}  # all visible incl. ungrouped
+                        # Ensure new groups are visible by default
+                        for g in all_zone_groups:
+                            if g not in st.session_state.visible_groups:
+                                st.session_state.visible_groups.add(g)
+
+                        if all_zone_groups:
+                            st.markdown("<div style='font-size:13px;color:#00c8c8;font-weight:bold;margin:8px 0 4px;'>🏷️ Groups</div>", unsafe_allow_html=True)
+                            gcols = st.columns(min(len(all_zone_groups) + 1, 4))
+                            # "All" toggle
+                            with gcols[0]:
+                                all_on = len(st.session_state.visible_groups) >= len(all_zone_groups) + 1
+                                if st.checkbox("All", value=all_on, key="grp_toggle_all"):
+                                    st.session_state.visible_groups = set(all_zone_groups) | {""}
+                                else:
+                                    if all_on:  # was all, now unchecked = hide all
+                                        st.session_state.visible_groups = set()
+                            for gi, gname in enumerate(all_zone_groups):
+                                col_idx = (gi + 1) % len(gcols)
+                                with gcols[col_idx]:
+                                    is_vis = gname in st.session_state.visible_groups
+                                    n_zones = sum(1 for z in st.session_state.user_zones.values() if z.get("group","") == gname)
+                                    if st.checkbox(f"{gname} ({n_zones})", value=is_vis, key=f"grp_toggle_{gname}"):
+                                        st.session_state.visible_groups.add(gname)
+                                    else:
+                                        st.session_state.visible_groups.discard(gname)
+
+                        # Chart view selector
+                        if all_zone_groups:
+                            st.markdown("<div style='font-size:13px;color:#7fb3d3;margin:6px 0 2px;'>📊 Chart view</div>",
+                                        unsafe_allow_html=True)
+                            view_opts = ["All zones (individual)"] + [f"Group: {g}" for g in all_zone_groups]
+                            if "chart_view_mode" not in st.session_state:
+                                st.session_state.chart_view_mode = "All zones (individual)"
+                            new_view = st.selectbox("", view_opts, key="chart_view_sel",
+                                                    index=view_opts.index(st.session_state.chart_view_mode)
+                                                    if st.session_state.chart_view_mode in view_opts else 0,
+                                                    label_visibility="collapsed")
+                            if new_view != st.session_state.chart_view_mode:
+                                st.session_state.chart_view_mode = new_view
+                                st.rerun()
+
+                        _vis_grps = st.session_state.get("visible_groups", {""})
+                        for zname in list(st.session_state.user_zones.keys()):
+                            zgrp  = st.session_state.user_zones[zname].get("group", "")
+                            # Skip zones from hidden groups
+                            if zgrp not in _vis_grps:
+                                continue
+                            zwqi  = user_zone_wqi.get(zname)
+                            zwqi_str = f"{zwqi:.1f}" if zwqi is not None else "..."
+                            ztype = st.session_state.user_zones[zname].get("type", "polygon")
+                            zgrp  = st.session_state.user_zones[zname].get("group", "")
+                            icon  = "📍" if ztype == "point" else "🟦"
+
+                            # Check if this zone is being edited
+                            _editing = st.session_state.get("editing_zone") == zname
+                            if _editing:
+                                # Edit mode: show text inputs
+                                ec1, ec2 = st.columns([3, 1])
+                                with ec1:
+                                    _new_name = st.text_input("Name", value=zname, key=f"edit_name_{zname}", label_visibility="collapsed")
+                                    _new_grp = st.text_input("Group", value=zgrp, key=f"edit_grp_{zname}", label_visibility="collapsed", placeholder="Group name (optional)")
+                                with ec2:
+                                    if st.button("💾", key=f"save_edit_{zname}", help="Save"):
+                                        _new_name = _new_name.strip()
+                                        _new_grp = _new_grp.strip()
+                                        if _new_name and _new_name != zname:
+                                            # Rename zone
+                                            _zdata = st.session_state.user_zones.pop(zname)
+                                            _zdata["group"] = _new_grp
+                                            st.session_state.user_zones[_new_name] = _zdata
+                                        else:
+                                            st.session_state.user_zones[zname]["group"] = _new_grp
+                                        st.session_state.pop("editing_zone", None)
+                                        save_zones(st.session_state.user_zones)
+                                        st.rerun()
+                                    if st.button("✕", key=f"cancel_edit_{zname}", help="Cancel"):
+                                        st.session_state.pop("editing_zone", None)
+                                        st.rerun()
+                            else:
+                                # Display mode
+                                grp_badge = f' <span style="font-size:12px;background:rgba(0,200,200,0.15);color:#00c8c8;border-radius:3px;padding:1px 5px;">{zgrp}</span>' if zgrp else ""
+                                # Confidence badge
+                                _zconf = _conf_scores.get(zname, {})
+                                _cscore = _zconf.get("score", "")
+                                _cgrade = _zconf.get("grade", "")
+                                conf_badge = f' <span style="font-size:11px;color:#7fb3d3;" title="Cloud:{_zconf.get("factors",{}).get("cloud_free","")}% | Age:{_zconf.get("factors",{}).get("age","")}% | QA:{_zconf.get("factors",{}).get("qa_flags","")}% | Px:{_zconf.get("factors",{}).get("pixels","")} | Sun:{_zconf.get("factors",{}).get("sun_angle","")}% | XSensor:{_zconf.get("factors",{}).get("cross_sensor","")}% | Temporal:{_zconf.get("factors",{}).get("temporal","")}%">{_cgrade}{_cscore}%</span>' if _cscore else ""
+                                zc, ze, zd = st.columns([3, 0.5, 0.5])
+                                with zc:
+                                    st.markdown(f'<div style="font-size:14px;color:#d6eaf8;padding:2px 0;">{icon} {zname}{grp_badge} <span style="color:#7fb3d3;">WQI: {zwqi_str}</span></div>',
+                                                unsafe_allow_html=True)
+                                with ze:
+                                    if st.button("✏️", key=f"edit_zone_{zname}", help="Edit name/group"):
+                                        st.session_state["editing_zone"] = zname
+                                        st.rerun()
+                                with zd:
+                                    if st.button("🗑", key=f"del_zone_{zname}"):
+                                        del st.session_state.user_zones[zname]
+                                        save_zones(st.session_state.user_zones)
+                                        compute_zone_history_range.clear()
+                                        st.rerun()
+
+                        # ── Export ──────────────────────────────────────────
+                        import json as _jex
+                        zones_export = _jex.dumps(st.session_state.user_zones, indent=2, ensure_ascii=False)
+                        st.download_button(
+                            label="⬇️ Export zones",
+                            data=zones_export,
+                            file_name="medi_zones.json",
+                            mime="application/json",
+                            use_container_width=True,
+                            key="export_zones"
+                        )
+                    else:
+                        st.caption("Click on the map or draw a shape to add a monitoring area")
+
+                    # ── Import ──────────────────────────────────────────────
+                    st.markdown("<hr style='margin:6px 0;border-color:rgba(0,200,200,0.15)'>", unsafe_allow_html=True)
+                    uploaded_zones = st.file_uploader("⬆️ Import zones", type="json", key="import_zones",
+                                                       label_visibility="collapsed")
+                    if uploaded_zones:
+                        try:
+                            import json as _jim
+                            imported = _jim.loads(uploaded_zones.read())
+                            st.session_state.user_zones.update(imported)
+                            save_zones(st.session_state.user_zones)
+                            compute_zone_history_range.clear()
+                            st.success(f"✅ Imported {len(imported)} zones")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Import failed: {e}")
+                    else:
+                        st.caption("⬆️ Import zones from a previously exported JSON file")
+
+
+
 # ── Global ────────────────────────────────────────────────────────────────────
 else:
     available_dates = [(datetime.utcnow()-timedelta(days=d)).strftime('%Y-%m-%d') for d in range(1,8)]
