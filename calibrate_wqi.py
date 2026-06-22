@@ -1,8 +1,7 @@
 """
-calibrate_wqi.py — Self-calibration v6
+calibrate_wqi.py — Self-calibration v7
 =======================================
-No physical range filter — uses IQR only.
-Logs raw band values for diagnostics.
+Masks S-3 OLCI fill values (2^22) before median mosaic.
 """
 
 import ee, json, os, random, time
@@ -37,7 +36,12 @@ def run_calibration(status_callback=None):
         log("No data.")
         return None
 
-    img = coll.median()
+    # Mask fill values (2^22 = 4194304) before median
+    def mask_fill(img):
+        mask = img.lt(10000)
+        return img.updateMask(mask)
+
+    img = coll.map(mask_fill).median()
     raw = img.select(['Oa08_radiance', 'Oa10_radiance', 'Oa11_radiance', 'Oa12_radiance'])
 
     with open("medi_h3_grid_final_913.geojson") as f:
@@ -62,11 +66,10 @@ def run_calibration(status_callback=None):
             oa10 = vals.get("Oa10_radiance")
             oa11 = vals.get("Oa11_radiance")
             oa12 = vals.get("Oa12_radiance")
-            # Log first valid sample for diagnostics
             if not logged_first and all(v is not None for v in [oa08, oa10, oa11, oa12]):
                 log(f"Sample bands: Oa08={oa08:.1f} Oa10={oa10:.1f} Oa11={oa11:.1f} Oa12={oa12:.1f}")
                 logged_first = True
-            if all(v is not None and v < 10000 for v in [oa08, oa10, oa11, oa12]):
+            if all(v is not None for v in [oa08, oa10, oa11, oa12]):
                 samples.append({"oa08": oa08, "oa10": oa10, "oa11": oa11, "oa12": oa12})
         except Exception:
             pass
@@ -90,10 +93,9 @@ def run_calibration(status_callback=None):
     mci_arr = np.array(mci_values)
     turb_arr = np.array(turb_values)
 
-    log(f"MCI raw: min={mci_arr.min():.2f} max={mci_arr.max():.2f} median={np.median(mci_arr):.2f}")
+    log(f"MCI raw: min={mci_arr.min():.4f} max={mci_arr.max():.4f} median={np.median(mci_arr):.4f}")
     log(f"Turb raw: min={turb_arr.min():.2f} max={turb_arr.max():.2f} median={np.median(turb_arr):.2f}")
 
-    # IQR outlier removal
     def iqr_filter(arr):
         q1, q3 = np.percentile(arr, 25), np.percentile(arr, 75)
         iqr = q3 - q1
@@ -101,8 +103,8 @@ def run_calibration(status_callback=None):
 
     mci_clean = iqr_filter(mci_arr)
     turb_clean = iqr_filter(turb_arr)
-    log(f"After IQR: MCI n={len(mci_clean)} [{mci_clean.min():.2f}, {mci_clean.max():.2f}]")
-    log(f"After IQR: Turb n={len(turb_clean)} [{turb_clean.min():.2f}, {turb_clean.max():.2f}]")
+    log(f"After IQR: MCI [{mci_clean.min():.4f}, {mci_clean.max():.4f}]")
+    log(f"After IQR: Turb [{turb_clean.min():.2f}, {turb_clean.max():.2f}]")
 
     cal = {
         "generated_utc": datetime.utcnow().isoformat(),
