@@ -1925,31 +1925,9 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                         st.session_state["s1_mode"]   = False
                         st.session_state["s1_result"] = None
 
-            col_map, col_info = st.columns([1, 1], gap="small")
+            col_map, col_info = st.columns([3, 1], gap="small")
             with col_map:
-                # ── Task 3: Show/Hide zones toggle ────────────────────────────
-                z_icon = "👁️" if st.session_state.show_zones_on_map else "👁️‍🗨️"
-                z_label = f"{z_icon} הסתר אזורים" if st.session_state.show_zones_on_map else f"{z_icon} הצג אזורים"
-                if st.button(z_label, key="toggle_zones_map", use_container_width=False):
-                    st.session_state.show_zones_on_map = not st.session_state.show_zones_on_map
-                    st.rerun()
-                inspect_label = "🔬 Stop Inspect" if st.session_state.inspect_mode else "🔬 Inspect Pixel"
-                if st.button(inspect_label, key="toggle_inspect"):
-                    st.session_state.inspect_mode = not st.session_state.inspect_mode
-                    if not st.session_state.inspect_mode:
-                        st.session_state.spectra_result = None
-                        st.session_state.spectra_click = None
-                    st.rerun()
-                s1_label = "🛰 Stop SAR" if st.session_state.get("s1_mode") else "🛰 SAR · S1"
-                if st.button(s1_label, key="toggle_s1", use_container_width=False):
-                    new_s1 = not st.session_state.get("s1_mode", False)
-                    st.session_state["s1_mode"] = new_s1
-                    if new_s1:
-                        st.session_state.inspect_mode = False
-                        st.session_state["s1_result"] = None  # clear first so UI shows loading
-                    else:
-                        st.session_state["s1_result"] = None
-                    st.rerun()
+                pass  # buttons hidden for demo
 
                 # ── S1 SAR mode active indicator ──────────────────────────
                 if st.session_state.get("s1_mode") and not st.session_state.get("s1_result"):
@@ -2198,9 +2176,10 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                             st.session_state["pending_zone"] = {"type": "point", "lat": clat, "lon": clon, "hash": draw_hash}
                             st.rerun()
 
-                # All monitoring zones → visible in chart
-                # Include zones from session_state even if history not yet computed
-                visible_beaches = list(user_zone_history.keys())
+                if False:  # Dashboard hidden — demo mode shows map + histogram only
+                    pass
+                if False:
+                    visible_beaches = list(user_zone_history.keys())
                 for zname in st.session_state.user_zones:
                     if zname not in visible_beaches:
                         visible_beaches.append(zname)
