@@ -52,7 +52,7 @@ def run_calibration(status_callback=None):
     for i, feat in enumerate(sample_hex):
         lat = feat["properties"]["lat"]
         lng = feat["properties"]["lng"]
-        pt = ee.Geometry.Point([lng, lat])
+        pt = ee.Geometry.Point([lng, lat]).buffer(500)
         try:
             vals = raw.reduceRegion(
                 reducer=ee.Reducer.first(),
