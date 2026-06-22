@@ -1,8 +1,9 @@
 """
-calibrate_wqi.py — Self-calibration v4
+calibrate_wqi.py — Self-calibration v5
 =======================================
 Samples raw S-3 OLCI bands at hex centers,
-computes MCI and Turbidity in Python (avoids GEE band math issues).
+computes MCI and Turbidity in Python.
+Filters outliers before percentile calculation.
 """
 
 import ee, json, os, random, time
@@ -37,13 +38,9 @@ def run_calibration(status_callback=None):
         log("No data.")
         return None
 
-    # FIX: median mosaic covers full AOI (first() may miss Israel)
     img = coll.median()
-
-    # Select raw bands — no band math in GEE
     raw = img.select(['Oa08_radiance', 'Oa10_radiance', 'Oa11_radiance', 'Oa12_radiance'])
 
-    # Load hex grid, pick 150 random centers
     with open("medi_h3_grid_final_913.geojson") as f:
         grid = json.load(f)
     sample_hex = random.sample(grid["features"], min(150, len(grid["features"])))
@@ -66,7 +63,9 @@ def run_calibration(status_callback=None):
             oa11 = vals.get("Oa11_radiance")
             oa12 = vals.get("Oa12_radiance")
             if all(v is not None for v in [oa08, oa10, oa11, oa12]):
-                samples.append({"oa08": oa08, "oa10": oa10, "oa11": oa11, "oa12": oa12})
+                # Physical range filter: S-3 OLCI radiance ~10-500 W/m2/sr/um
+                if all(0 < v < 1000 for v in [oa08, oa10, oa11, oa12]):
+                    samples.append({"oa08": oa08, "oa10": oa10, "oa11": oa11, "oa12": oa12})
         except Exception:
             pass
         if (i + 1) % 50 == 0:
@@ -78,7 +77,6 @@ def run_calibration(status_callback=None):
         log("Not enough samples.")
         return None
 
-    # Compute MCI and Turbidity in Python
     import numpy as np
     mci_values = []
     turb_values = []
@@ -90,29 +88,39 @@ def run_calibration(status_callback=None):
     mci_arr = np.array(mci_values)
     turb_arr = np.array(turb_values)
 
-    log(f"MCI raw: min={mci_arr.min():.2f} max={mci_arr.max():.2f} median={np.median(mci_arr):.2f}")
+    log(f"MCI raw: min={mci_arr.min():.4f} max={mci_arr.max():.4f} median={np.median(mci_arr):.4f}")
     log(f"Turb raw: min={turb_arr.min():.2f} max={turb_arr.max():.2f} median={np.median(turb_arr):.2f}")
+
+    # Remove remaining outliers (IQR method)
+    def iqr_filter(arr):
+        q1, q3 = np.percentile(arr, 25), np.percentile(arr, 75)
+        iqr = q3 - q1
+        return arr[(arr >= q1 - 3*iqr) & (arr <= q3 + 3*iqr)]
+
+    mci_clean = iqr_filter(mci_arr)
+    turb_clean = iqr_filter(turb_arr)
+    log(f"After IQR filter: MCI {len(mci_clean)} samples, Turb {len(turb_clean)} samples")
 
     cal = {
         "generated_utc": datetime.utcnow().isoformat(),
         "sample_count": len(samples),
         "mci": {
-            "p5":  round(float(np.percentile(mci_arr, 5)), 2),
-            "p25": round(float(np.percentile(mci_arr, 25)), 2),
-            "p50": round(float(np.percentile(mci_arr, 50)), 2),
-            "p75": round(float(np.percentile(mci_arr, 75)), 2),
-            "p95": round(float(np.percentile(mci_arr, 95)), 2),
-            "unit_scale_min": round(float(np.percentile(mci_arr, 5)), 2),
-            "unit_scale_max": round(float(np.percentile(mci_arr, 95)), 2),
+            "p5":  round(float(np.percentile(mci_clean, 5)), 4),
+            "p25": round(float(np.percentile(mci_clean, 25)), 4),
+            "p50": round(float(np.percentile(mci_clean, 50)), 4),
+            "p75": round(float(np.percentile(mci_clean, 75)), 4),
+            "p95": round(float(np.percentile(mci_clean, 95)), 4),
+            "unit_scale_min": round(float(np.percentile(mci_clean, 5)), 4),
+            "unit_scale_max": round(float(np.percentile(mci_clean, 95)), 4),
         },
         "turbidity": {
-            "p5":  round(float(np.percentile(turb_arr, 5)), 2),
-            "p25": round(float(np.percentile(turb_arr, 25)), 2),
-            "p50": round(float(np.percentile(turb_arr, 50)), 2),
-            "p75": round(float(np.percentile(turb_arr, 75)), 2),
-            "p95": round(float(np.percentile(turb_arr, 95)), 2),
-            "unit_scale_min": round(float(np.percentile(turb_arr, 5)), 2),
-            "unit_scale_max": round(float(np.percentile(turb_arr, 95)), 2),
+            "p5":  round(float(np.percentile(turb_clean, 5)), 2),
+            "p25": round(float(np.percentile(turb_clean, 25)), 2),
+            "p50": round(float(np.percentile(turb_clean, 50)), 2),
+            "p75": round(float(np.percentile(turb_clean, 75)), 2),
+            "p95": round(float(np.percentile(turb_clean, 95)), 2),
+            "unit_scale_min": round(float(np.percentile(turb_clean, 5)), 2),
+            "unit_scale_max": round(float(np.percentile(turb_clean, 95)), 2),
         }
     }
 
