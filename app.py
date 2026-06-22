@@ -2081,6 +2081,71 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                         st.rerun()
                     st.markdown("---")
 
+                # ── WQI Histogram ─────────────────────────────────────────────
+                if not st.session_state.get("s1_mode"):
+                    _snap_h = st.session_state.get("wqi_snapshot")
+                    if _snap_h and _snap_h.get("hexes"):
+                        _wqi_vals = [h["wqi"] for h in _snap_h["hexes"] if h.get("wqi") is not None]
+                        if _wqi_vals:
+                            import numpy as _np
+                            _bins = list(range(0, 105, 5))
+                            _counts, _ = _np.histogram(_wqi_vals, bins=_bins)
+                            _bin_labels = [str(b) for b in _bins[:-1]]
+                            _max_c = max(_counts) if _counts.max() > 0 else 1
+
+                            # Color per bin matching hex color scheme
+                            def _wqi_color(wqi):
+                                if wqi >= 80: return "#4575b4"
+                                elif wqi >= 65: return "#74add1"
+                                elif wqi >= 50: return "#abd9e9"
+                                elif wqi >= 40: return "#fee090"
+                                elif wqi >= 30: return "#f46d43"
+                                else: return "#d73027"
+
+                            _bar_colors = [_wqi_color(b) for b in _bins[:-1]]
+
+                            st.markdown(
+                                '<div style="font-size:11px;color:#00c8c8;font-family:monospace;'
+                                'letter-spacing:0.08em;margin-bottom:6px;margin-top:4px;">'
+                                f'📊 WQI DISTRIBUTION · {len(_wqi_vals)} hex</div>',
+                                unsafe_allow_html=True
+                            )
+
+                            # Build SVG histogram
+                            _svg_w, _svg_h = 280, 120
+                            _bar_w = _svg_w / len(_counts)
+                            _svg = f'<svg width="{_svg_w}" height="{_svg_h}" xmlns="http://www.w3.org/2000/svg" style="background:rgba(0,20,40,0.4);border-radius:6px;border:1px solid rgba(0,200,200,0.12);">'
+                            for _i, (_c, _col) in enumerate(zip(_counts, _bar_colors)):
+                                _bh = int((_c / _max_c) * (_svg_h - 24))
+                                _x = _i * _bar_w
+                                _y = _svg_h - 18 - _bh
+                                _svg += f'<rect x="{_x+1}" y="{_y}" width="{_bar_w-2}" height="{_bh}" fill="{_col}" rx="1" opacity="0.85"/>'
+                                _svg += f'<title>{_bin_labels[_i]}–{int(_bin_labels[_i])+5}: {_c} hex</title>'
+                                # X axis labels every 20
+                                if int(_bin_labels[_i]) % 20 == 0:
+                                    _svg += f'<text x="{_x + _bar_w/2}" y="{_svg_h - 4}" text-anchor="middle" font-size="8" fill="#7fb3d3">{_bin_labels[_i]}</text>'
+                            # Y axis: count labels
+                            _svg += f'<text x="2" y="12" font-size="8" fill="#7fb3d3">{int(_max_c)}</text>'
+                            _svg += f'<text x="2" y="{_svg_h-20}" font-size="8" fill="#7fb3d3">0</text>'
+                            _svg += '</svg>'
+
+                            st.markdown(_svg, unsafe_allow_html=True)
+
+                            # Summary stats
+                            _mean = float(_np.mean(_wqi_vals))
+                            _med  = float(_np.median(_wqi_vals))
+                            _pct_clean = sum(1 for v in _wqi_vals if v >= 65) / len(_wqi_vals) * 100
+                            _pct_poor  = sum(1 for v in _wqi_vals if v < 40) / len(_wqi_vals) * 100
+                            st.markdown(
+                                f'<div style="font-size:10px;color:#7fb3d3;margin-top:6px;line-height:1.6;">'
+                                f'Mean: <span style="color:#c8e8f8;">{_mean:.1f}</span> &nbsp;·&nbsp; '
+                                f'Median: <span style="color:#c8e8f8;">{_med:.1f}</span><br>'
+                                f'Clean (≥65): <span style="color:#74add1;">{_pct_clean:.0f}%</span> &nbsp;·&nbsp; '
+                                f'Poor (<40): <span style="color:#f46d43;">{_pct_poor:.0f}%</span>'
+                                f'</div>',
+                                unsafe_allow_html=True
+                            )
+
                 # Detect drawings → unified pending_zone (point or polygon)
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
                 last_drawing  = map_data_wqi.get("last_active_drawing") if map_data_wqi else None
