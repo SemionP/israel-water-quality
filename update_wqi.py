@@ -1,10 +1,9 @@
 """
 update_wqi.py — MEDI WQI snapshot via Sentinel-3 OLCI
 ======================================================
-- NDWI removed from WQI (used only as water mask)
 - WQI = (Chl_norm + Turb_norm) / 2 × 100
-- Uses calibrated unitScale from calibration JSON
-- Falls back to defaults if no calibration exists
+- Fixed physical thresholds for Eastern Mediterranean summer
+- Calibration file used only if available, otherwise fixed defaults
 - Appends daily mean WQI to history on each run
 """
 
@@ -20,28 +19,22 @@ COVERAGE_MIN = 0.30
 HEX_RADIUS   = 650
 RETRY        = 3
 
-DEFAULT_MCI_MIN  = -2
-DEFAULT_MCI_MAX  = 12
-DEFAULT_TURB_MIN = 10
-DEFAULT_TURB_MAX = 80
+# Fixed physical thresholds for Eastern Mediterranean summer (oligotrophic)
+# MCI: clean open water ~9-11, bloom >15
+# Turb (Oa08): clean ~20-23, turbid coastal >30
+FIXED_MCI_MIN  = 9.0
+FIXED_MCI_MAX  = 16.0
+FIXED_TURB_MIN = 20.0
+FIXED_TURB_MAX = 32.0
 
 
 def load_cal():
-    try:
-        from storage import load_calibration
-        cal = load_calibration()
-        if cal:
-            return {
-                "mci_min":  cal["mci"]["unit_scale_min"],
-                "mci_max":  cal["mci"]["unit_scale_max"],
-                "turb_min": cal["turbidity"]["unit_scale_min"],
-                "turb_max": cal["turbidity"]["unit_scale_max"],
-            }
-    except Exception:
-        pass
+    """Use fixed physical thresholds. Ignore calibration file."""
     return {
-        "mci_min": DEFAULT_MCI_MIN, "mci_max": DEFAULT_MCI_MAX,
-        "turb_min": DEFAULT_TURB_MIN, "turb_max": DEFAULT_TURB_MAX,
+        "mci_min":  FIXED_MCI_MIN,
+        "mci_max":  FIXED_MCI_MAX,
+        "turb_min": FIXED_TURB_MIN,
+        "turb_max": FIXED_TURB_MAX,
     }
 
 
@@ -62,9 +55,17 @@ def build_s3_wqi(aoi, cal):
     img_dt    = datetime.utcfromtimestamp(img_ms / 1000)
     age_hours = (datetime.utcnow() - img_dt).total_seconds() / 3600
 
-    # FIX: mask fill values (2^22=4194304) BEFORE median
+    # Mask fill values per-band BEFORE median
     def mask_fill(img):
-        return img.updateMask(img.lt(10000))
+        b08 = img.select('Oa08_radiance')
+        b10 = img.select('Oa10_radiance')
+        b11 = img.select('Oa11_radiance')
+        b12 = img.select('Oa12_radiance')
+        mask = (b08.lt(10000)
+                .And(b10.lt(10000))
+                .And(b11.lt(10000))
+                .And(b12.lt(10000)))
+        return img.updateMask(mask)
 
     img = coll.map(mask_fill).median()
 
@@ -76,10 +77,12 @@ def build_s3_wqi(aoi, cal):
     b12 = img.select('Oa12_radiance')
     b08 = img.select('Oa08_radiance')
 
+    # MCI: high = bloom = bad → invert
     mci = b11.subtract(b10.add(b12.subtract(b10).multiply(0.39)))
     mci_n = ee.Image(1).subtract(
         mci.unitScale(cal["mci_min"], cal["mci_max"]).clamp(0, 1))
 
+    # Turbidity: high = bad → invert
     turb_n = ee.Image(1).subtract(
         b08.unitScale(cal["turb_min"], cal["turb_max"]).clamp(0, 1))
 
@@ -143,7 +146,7 @@ def run_update(status_callback=None):
     init_gee()
 
     cal = load_cal()
-    log(f"Calibration: MCI [{cal['mci_min']:.1f}, {cal['mci_max']:.1f}] | Turb [{cal['turb_min']:.1f}, {cal['turb_max']:.1f}]")
+    log(f"Thresholds: MCI [{cal['mci_min']}, {cal['mci_max']}] | Turb [{cal['turb_min']}, {cal['turb_max']}]")
 
     with open(GRID_FILE) as f:
         grid = json.load(f)
@@ -155,7 +158,7 @@ def run_update(status_callback=None):
     aoi  = ee.Geometry.Rectangle([min(lngs)-0.1, min(lats)-0.1,
                                    max(lngs)+0.1, max(lats)+0.1])
 
-    log("Building S-3 OLCI WQI mosaic (calibrated, no NDWI)...")
+    log("Building S-3 OLCI WQI mosaic...")
     img, age_hours = build_s3_wqi(aoi, cal)
     if img is None:
         log("No S-3 data available.")
@@ -194,7 +197,6 @@ def run_update(status_callback=None):
     except Exception as _e:
         log(f"Drive save failed: {_e}")
 
-    # ── Append to daily history ────────────────────────────────────────────────
     if valid:
         import statistics
         wqi_vals   = [r["wqi"] for r in valid]
@@ -211,7 +213,7 @@ def run_update(status_callback=None):
         try:
             from storage import append_history
             append_history(history_entry)
-            log(f"History updated: {today} mean={mean_wqi} median={median_wqi}")
+            log(f"History: {today} mean={mean_wqi} median={median_wqi}")
         except Exception as _e:
             log(f"History save failed: {_e}")
 
