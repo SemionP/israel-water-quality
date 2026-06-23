@@ -2188,11 +2188,33 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                             )
                             st.markdown(_gauge_svg, unsafe_allow_html=True)
                             st.markdown(_cards_html, unsafe_allow_html=True)
-                            if _anom_html:
-                                st.markdown('<div style="font-size:10px;color:#00c8c8;font-family:monospace;letter-spacing:0.08em;margin:8px 0 4px;">TOP ANOMALIES</div>', unsafe_allow_html=True)
-                                st.markdown(_anom_html, unsafe_allow_html=True)
-                            if _hist_trend:
-                                st.markdown(_hist_trend, unsafe_allow_html=True)
+
+                            # ── Today vs 10d average ───────────────────────
+                            try:
+                                from storage import load_history
+                                _history = load_history()
+                                if len(_history) >= 2:
+                                    _h_means = [h["mean_wqi"] for h in _history[-10:]]
+                                    _avg10 = round(sum(_h_means) / len(_h_means), 1)
+                                    _delta = round(_mean - _avg10, 1)
+                                    _dsign = "+" if _delta >= 0 else ""
+                                    _dcol = "#74add1" if _delta >= 0 else "#f46d43"
+                                    _trend_html = f"""
+                                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;border-top:1px solid rgba(0,200,200,0.12);padding-top:10px;">
+                                      <div style="background:rgba(0,20,40,0.3);border-radius:6px;padding:10px;text-align:center;">
+                                        <div style="font-size:10px;color:#7fb3d3;margin-bottom:4px;">today</div>
+                                        <div style="font-size:24px;font-weight:500;color:#d6eaf8;">{_mean:.0f}</div>
+                                        <div style="font-size:9px;color:#4a7fa5;">mean WQI</div>
+                                      </div>
+                                      <div style="background:rgba(0,20,40,0.3);border-radius:6px;padding:10px;text-align:center;">
+                                        <div style="font-size:10px;color:#7fb3d3;margin-bottom:4px;">10d average</div>
+                                        <div style="font-size:24px;font-weight:500;color:#d6eaf8;">{_avg10:.0f}</div>
+                                        <div style="font-size:9px;color:{_dcol};">{_dsign}{_delta} vs today</div>
+                                      </div>
+                                    </div>"""
+                                    st.markdown(_trend_html, unsafe_allow_html=True)
+                            except Exception:
+                                pass
 
                 # Detect drawings → unified pending_zone (point or polygon)
                 last_clicked = map_data_wqi.get("last_clicked") if map_data_wqi else None
