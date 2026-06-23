@@ -1,7 +1,9 @@
 """
-calibrate_wqi.py — Self-calibration v7
+calibrate_wqi.py — Self-calibration v8
 =======================================
-Masks S-3 OLCI fill values (2^22) before median mosaic.
+- Masks fill values per-band before median
+- Uses p10/p90 instead of p5/p95 for tighter calibration
+- Logs raw MCI distribution for diagnostics
 """
 
 import ee, json, os, random, time
@@ -36,9 +38,17 @@ def run_calibration(status_callback=None):
         log("No data.")
         return None
 
-    # Mask fill values (2^22 = 4194304) before median
+    # Mask fill values per-band (2^22 = 4194304) BEFORE median
+    FILL_MAX = 10000
     def mask_fill(img):
-        mask = img.lt(10000)
+        b08 = img.select('Oa08_radiance')
+        b10 = img.select('Oa10_radiance')
+        b11 = img.select('Oa11_radiance')
+        b12 = img.select('Oa12_radiance')
+        mask = (b08.lt(FILL_MAX)
+                .And(b10.lt(FILL_MAX))
+                .And(b11.lt(FILL_MAX))
+                .And(b12.lt(FILL_MAX)))
         return img.updateMask(mask)
 
     img = coll.map(mask_fill).median()
@@ -67,7 +77,9 @@ def run_calibration(status_callback=None):
             oa11 = vals.get("Oa11_radiance")
             oa12 = vals.get("Oa12_radiance")
             if not logged_first and all(v is not None for v in [oa08, oa10, oa11, oa12]):
-                log(f"Sample bands: Oa08={oa08:.1f} Oa10={oa10:.1f} Oa11={oa11:.1f} Oa12={oa12:.1f}")
+                log(f"Sample bands: Oa08={oa08:.2f} Oa10={oa10:.2f} Oa11={oa11:.2f} Oa12={oa12:.2f}")
+                mci_sample = oa11 - (oa10 + (oa12 - oa10) * 0.39)
+                log(f"Sample MCI={mci_sample:.4f}")
                 logged_first = True
             if all(v is not None for v in [oa08, oa10, oa11, oa12]):
                 samples.append({"oa08": oa08, "oa10": oa10, "oa11": oa11, "oa12": oa12})
@@ -96,6 +108,7 @@ def run_calibration(status_callback=None):
     log(f"MCI raw: min={mci_arr.min():.4f} max={mci_arr.max():.4f} median={np.median(mci_arr):.4f}")
     log(f"Turb raw: min={turb_arr.min():.2f} max={turb_arr.max():.2f} median={np.median(turb_arr):.2f}")
 
+    # IQR filter
     def iqr_filter(arr):
         q1, q3 = np.percentile(arr, 25), np.percentile(arr, 75)
         iqr = q3 - q1
@@ -103,25 +116,30 @@ def run_calibration(status_callback=None):
 
     mci_clean = iqr_filter(mci_arr)
     turb_clean = iqr_filter(turb_arr)
-    log(f"After IQR: MCI [{mci_clean.min():.4f}, {mci_clean.max():.4f}]")
-    log(f"After IQR: Turb [{turb_clean.min():.2f}, {turb_clean.max():.2f}]")
+    log(f"After IQR: MCI n={len(mci_clean)} [{mci_clean.min():.4f}, {mci_clean.max():.4f}]")
+    log(f"After IQR: Turb n={len(turb_clean)} [{turb_clean.min():.2f}, {turb_clean.max():.2f}]")
 
+    # Use p10/p90 for tighter, more meaningful calibration
     cal = {
         "generated_utc": datetime.utcnow().isoformat(),
         "sample_count": len(samples),
         "mci": {
             "p5":  round(float(np.percentile(mci_clean, 5)), 4),
+            "p10": round(float(np.percentile(mci_clean, 10)), 4),
             "p50": round(float(np.percentile(mci_clean, 50)), 4),
+            "p90": round(float(np.percentile(mci_clean, 90)), 4),
             "p95": round(float(np.percentile(mci_clean, 95)), 4),
-            "unit_scale_min": round(float(np.percentile(mci_clean, 5)), 4),
-            "unit_scale_max": round(float(np.percentile(mci_clean, 95)), 4),
+            "unit_scale_min": round(float(np.percentile(mci_clean, 10)), 4),
+            "unit_scale_max": round(float(np.percentile(mci_clean, 90)), 4),
         },
         "turbidity": {
             "p5":  round(float(np.percentile(turb_clean, 5)), 2),
+            "p10": round(float(np.percentile(turb_clean, 10)), 2),
             "p50": round(float(np.percentile(turb_clean, 50)), 2),
+            "p90": round(float(np.percentile(turb_clean, 90)), 2),
             "p95": round(float(np.percentile(turb_clean, 95)), 2),
-            "unit_scale_min": round(float(np.percentile(turb_clean, 5)), 2),
-            "unit_scale_max": round(float(np.percentile(turb_clean, 95)), 2),
+            "unit_scale_min": round(float(np.percentile(turb_clean, 10)), 2),
+            "unit_scale_max": round(float(np.percentile(turb_clean, 90)), 2),
         }
     }
 
