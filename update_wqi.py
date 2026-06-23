@@ -62,19 +62,19 @@ def build_s3_wqi(aoi, cal):
     img_dt    = datetime.utcfromtimestamp(img_ms / 1000)
     age_hours = (datetime.utcnow() - img_dt).total_seconds() / 3600
 
-    img = coll.median()
+    # FIX: mask fill values (2^22=4194304) BEFORE median
+    def mask_fill(img):
+        return img.updateMask(img.lt(10000))
 
-    # Water mask
+    img = coll.map(mask_fill).median()
+
+    # Water mask (NDWI — not in WQI formula)
     wm = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).gt(0)
 
-    # Mask fill values before band math
-    def mask_fill(i):
-        return i.updateMask(i.lt(10000))
-
-    b10 = mask_fill(img.select('Oa10_radiance'))
-    b11 = mask_fill(img.select('Oa11_radiance'))
-    b12 = mask_fill(img.select('Oa12_radiance'))
-    b08 = mask_fill(img.select('Oa08_radiance'))
+    b10 = img.select('Oa10_radiance')
+    b11 = img.select('Oa11_radiance')
+    b12 = img.select('Oa12_radiance')
+    b08 = img.select('Oa08_radiance')
 
     mci = b11.subtract(b10.add(b12.subtract(b10).multiply(0.39)))
     mci_n = ee.Image(1).subtract(
@@ -197,10 +197,10 @@ def run_update(status_callback=None):
     # ── Append to daily history ────────────────────────────────────────────────
     if valid:
         import statistics
-        wqi_vals = [r["wqi"] for r in valid]
+        wqi_vals   = [r["wqi"] for r in valid]
         mean_wqi   = round(sum(wqi_vals) / len(wqi_vals), 1)
         median_wqi = round(statistics.median(wqi_vals), 1)
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today      = datetime.utcnow().strftime("%Y-%m-%d")
         history_entry = {
             "date":       today,
             "mean_wqi":   mean_wqi,
