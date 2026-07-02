@@ -2029,12 +2029,6 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                     st.info("🛰 Loading SAR data...")
                 # Ensure snapshot loaded before building map
                 # Hex toggle
-        if "show_hex" not in st.session_state:
-            st.session_state["show_hex"] = True
-        _hex_label = "🔲 Hide hex" if st.session_state["show_hex"] else "🔳 Show hex"
-        if st.button(_hex_label, use_container_width=True, key="toggle_hex"):
-            st.session_state["show_hex"] = not st.session_state["show_hex"]
-            st.rerun()
 
             if "wqi_snapshot" not in st.session_state:
                 try:
