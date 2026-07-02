@@ -2047,31 +2047,39 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                     returned_objects=["bounds","last_active_drawing","last_clicked"]
                 )
                 _sp = st.session_state.spectra_result
-                st.markdown(
-                    f'<div style="font-size:12px;color:#7fb3d3;margin:4px 0 2px;">'
-                    f'🔬 Spectra · {data_source} · {_lat_str}°N {_lon_str}°E</div>',
-                    unsafe_allow_html=True)
-                _max_val = max(_sp.values()) if _sp else 1
-                _bar_html = '<div style="display:flex;align-items:flex-end;gap:3px;height:80px;padding:4px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.15);border-radius:5px;">'
-                for _wl, _rv in _sp.items():
-                    _pct = int((_rv / _max_val) * 100) if _max_val else 0
-                    _wl_num = int(_wl.replace("nm","")) if "nm" in _wl else 500
-                    _col = "#8B00FF" if _wl_num<450 else "#0055FF" if _wl_num<500 else "#00AA00" if _wl_num<570 else "#FF4400" if _wl_num<700 else "#880000"
-                    _bar_html += f'<div title="{_wl}: {_rv}" style="flex:1;min-width:8px;height:{_pct}%;background:{_col};border-radius:2px 2px 0 0;cursor:help;"></div>'
-                _bar_html += '</div>'
-                _bar_html += '<div style="display:flex;gap:3px;overflow-x:auto;">'
-                for _wl, _rv in _sp.items():
-                    _bar_html += f'<div style="flex:1;min-width:8px;text-align:center;font-size:9px;color:#7fb3d3;">{_rv}</div>'
-                _bar_html += '</div>'
-                _bar_html += '<div style="display:flex;gap:3px;overflow-x:auto;margin-bottom:4px;">'
-                for _wl in _sp.keys():
-                    _bar_html += f'<div style="flex:1;min-width:8px;text-align:center;font-size:9px;color:#7fb3d3;">{_wl}</div>'
-                _bar_html += '</div>'
-                st.markdown(_bar_html, unsafe_allow_html=True)
-                if st.button("✕ Clear spectra", key="clear_spectra"):
-                    st.session_state.spectra_result = None
-                    st.session_state.spectra_click = None
-                    st.rerun()
+                if _sp:
+                    # fix: _lat_str/_lon_str were referenced but never
+                    # defined anywhere (NameError, fired on every render).
+                    # Derive them from spectra_click, set as "lat,lng"
+                    # when a pixel is actually sampled.
+                    _sc_parts = (st.session_state.get("spectra_click") or ",").split(",")
+                    _lat_str = _sc_parts[0] if len(_sc_parts) > 0 else ""
+                    _lon_str = _sc_parts[1] if len(_sc_parts) > 1 else ""
+                    st.markdown(
+                        f'<div style="font-size:12px;color:#7fb3d3;margin:4px 0 2px;">'
+                        f'🔬 Spectra · {data_source} · {_lat_str}°N {_lon_str}°E</div>',
+                        unsafe_allow_html=True)
+                    _max_val = max(_sp.values()) if _sp else 1
+                    _bar_html = '<div style="display:flex;align-items:flex-end;gap:3px;height:80px;padding:4px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.15);border-radius:5px;">'
+                    for _wl, _rv in _sp.items():
+                        _pct = int((_rv / _max_val) * 100) if _max_val else 0
+                        _wl_num = int(_wl.replace("nm","")) if "nm" in _wl else 500
+                        _col = "#8B00FF" if _wl_num<450 else "#0055FF" if _wl_num<500 else "#00AA00" if _wl_num<570 else "#FF4400" if _wl_num<700 else "#880000"
+                        _bar_html += f'<div title="{_wl}: {_rv}" style="flex:1;min-width:8px;height:{_pct}%;background:{_col};border-radius:2px 2px 0 0;cursor:help;"></div>'
+                    _bar_html += '</div>'
+                    _bar_html += '<div style="display:flex;gap:3px;overflow-x:auto;">'
+                    for _wl, _rv in _sp.items():
+                        _bar_html += f'<div style="flex:1;min-width:8px;text-align:center;font-size:9px;color:#7fb3d3;">{_rv}</div>'
+                    _bar_html += '</div>'
+                    _bar_html += '<div style="display:flex;gap:3px;overflow-x:auto;margin-bottom:4px;">'
+                    for _wl in _sp.keys():
+                        _bar_html += f'<div style="flex:1;min-width:8px;text-align:center;font-size:9px;color:#7fb3d3;">{_wl}</div>'
+                    _bar_html += '</div>'
+                    st.markdown(_bar_html, unsafe_allow_html=True)
+                    if st.button("✕ Clear spectra", key="clear_spectra"):
+                        st.session_state.spectra_result = None
+                        st.session_state.spectra_click = None
+                        st.rerun()
             with col_info:
                 # ── S1 SAR PANEL ──────────────────────────────────────────
                 if st.session_state.get("s1_mode") and st.session_state.get("s1_result"):
