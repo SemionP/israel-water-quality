@@ -1,5 +1,5 @@
 """
-calibrate_wqi.py — Self-calibration v4
+calibrate_wqi.py — Self-calibration v5
 =======================================
 Samples raw S-3 OLCI bands at hex centers,
 computes MCI and Turbidity in Python (avoids GEE band math issues).
@@ -8,17 +8,30 @@ v4 changes (fix for Chl-a ~100 everywhere bug):
 - Sample from the SAME median composite that update_wqi.py uses for
   production (was: coll.first(), a single raw scene) — calibration
   and production must see the same distribution.
-- Apply the same NDWI water mask before sampling raw bands (was:
-  no mask, so land/cloud edge pixels near hex centers could pollute
-  the percentile range).
-- LOOKBACK matches update_wqi.py's LOOKBACK so both scripts are
-  looking at comparable data windows.
+- Apply the same NDWI water mask before sampling raw bands.
+
+v5 changes (fix for MCI raw min = -12,792,597 bug):
+- Mask S-3 OLCI fill values (2^22 = 4,194,304) on EACH image in the
+  collection BEFORE building the median composite, not after. This
+  is the same confirmed-working pattern already used elsewhere in
+  this project: coll.map(mask_fill).median(). Without this, a single
+  fill-value pixel anywhere in the 5-day window corrupts the whole
+  median composite at that location, and any hex sample that lands
+  on it drags the percentile range down to millions of units off —
+  which is what collapsed unitScale and made CHL clamp to 100
+  everywhere in production.
 """
 
 import ee, json, os, random, time
 from datetime import datetime, timedelta
 
 LOOKBACK = 5  # must match update_wqi.py LOOKBACK
+FILL_THRESHOLD = 10000  # S-3 OLCI fill value is 2^22; anything sane is well under this
+
+
+def mask_fill(img):
+    """Mask S-3 OLCI fill-value pixels. Must run per-image, before median()."""
+    return img.updateMask(img.lt(FILL_THRESHOLD))
 
 
 def run_calibration(status_callback=None):
@@ -37,7 +50,7 @@ def run_calibration(status_callback=None):
     start = ee.Date((now - timedelta(days=LOOKBACK)).strftime("%Y-%m-%d"))
     aoi = ee.Geometry.Rectangle([34.0, 31.0, 35.2, 33.4])
 
-    log(f"Loading S-3 OLCI (last {LOOKBACK} days, median composite)...")
+    log(f"Loading S-3 OLCI (last {LOOKBACK} days, fill-masked median composite)...")
     coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
             .filterBounds(aoi)
             .filterDate(start, end)
@@ -49,15 +62,12 @@ def run_calibration(status_callback=None):
         log("No data.")
         return None
 
+    # v5: mask fill values per-image, BEFORE the median composite
     # v4: median composite, same as production build_s3_wqi()
-    # (was: coll.first() — a single scene, different distribution
-    # than what update_wqi.py actually scores against)
-    img = coll.median()
+    img = coll.map(mask_fill).median()
 
     # v4: water mask, same NDWI test as production, applied BEFORE
-    # sampling raw bands (was: no mask — land/cloud edge pixels near
-    # hex centers could get included in the percentile range,
-    # skewing mci_min/mci_max and causing CHL to clamp to 100)
+    # sampling raw bands
     wm = img.normalizedDifference(['Oa06_radiance', 'Oa17_radiance']).gt(0)
 
     # Select raw bands — no band math in GEE
@@ -67,7 +77,7 @@ def run_calibration(status_callback=None):
     with open("medi_h3_grid_final_913.geojson") as f:
         grid = json.load(f)
     sample_hex = random.sample(grid["features"], min(150, len(grid["features"])))
-    log(f"Sampling {len(sample_hex)} hex centers (raw bands, water-masked)...")
+    log(f"Sampling {len(sample_hex)} hex centers (raw bands, fill+water-masked)...")
 
     samples = []
     for i, feat in enumerate(sample_hex):
@@ -94,7 +104,7 @@ def run_calibration(status_callback=None):
 
     log(f"Valid samples: {len(samples)} (masked out: {len(sample_hex) - len(samples)})")
     if len(samples) < 10:
-        log("Not enough samples (too many hex centers fell outside the water mask or had no data).")
+        log("Not enough samples (too many hex centers fell outside water/fill mask or had no data).")
         return None
 
     # Compute MCI and Turbidity in Python
@@ -112,10 +122,18 @@ def run_calibration(status_callback=None):
     log(f"MCI raw: min={mci_arr.min():.2f} max={mci_arr.max():.2f} median={np.median(mci_arr):.2f}")
     log(f"Turb raw: min={turb_arr.min():.2f} max={turb_arr.max():.2f} median={np.median(turb_arr):.2f}")
 
+    # v5 sanity check: fill masking should keep raw values in a
+    # physically plausible radiance range. If this still fires, the
+    # fill mask isn't catching everything and needs a closer look.
+    if abs(mci_arr.min()) > 1000 or abs(turb_arr.min()) > 1000:
+        log("⚠️ WARNING: raw values still look like fill-value contamination "
+            "(magnitude > 1000). Do not trust this calibration — investigate "
+            "before saving.")
+
     cal = {
         "generated_utc": datetime.utcnow().isoformat(),
         "sample_count": len(samples),
-        "source_composite": f"median_{LOOKBACK}day_water_masked",  # v4: track provenance
+        "source_composite": f"median_{LOOKBACK}day_fill_and_water_masked",
         "mci": {
             "p5":  round(float(np.percentile(mci_arr, 5)), 2),
             "p25": round(float(np.percentile(mci_arr, 25)), 2),
