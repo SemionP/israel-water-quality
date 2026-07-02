@@ -434,6 +434,14 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
                 st.success(f"✅ MCI: [{_cal['mci']['unit_scale_min']:.1f}, {_cal['mci']['unit_scale_max']:.1f}] | Turb: [{_cal['turbidity']['unit_scale_min']:.1f}, {_cal['turbidity']['unit_scale_max']:.1f}]")
             else:
                 st.error("Calibration failed.")
+        # Hex toggle
+        if "show_hex" not in st.session_state:
+            st.session_state["show_hex"] = True
+        _hex_label = "🔲 Hide hex" if st.session_state["show_hex"] else "🔳 Show hex"
+        if st.button(_hex_label, use_container_width=True, key="toggle_hex"):
+            st.session_state["show_hex"] = not st.session_state["show_hex"]
+            st.rerun()
+
         if "wqi_snapshot" not in st.session_state:
             try:
                 from storage import load_snapshot
@@ -1888,7 +1896,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                 except Exception:
                     st.session_state["wqi_hex_geojson"] = None
             _hgeo = st.session_state.get("wqi_hex_geojson")
-            if _hgeo:
+            if _hgeo and st.session_state.get("show_hex", True):
                 def _hex_style(feat):
                     hid = feat["properties"].get("hex_id","")
                     h   = _hex_map.get(hid)
@@ -2020,12 +2028,20 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                 if st.session_state.get("s1_mode") and not st.session_state.get("s1_result"):
                     st.info("🛰 Loading SAR data...")
                 # Ensure snapshot loaded before building map
-                if "wqi_snapshot" not in st.session_state:
-                    try:
-                        from storage import load_snapshot as _ls
-                        st.session_state["wqi_snapshot"] = _ls()
-                    except Exception:
-                        st.session_state["wqi_snapshot"] = None
+                # Hex toggle
+        if "show_hex" not in st.session_state:
+            st.session_state["show_hex"] = True
+        _hex_label = "🔲 Hide hex" if st.session_state["show_hex"] else "🔳 Show hex"
+        if st.button(_hex_label, use_container_width=True, key="toggle_hex"):
+            st.session_state["show_hex"] = not st.session_state["show_hex"]
+            st.rerun()
+
+            if "wqi_snapshot" not in st.session_state:
+                try:
+                    from storage import load_snapshot as _ls
+                    st.session_state["wqi_snapshot"] = _ls()
+                except Exception:
+                    st.session_state["wqi_snapshot"] = None
 
                 map_data_wqi = st_folium(
                     _build_map(),
