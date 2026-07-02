@@ -2019,20 +2019,17 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
             map_data_wqi = None  # fallback if map block fails
             col_map, col_info = st.columns([3, 1], gap="small")
             with col_map:
-                pass  # buttons hidden for demo
-
                 # ── S1 SAR mode active indicator ──────────────────────────
                 if st.session_state.get("s1_mode") and not st.session_state.get("s1_result"):
                     st.info("🛰 Loading SAR data...")
-                # Ensure snapshot loaded before building map
-                # Hex toggle
 
-            if "wqi_snapshot" not in st.session_state:
-                try:
-                    from storage import load_snapshot as _ls
-                    st.session_state["wqi_snapshot"] = _ls()
-                except Exception:
-                    st.session_state["wqi_snapshot"] = None
+                # Load snapshot if needed
+                if "wqi_snapshot" not in st.session_state:
+                    try:
+                        from storage import load_snapshot as _ls
+                        st.session_state["wqi_snapshot"] = _ls()
+                    except Exception:
+                        st.session_state["wqi_snapshot"] = None
 
                 map_data_wqi = st_folium(
                     _build_map(),
@@ -2040,9 +2037,6 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                     key=f"israel_map_wqi_{st.session_state.get('img_idx',0)}_{st.session_state.get('s1_date','')}",
                     returned_objects=["bounds","last_active_drawing","last_clicked"]
                 )
-
-                if st.session_state.spectra_result:
-                    pass
                 _sp = st.session_state.spectra_result
                 st.markdown(
                     f'<div style="font-size:12px;color:#7fb3d3;margin:4px 0 2px;">'
