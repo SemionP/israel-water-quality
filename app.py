@@ -446,6 +446,51 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
             st.caption(f"Last update: {_ts} UTC · {_snap.get('valid_count',0)} hex valid")
         st.divider()
 
+        # ── Satellite Image Viewer ───────────────────────────────────────────
+        st.markdown("### 🛰 Satellite Viewer")
+
+        _sat_options = ["S3 · Sentinel-3", "S2 · Sentinel-2", "MODIS · Terra"]
+        _sat_sel = st.selectbox(
+            "Satellite",
+            _sat_options,
+            index=0,
+            key="sat_viewer_src"
+        )
+        _sat_abbr = "S3" if _sat_sel.startswith("S3") else "S2" if _sat_sel.startswith("S2") else "MODIS"
+
+        # Date picker — last 10 days
+        from datetime import date as _date, timedelta as _td
+        _today = _date.today()
+        _date_options = [(_today - _td(days=i)).strftime("%Y-%m-%d") for i in range(10)]
+        _viewer_date = st.selectbox(
+            "Date",
+            _date_options,
+            index=0,
+            key="sat_viewer_date"
+        )
+
+        if st.button("🔍 Load Image", use_container_width=True, key="sat_viewer_load"):
+            with st.spinner(f"Loading {_sat_sel} · {_viewer_date}..."):
+                try:
+                    from gee_processing import init_gee
+                    init_gee()
+                    _tc = _get_true_color_tile(_sat_abbr, _viewer_date)
+                    _idx = _get_spectral_index_tiles(_sat_abbr, _viewer_date)
+                    st.session_state["sat_viewer_tiles"] = {
+                        "src": _sat_sel,
+                        "date": _viewer_date,
+                        "abbr": _sat_abbr,
+                        "tc": _tc,
+                        "idx": _idx,
+                    }
+                    if _tc:
+                        st.success(f"✅ {_sat_sel} · {_viewer_date}")
+                    else:
+                        st.warning("No data for this date.")
+                except Exception as _e:
+                    st.error(f"Error: {_e}")
+
+        st.divider()
 
         # ── Controls: SAR modules share date picker (disabled) ───────────────
         if False:  # SAR disabled
@@ -1382,6 +1427,22 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                 _raster_layers.append({"id":safe_id,"label":idx_name+" \u00b7 "+data_source,"date":_active_date,"url":idx_url,"visible":False,"vis":idx_vis})
         except Exception:
             pass
+
+        # ── Satellite Viewer layers (from sidebar selector) ────────────────────
+        _sv = st.session_state.get("sat_viewer_tiles")
+        if _sv:
+            _sv_vis_map = {
+                "NDWI": {"palette":["#8B4513","#D2B48C","#FFFACD","#87CEEB","#0000CD"],"min":0,"max":1,"unit":"NDWI","minLabel":"Land","maxLabel":"Water"},
+                "MCI (Chlorophyll)": {"palette":["#4575b4","#91bfdb","#ffffbf","#fc8d59","#d73027"],"min":0,"max":1,"unit":"MCI","minLabel":"Low","maxLabel":"High"},
+                "CHL Proxy": {"palette":["#4575b4","#91bfdb","#ffffbf","#fc8d59","#d73027"],"min":0,"max":1,"unit":"CHL","minLabel":"Low","maxLabel":"High"},
+                "Turbidity": {"palette":["#4575b4","#74add1","#ffffbf","#f46d43","#8B4513"],"min":0,"max":1,"unit":"Turbidity","minLabel":"Clear","maxLabel":"Turbid"},
+            }
+            _sv_label = f"{_sv['src']} · {_sv['date']}"
+            if _sv.get("tc"):
+                _raster_layers.append({"id":"sv_tc","label":f"True Color · {_sv_label}","date":_sv["date"],"url":_sv["tc"],"visible":False,"vis":None})
+            for _iname, _iurl in (_sv.get("idx") or {}).items():
+                _sid = "sv_" + _iname.lower().replace(" ","_").replace("(","").replace(")","")
+                _raster_layers.append({"id":_sid,"label":f"{_iname} · {_sv_label}","date":_sv["date"],"url":_iurl,"visible":False,"vis":_sv_vis_map.get(_iname)})
 
         # ── Sentinel-1 SAR layers ────────────────────────────────────────────────
         _s1_mode_on = st.session_state.get("s1_mode", False)
