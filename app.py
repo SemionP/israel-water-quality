@@ -514,6 +514,12 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
                             st.error(f"Error: {_e}")
                     st.rerun()
 
+        if st.session_state.get("sat_viewer_tiles"):
+            if st.button("✕ Clear viewer", use_container_width=True, key="clear_viewer"):
+                st.session_state["sat_viewer_tiles"] = None
+                st.session_state["sat_viewer_selected"] = None
+                st.rerun()
+
         st.divider()
 
         # ── Controls: SAR modules share date picker (disabled) ───────────────
@@ -1463,8 +1469,11 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
                 "Turbidity": {"palette":["#4575b4","#74add1","#ffffbf","#f46d43","#8B4513"],"min":0,"max":1,"unit":"Turbidity","minLabel":"Clear","maxLabel":"Turbid"},
             }
             _sv_label = f"{_sv['src']} · {_sv['date']}"
+            # Hide all existing layers when viewer is active
+            for _rl in _raster_layers:
+                _rl["visible"] = False
             if _sv.get("tc"):
-                _raster_layers.append({"id":"sv_tc","label":f"True Color · {_sv_label}","date":_sv["date"],"url":_sv["tc"],"visible":False,"vis":None})
+                _raster_layers.append({"id":"sv_tc","label":f"True Color · {_sv_label}","date":_sv["date"],"url":_sv["tc"],"visible":True,"vis":None})
             for _iname, _iurl in (_sv.get("idx") or {}).items():
                 _sid = "sv_" + _iname.lower().replace(" ","_").replace("(","").replace(")","")
                 _raster_layers.append({"id":_sid,"label":f"{_iname} · {_sv_label}","date":_sv["date"],"url":_iurl,"visible":False,"vis":_sv_vis_map.get(_iname)})
