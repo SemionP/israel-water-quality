@@ -446,49 +446,69 @@ color:#007f8a;letter-spacing:0.12em;margin-bottom:8px;margin-top:4px;">
             st.caption(f"Last update: {_ts} UTC · {_snap.get('valid_count',0)} hex valid")
         st.divider()
 
-        # ── Satellite Image Viewer ───────────────────────────────────────────
-        st.markdown("### 🛰 Satellite Viewer")
+        # ── Available Imagery ────────────────────────────────────────────────
+        st.markdown("### 🛰 Available imagery")
+        st.caption("Click any scene to load it on the map.")
 
-        _sat_options = ["S3 · Sentinel-3", "S2 · Sentinel-2", "MODIS · Terra"]
-        _sat_sel = st.selectbox(
-            "Satellite",
-            _sat_options,
-            index=0,
-            key="sat_viewer_src"
-        )
-        _sat_abbr = "S3" if _sat_sel.startswith("S3") else "S2" if _sat_sel.startswith("S2") else "MODIS"
+        # Build imagery list from all_candidates + last 7 days per sensor
+        _src_colors = {"S3": "#00c8c8", "S2": "#1ecb7b", "MOD": "#f0a500", "MODIS": "#f0a500"}
+        _src_labels = {"S3": "S-3", "S2": "S-2", "MOD": "MOD", "MODIS": "MOD"}
 
-        # Date picker — last 10 days
-        from datetime import date as _date, timedelta as _td
-        _today = _date.today()
-        _date_options = [(_today - _td(days=i)).strftime("%Y-%m-%d") for i in range(10)]
-        _viewer_date = st.selectbox(
-            "Date",
-            _date_options,
-            index=0,
-            key="sat_viewer_date"
-        )
+        # Build candidate list for display
+        _imagery_list = []
+        _cands_cache = st.session_state.get("all_candidates_cache", [])
+        if _cands_cache:
+            for _cand in _cands_cache:
+                _cage, _clayer, _cdf, _cage2, _csrc, _cfull = _cand
+                _cdate = (datetime.utcnow() - timedelta(hours=_cage)).strftime("%Y-%m-%d")
+                _imagery_list.append({
+                    "src": _csrc, "full": _cfull,
+                    "date": _cdate, "age_h": _cage,
+                })
+        else:
+            for _di in range(10):
+                _fd = (datetime.utcnow() - timedelta(days=_di)).strftime("%Y-%m-%d")
+                _imagery_list.append({"src": "S3", "full": "Sentinel-3", "date": _fd, "age_h": _di*24})
 
-        if st.button("🔍 Load Image", use_container_width=True, key="sat_viewer_load"):
-            with st.spinner(f"Loading {_sat_sel} · {_viewer_date}..."):
-                try:
-                    from gee_processing import init_gee
-                    init_gee()
-                    _tc = _get_true_color_tile(_sat_abbr, _viewer_date)
-                    _idx = _get_spectral_index_tiles(_sat_abbr, _viewer_date)
-                    st.session_state["sat_viewer_tiles"] = {
-                        "src": _sat_sel,
-                        "date": _viewer_date,
-                        "abbr": _sat_abbr,
-                        "tc": _tc,
-                        "idx": _idx,
-                    }
-                    if _tc:
-                        st.success(f"✅ {_sat_sel} · {_viewer_date}")
-                    else:
-                        st.warning("No data for this date.")
-                except Exception as _e:
-                    st.error(f"Error: {_e}")
+        if not _imagery_list:
+            st.caption("No imagery available.")
+        else:
+            _sel_img_key = st.session_state.get("sat_viewer_selected", 0)
+            for _ii, _im in enumerate(_imagery_list):
+                _ic = _src_colors.get(_im["src"], "#888")
+                _il = _src_labels.get(_im["src"], _im["src"])
+                _age_str = f"{_im['age_h']:.0f}h ago" if _im["age_h"] < 72 else f"{_im['age_h']/24:.0f}d ago"
+                _is_active = (_ii == _sel_img_key)
+                _bg = "background:rgba(0,200,200,0.07);border:0.5px solid rgba(0,200,200,0.25);" if _is_active else "background:transparent;border:0.5px solid transparent;"
+                _row_html = f"""<div style="display:flex;align-items:center;gap:6px;padding:5px 6px;border-radius:6px;cursor:pointer;{_bg}margin-bottom:2px;">
+                  <div style="width:7px;height:7px;border-radius:50%;background:{_ic};flex-shrink:0;"></div>
+                  <span style="font-size:11px;font-weight:500;color:{_ic};width:28px;flex-shrink:0;">{_il}</span>
+                  <span style="font-size:11px;color:var(--text-secondary);flex:1;">{_im['date']}</span>
+                  <span style="font-size:10px;color:var(--text-muted);">{_age_str}</span>
+                </div>"""
+                st.markdown(_row_html, unsafe_allow_html=True)
+                if st.button(f"{_il} {_im['date']}", key=f"imgsel_{_ii}", use_container_width=True,
+                             help=f"{_im['full']} · {_im['date']} · {_age_str}",
+                             type="primary" if _is_active else "secondary"):
+                    st.session_state["sat_viewer_selected"] = _ii
+                    _abbr = _im["src"] if _im["src"] in ("S3","S2") else "MODIS"
+                    with st.spinner(f"Loading {_im['full']} · {_im['date']}..."):
+                        try:
+                            from gee_processing import init_gee
+                            init_gee()
+                            _tc = _get_true_color_tile(_abbr, _im["date"])
+                            _idx = _get_spectral_index_tiles(_abbr, _im["date"])
+                            st.session_state["sat_viewer_tiles"] = {
+                                "src": _im["full"], "date": _im["date"],
+                                "abbr": _abbr, "tc": _tc, "idx": _idx,
+                            }
+                            if _tc:
+                                st.success(f"✅ {_im['full']} · {_im['date']}")
+                            else:
+                                st.warning("No data for this date.")
+                        except Exception as _e:
+                            st.error(f"Error: {_e}")
+                    st.rerun()
 
         st.divider()
 
@@ -793,6 +813,7 @@ Sentinel-1 SAR · Bright target detection</div></div>""", unsafe_allow_html=True
         if not mod_err and mod_layer is not None and mod_age is not None:
             all_candidates.append((mod_age, mod_layer, mod_df, mod_age, "MOD",   mod_src))
         all_candidates.sort(key=lambda x: x[0])  # freshest first (lowest age_hours)
+        st.session_state["all_candidates_cache"] = all_candidates
 
         # Navigator state
         if "img_idx" not in st.session_state or st.session_state.get("img_total") != len(all_candidates):
