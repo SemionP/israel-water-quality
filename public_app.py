@@ -36,7 +36,7 @@ signatures.
 """
 
 import base64
-from datetime import date
+from datetime import date, timedelta
 
 import folium
 import streamlit as st
@@ -50,6 +50,10 @@ from gee_processing import get_satellite_layers, init_gee
 # ---------------------------------------------------------------------
 
 DEFAULT_LOCATION = "Tel Aviv"
+
+# How many days back the date slider (and the "latest available" search) will
+# look. S-3 OLCI coverage/clouds mean "today" often has no usable pixels yet.
+MAX_LOOKBACK_DAYS = 14
 
 CONTACT_EMAIL = "info@satalize.com"
 
@@ -194,13 +198,41 @@ with header_r:
 # ---------------------------------------------------------------------
 
 init_gee()
-target_date_str = date.today().strftime("%Y-%m-%d")
+TODAY = date.today()
+EARLIEST_SELECTABLE = TODAY - timedelta(days=MAX_LOOKBACK_DAYS)
 
-layers = get_satellite_layers("S3", target_date_str)
 
-layers_error = layers.get("error") if isinstance(layers, dict) else "unexpected response"
-if layers_error:
-    st.warning(f"Live satellite layer unavailable right now: {layers_error}")
+@st.cache_data(ttl=1800, show_spinner=False)
+def _layers_for_date(date_str):
+    """Cached wrapper around get_satellite_layers so moving the date slider
+    doesn't re-hit GEE for a date already looked up in the last 30 min."""
+    return get_satellite_layers("S3", date_str)
+
+
+def _has_chlorophyll(result):
+    return (
+        isinstance(result, dict)
+        and not result.get("error")
+        and "🌿 MCI (Chlorophyll)" in result
+    )
+
+
+@st.cache_data(ttl=1800, show_spinner="Finding the most recent chlorophyll imagery...")
+def _latest_available_date():
+    """Walks backward from today up to MAX_LOOKBACK_DAYS looking for the
+    newest date that actually has usable S-3 OLCI coverage, so the page
+    defaults to real data instead of an empty "no data for today" map.
+    NOTE: this issues up to MAX_LOOKBACK_DAYS sequential GEE calls on first
+    load (cached per date afterwards) -- if that proves too slow in
+    practice, the real fix is a cheap "does date X have coverage" check in
+    gee_processing.py rather than this brute-force loop.
+    """
+    d = TODAY
+    for _ in range(MAX_LOOKBACK_DAYS + 1):
+        if _has_chlorophyll(_layers_for_date(d.strftime("%Y-%m-%d"))):
+            return d
+        d -= timedelta(days=1)
+    return TODAY  # nothing found anywhere in the window; fall back as before
 
 
 # ---------------------------------------------------------------------
@@ -213,7 +245,21 @@ beach_names = [b["name"] for b in BEACHES]
 default_index = beach_names.index(DEFAULT_LOCATION) if DEFAULT_LOCATION in beach_names else 0
 
 with side_col:
+    selected_date = st.slider(
+        "Date",
+        min_value=EARLIEST_SELECTABLE,
+        max_value=TODAY,
+        value=_latest_available_date(),
+        format="MMM D",
+    )
     selected_name = st.selectbox("Location", beach_names, index=default_index)
+
+target_date_str = selected_date.strftime("%Y-%m-%d")
+layers = _layers_for_date(target_date_str)
+
+layers_error = layers.get("error") if isinstance(layers, dict) else "unexpected response"
+if layers_error:
+    st.warning(f"No chlorophyll imagery for {target_date_str}: {layers_error}. Try an earlier date on the slider.")
 
 with map_col:
     selected_beach = next(b for b in BEACHES if b["name"] == selected_name)
@@ -278,7 +324,7 @@ with side_col:
     st.markdown(
         f"""
         <div class="satalize-card">
-            <p style="color:#9fc2cc;font-size:0.8rem;margin:0 0 12px;">{selected_name} &middot; Chlorophyll</p>
+            <p style="color:#9fc2cc;font-size:0.8rem;margin:0 0 12px;">{selected_name} &middot; {selected_date:%b %d} &middot; Chlorophyll</p>
             <div>{legend_items}</div>
         </div>
         """,
