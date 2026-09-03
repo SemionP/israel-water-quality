@@ -10,29 +10,33 @@ tool stay cleanly separated:
 
     Streamlit Cloud -> New app -> same repo -> main file path: public_app.py
 
-Chlorophyll-only: this page shows just the chlorophyll (MCI) satellite
-layer and a qualitative Low/Moderate/High legend -- no "Overall Water
-Quality" / WQI toggle, no numeric WQI value or score, and no other apps
-on this Streamlit account are linked or referenced from this page. It
-reuses your real, already-working GEE pipeline (gee_processing.py,
-config.py) instead of the mock data from the HTML demo, so the map layer
-shown here is live.
+Chlorophyll-only: this page shows the chlorophyll (MCI) satellite layer
+plus a True Color (RGB) reference map, a click-to-query MCI value, and a
+gradient legend -- no "Overall Water Quality" / WQI toggle, no numeric WQI
+value or score, and no other apps on this Streamlit account are linked or
+referenced from this page. It reuses your real, already-working GEE
+pipeline (gee_processing.py, config.py) instead of the mock data from the
+HTML demo, so the map layers shown here are live.
 
 BEFORE THIS WILL RUN, check in the deployed app's settings:
   Secrets: copy the same `gee_credentials` secret from the main app's
   Streamlit Cloud settings into this new app's settings (init_gee()
   reads st.secrets["gee_credentials"]).
 
-The CHLOROPHYLL_LEGEND colors below (green/yellow/red) are a placeholder
-assumption -- verify them against the actual GEE chlorophyll tile palette
-once this is deployed (this can't be checked from a sandbox without live
-GEE access) and adjust if the real palette differs.
+CHL_PALETTE/CHL_MIN/CHL_MAX below are copied verbatim from
+gee_processing.get_satellite_layers()'s "MCI (Chlorophyll)" tile
+(mci.getMapId({"min":-2,"max":12,"palette":CHL_PALETTE})) so the legend
+matches what's actually rendered -- keep them in sync if that palette/range
+ever changes in gee_processing.py. This page also depends on
+compute_point_mci() in gee_processing.py (added alongside this update) for
+the click-to-query feature, and on the _MED_COAST_COORDS fix in
+gee_processing.py that corrects a Gaza-area clipping bug.
 
 This was written without a live Streamlit/GEE environment to test against
 (only the public GitHub source of app.py/gee_processing.py/config.py was
-available), so treat it as a strong first draft -- run it, and send back
-the traceback for anything that doesn't line up with the real function
-signatures.
+available), so treat it as a strong draft -- run it, and send back the
+traceback/screenshot for anything that doesn't line up with the real
+function signatures or render as expected.
 """
 
 import base64
@@ -43,7 +47,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from config import BEACHES
-from gee_processing import get_satellite_layers, init_gee
+from gee_processing import compute_point_mci, get_satellite_layers, init_gee
 
 # ---------------------------------------------------------------------
 # Config
@@ -57,17 +61,14 @@ MAX_LOOKBACK_DAYS = 14
 
 CONTACT_EMAIL = "info@satalize.com"
 
-# Qualitative chlorophyll legend shown in the sidebar. This mirrors the
-# existing --good/--moderate/--poor color scheme used elsewhere on this
-# page, on the assumption that the GEE chlorophyll (MCI) tile uses the
-# same green/yellow/red convention. VERIFY against the real deployed tile
-# and adjust these three colors/labels if the actual palette differs --
-# this can't be checked from a sandbox without live GEE access.
-CHLOROPHYLL_LEGEND = [
-    ("Low", "#2ecc71"),
-    ("Moderate", "#f5c542"),
-    ("High (bloom risk)", "#e0563d"),
-]
+# Exact palette + display range used by gee_processing.get_satellite_layers()
+# for the "MCI (Chlorophyll)" tile (mci.getMapId({"min":-2,"max":12,"palette":
+# CHL_PALETTE})) -- kept in sync here so the sidebar legend matches what's
+# actually rendered on the map, instead of a guessed color scheme. This is a
+# raw MCI (Maximum Chlorophyll Index) value, NOT a calibrated chlorophyll-a
+# concentration in mg/m3 -- see the CMEMS discussion for the real thing.
+CHL_PALETTE = ["#f7fcf0", "#ccebc5", "#7bccc4", "#2b8cbe", "#084081"]
+CHL_MIN, CHL_MAX = -2, 12
 
 # National strategic coastal & marine engineering facilities.
 # Desalination + power station coordinates are well-documented and stable.
@@ -261,27 +262,48 @@ layers_error = layers.get("error") if isinstance(layers, dict) else "unexpected 
 if layers_error:
     st.warning(f"No chlorophyll imagery for {target_date_str}: {layers_error}. Try an earlier date on the slider.")
 
-with map_col:
-    selected_beach = next(b for b in BEACHES if b["name"] == selected_name)
-
-    m = folium.Map(
-        location=[selected_beach["lat"], selected_beach["lon"]],
-        zoom_start=11,
-        tiles=None,
-    )
+def _base_map(center):
+    m = folium.Map(location=center, zoom_start=11, tiles=None)
     folium.TileLayer(tiles="CartoDB dark_matter", name="Ocean (Dark)").add_to(m)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri", name="Satellite",
     ).add_to(m)
     folium.TileLayer(tiles="OpenStreetMap", name="Roadmap").add_to(m)
+    return m
 
+
+with map_col:
+    selected_beach = next(b for b in BEACHES if b["name"] == selected_name)
+    center = [selected_beach["lat"], selected_beach["lon"]]
+    beach_marker_icon = lambda: folium.Icon(color="white", icon_color="#22a99b", icon="tint", prefix="fa")
+
+    # --- Map 1: True Color (satellite RGB) ---------------------------------
+    st.markdown(
+        '<p style="color:#9fc2cc;font-size:0.8rem;margin:0 0 4px;">True Color (satellite RGB)</p>',
+        unsafe_allow_html=True,
+    )
+    m_rgb = _base_map(center)
+    if "🎨 True Color" in layers:
+        folium.TileLayer(
+            tiles=layers["🎨 True Color"], attr="Satalize", name="True Color",
+            overlay=True, show=True,
+        ).add_to(m_rgb)
+    folium.Marker(location=center, tooltip=selected_beach["name"], icon=beach_marker_icon()).add_to(m_rgb)
+    folium.LayerControl(collapsed=True).add_to(m_rgb)
+    st_folium(m_rgb, width=None, height=280, returned_objects=[], key="rgb_map")
+
+    # --- Map 2: Chlorophyll (click a point for its value) ------------------
+    st.markdown(
+        '<p style="color:#9fc2cc;font-size:0.8rem;margin:14px 0 4px;">Chlorophyll &middot; click the map for a value</p>',
+        unsafe_allow_html=True,
+    )
+    m_chl = _base_map(center)
     if "🌿 MCI (Chlorophyll)" in layers:
         folium.TileLayer(
             tiles=layers["🌿 MCI (Chlorophyll)"], attr="Satalize", name="Chlorophyll",
             overlay=True, show=True,
-        ).add_to(m)
-
+        ).add_to(m_chl)
     for f in FACILITIES:
         folium.CircleMarker(
             location=[f["lat"], f["lon"]],
@@ -291,17 +313,10 @@ with map_col:
             fill_color=FACILITY_COLORS[f["type"]],
             fill_opacity=0.9,
             tooltip=f["name"],
-        ).add_to(m)
-
-    folium.Marker(
-        location=[selected_beach["lat"], selected_beach["lon"]],
-        tooltip=selected_beach["name"],
-        icon=folium.Icon(color="white", icon_color="#22a99b", icon="tint", prefix="fa"),
-    ).add_to(m)
-
-    folium.LayerControl(collapsed=False).add_to(m)
-
-    st_folium(m, width=None, height=560, returned_objects=[])
+        ).add_to(m_chl)
+    folium.Marker(location=center, tooltip=selected_beach["name"], icon=beach_marker_icon()).add_to(m_chl)
+    folium.LayerControl(collapsed=True).add_to(m_chl)
+    chl_map_state = st_folium(m_chl, width=None, height=320, returned_objects=["last_clicked"], key="chl_map")
 
     legend_html = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;">'
@@ -314,18 +329,33 @@ with map_col:
         unsafe_allow_html=True,
     )
 
+    clicked = (chl_map_state or {}).get("last_clicked")
+    if clicked:
+        click_lat, click_lon = clicked["lat"], clicked["lng"]
+        with st.spinner("Reading chlorophyll value..."):
+            mci_val = compute_point_mci(click_lat, click_lon, target_date_str)
+        if mci_val is not None:
+            st.markdown(
+                f'<div class="satalize-card" style="margin-top:10px;">'
+                f'<b style="color:white;">MCI at ({click_lat:.4f}, {click_lon:.4f}):</b> '
+                f'<span style="color:white;">{mci_val}</span> '
+                f'<span style="color:#9fc2cc;font-size:0.8rem;">(raw index, {CHL_MIN} to {CHL_MAX} scale &mdash; see legend)</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption(f"No water / satellite coverage at ({click_lat:.4f}, {click_lon:.4f}) for {target_date_str}.")
+
 with side_col:
-    legend_items = "".join(
-        f'<span style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;">'
-        f'<i style="width:11px;height:11px;border-radius:3px;background:{color};display:inline-block;"></i>'
-        f'<span style="color:white;font-size:0.85rem;">{label}</span></span>'
-        for label, color in CHLOROPHYLL_LEGEND
-    )
+    gradient_css = ", ".join(CHL_PALETTE)
     st.markdown(
         f"""
         <div class="satalize-card">
             <p style="color:#9fc2cc;font-size:0.8rem;margin:0 0 12px;">{selected_name} &middot; {selected_date:%b %d} &middot; Chlorophyll</p>
-            <div>{legend_items}</div>
+            <div style="height:14px;border-radius:7px;background:linear-gradient(to right, {gradient_css});"></div>
+            <div style="display:flex;justify-content:space-between;margin-top:6px;color:white;font-size:0.8rem;">
+                <span>Low</span><span>Moderate</span><span>High (bloom risk)</span>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
