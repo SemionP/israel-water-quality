@@ -14,24 +14,40 @@ from config import BEACHES, HAIFA_BBOX_COORDS, ISRAEL_CLIP_COORDS
 def _haifa_bbox(): return ee.Geometry.Rectangle(HAIFA_BBOX_COORDS)
 
 # Mediterranean coast only — excludes Kinneret, Dead Sea, Red Sea
+#
+# FIXED (was): the Gaza-area segment used a flat longitude of 35.0 for both
+# the Gaza/Egypt border point (31.2N) and the point labeled "Ashkelon"
+# (31.55N, which is actually still Gaza-Strip latitude -- real Ashkelon is
+# ~31.67N). Lon 35.0 is ~50km east of the real coast down there (it's the
+# correct value further north, e.g. Rosh HaNikra/Lebanese border, but wrong
+# here), so imagery clipped to this polygon under-covered the Gaza Strip's
+# offshore water. Replaced with a proper trace of the Gaza + Ashkelon coast
+# (coordinates checked against city-level geocoding, ~5-10km tolerance --
+# this is a coarse clip boundary for satellite processing, not a legal
+# maritime boundary claim) and pulled the SW corner south to 31.10 for a
+# safety margin below the Rafah/Gaza-Egypt border.
 _MED_COAST_COORDS = [
-    [33.0,  31.2],   # SW — open Mediterranean
-    [35.0,  31.2],   # SE — Gaza/Egypt border
-    [35.0,  31.55],  # Ashkelon
-    [34.90, 31.70],  # Ashdod
+    [33.00, 31.10],  # SW — open Mediterranean (safety margin south of Gaza)
+    [34.30, 31.10],  # S — south of Rafah / Gaza-Egypt border
+    [34.30, 31.25],  # Rafah / Gaza-Egypt maritime border
+    [34.55, 31.55],  # mid-Gaza coast
+    [34.68, 31.62],  # Gaza/Israel border (Zikim area)
+    [34.75, 31.68],  # Ashkelon
+    [34.90, 31.80],  # Ashdod
     [34.85, 32.10],  # Tel Aviv
     [34.80, 32.35],  # Netanya
     [34.85, 32.55],  # Caesarea
     [34.90, 32.82],  # Haifa
     [35.00, 33.05],  # Rosh HaNikra
     [35.00, 33.15],  # Lebanese border
-    [33.0,  33.15],  # NW — open sea
-    [33.0,  31.2],   # close
+    [33.00, 33.15],  # NW — open sea
+    [33.00, 31.10],  # close
 ]
 def _israel_clip(): return ee.Geometry.Polygon([_MED_COAST_COORDS])
 
 # Wide AOI for satellite collection filtering (includes full coast + offshore)
-_MED_WIDE_BBOX = [33.0, 31.2, 35.1, 33.2]
+# Southern bound widened to 31.10 to match the _MED_COAST_COORDS fix above.
+_MED_WIDE_BBOX = [33.0, 31.10, 35.1, 33.2]
 def _med_wide(): return ee.Geometry.Rectangle(_MED_WIDE_BBOX)
 
 def _to_ee_geom(raw):
@@ -630,6 +646,44 @@ def compute_point_wqi(lat: float, lon: float, target_date_str: str, source: str 
         ).getInfo()
         wv = val.get("WQI")
         return round(float(wv), 1) if wv is not None else None
+    except:
+        return None
+
+
+@st.cache_data(ttl=7200)
+def compute_point_mci(lat: float, lon: float, target_date_str: str) -> float | None:
+    """
+    Raw MCI (chlorophyll index) value at the nearest water pixel to (lat, lon),
+    S-3 OLCI only, on the same band-difference scale used by the
+    "MCI (Chlorophyll)" tile in get_satellite_layers() (displayed there with
+    min=-2, max=12 against CHL_PALETTE). This is NOT a calibrated
+    chlorophyll-a concentration in mg/m3 -- see the note in
+    get_satellite_layers(). Returns None if there's no water pixel or no
+    S-3 coverage near this point/date.
+    """
+    wm  = ee.Image("JRC/GSW1_4/GlobalSurfaceWater").select("occurrence").gte(30)
+    pt  = ee.Geometry.Point([lon, lat])
+    buf = pt.buffer(500)
+    t   = ee.Date(target_date_str)
+
+    try:
+        coll = (ee.ImageCollection("COPERNICUS/S3/OLCI")
+                .filterBounds(buf)
+                .filterDate(t.advance(-2, "day"), t.advance(1, "day")))
+        if coll.size().getInfo() == 0:
+            return None
+        img = coll.median().updateMask(wm)
+        b10, b11, b12 = img.select("Oa10_radiance"), img.select("Oa11_radiance"), img.select("Oa12_radiance")
+        mci = b11.subtract(b10.add(b12.subtract(b10).multiply((708.75 - 681.25) / (753.75 - 681.25)))).rename("MCI")
+
+        val = mci.reduceRegion(
+            reducer   = ee.Reducer.mean(),
+            geometry  = buf,
+            scale     = 300,
+            bestEffort= True,
+        ).getInfo()
+        mv = val.get("MCI")
+        return round(float(mv), 2) if mv is not None else None
     except:
         return None
 
