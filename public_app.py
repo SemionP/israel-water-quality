@@ -1,6 +1,6 @@
 """
-Satalize -- Coastal Water Status (public teaser)
-=================================================
+Satalize -- Coastal Chlorophyll Monitor (public teaser)
+=========================================================
 
 A separate, minimal, externally-branded public page -- NOT a modification
 of the existing app.py (that stays the internal "MEDI Platform" research
@@ -10,19 +10,23 @@ tool stay cleanly separated:
 
     Streamlit Cloud -> New app -> same repo -> main file path: public_app.py
 
-It reuses your real, already-working GEE pipeline (gee_processing.py,
-config.py) instead of the mock data from the HTML demo, so the numbers
-shown here are live.
+Chlorophyll-only: this page shows just the chlorophyll (MCI) satellite
+layer and a qualitative Low/Moderate/High legend -- no "Overall Water
+Quality" / WQI toggle, no numeric WQI value or score, and no other apps
+on this Streamlit account are linked or referenced from this page. It
+reuses your real, already-working GEE pipeline (gee_processing.py,
+config.py) instead of the mock data from the HTML demo, so the map layer
+shown here is live.
 
-BEFORE THIS WILL RUN, check two things in the deployed app's settings:
-  1. Secrets: copy the same `gee_credentials` secret from the main app's
-     Streamlit Cloud settings into this new app's settings (init_gee()
-     reads st.secrets["gee_credentials"]).
-  2. `beach_df` column names: process_israel_wqi() is documented to return
-     a beach DataFrame with a "wqi" column, sampled at the BEACHES from
-     config.py. This file assumes the name column is literally "name"
-     (matching config.BEACHES' own key) -- if the real column is spelled
-     differently, fix BEACH_NAME_COL below; everything else adapts.
+BEFORE THIS WILL RUN, check in the deployed app's settings:
+  Secrets: copy the same `gee_credentials` secret from the main app's
+  Streamlit Cloud settings into this new app's settings (init_gee()
+  reads st.secrets["gee_credentials"]).
+
+The CHLOROPHYLL_LEGEND colors below (green/yellow/red) are a placeholder
+assumption -- verify them against the actual GEE chlorophyll tile palette
+once this is deployed (this can't be checked from a sandbox without live
+GEE access) and adjust if the real palette differs.
 
 This was written without a live Streamlit/GEE environment to test against
 (only the public GitHub source of app.py/gee_processing.py/config.py was
@@ -39,23 +43,32 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from config import BEACHES
-from gee_processing import get_satellite_layers, init_gee, process_israel_wqi
+from gee_processing import get_satellite_layers, init_gee
 
 # ---------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------
 
-BEACH_NAME_COL = "name"    # column in beach_df matching config.BEACHES' "name" key
 DEFAULT_LOCATION = "Tel Aviv"
 
-WQI_GOOD, WQI_MODERATE = 80, 60   # >=80 good, >=60 moderate, else poor
-
 CONTACT_EMAIL = "info@satalize.com"
+
+# Qualitative chlorophyll legend shown in the sidebar. This mirrors the
+# existing --good/--moderate/--poor color scheme used elsewhere on this
+# page, on the assumption that the GEE chlorophyll (MCI) tile uses the
+# same green/yellow/red convention. VERIFY against the real deployed tile
+# and adjust these three colors/labels if the actual palette differs --
+# this can't be checked from a sandbox without live GEE access.
+CHLOROPHYLL_LEGEND = [
+    ("Low", "#2ecc71"),
+    ("Moderate", "#f5c542"),
+    ("High (bloom risk)", "#e0563d"),
+]
 
 # National strategic coastal & marine engineering facilities.
 # Desalination + power station coordinates are well-documented and stable.
 # Marinas are best-effort. Beaches reuse config.BEACHES directly instead of
-# a separate list, so they always match what process_israel_wqi() samples.
+# a separate list, so the location selector always matches config.py.
 FACILITIES = [
     {"type": "desal", "name": "Hadera Desalination Plant", "lat": 32.4423, "lon": 34.8619},
     {"type": "desal", "name": "Palmachim Desalination Plant", "lat": 31.9358, "lon": 34.7889},
@@ -84,8 +97,8 @@ LOGO_B64 = "/9j/4AAQSkZJRgABAQEBLAEsAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYI
 # ---------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Satalize -- Coastal Water Status",
-    page_icon="🌊",
+    page_title="Satalize -- Coastal Chlorophyll Monitor",
+    page_icon="🌿",
     layout="wide",
 )
 
@@ -164,9 +177,9 @@ with header_l:
 with header_r:
     st.markdown(
         """
-        <h1 style="color:white;margin:4px 0 2px;font-weight:700;">Coastal Water Status</h1>
+        <h1 style="color:white;margin:4px 0 2px;font-weight:700;">Coastal Chlorophyll Monitor</h1>
         <p style="color:#9fc2cc;margin:0;font-size:0.95rem;">
-            Satellite-based monitoring of water quality and chlorophyll, powered by satellites &middot; Public preview
+            Satellite-based chlorophyll monitoring along the coast &middot; Public preview
         </p>
         <p style="color:white;margin:4px 0 0;font-size:0.95rem;">
             Explore the coastline. The complete system offers full early&#8209;warning intelligence.
@@ -184,32 +197,10 @@ init_gee()
 target_date_str = date.today().strftime("%Y-%m-%d")
 
 layers = get_satellite_layers("S3", target_date_str)
-wqi_image, beach_df, wqi_error, age_hours = process_israel_wqi(target_date_str)
 
 layers_error = layers.get("error") if isinstance(layers, dict) else "unexpected response"
 if layers_error:
     st.warning(f"Live satellite layer unavailable right now: {layers_error}")
-
-
-def lookup_wqi(beach_name):
-    """Returns the sampled WQI value for a beach name, or None if unavailable."""
-    if beach_df is None or BEACH_NAME_COL not in getattr(beach_df, "columns", []):
-        return None
-    match = beach_df[beach_df[BEACH_NAME_COL] == beach_name]
-    if match.empty or "wqi" not in match.columns:
-        return None
-    value = match.iloc[0]["wqi"]
-    return None if value is None else float(value)
-
-
-def wqi_category(value):
-    if value is None:
-        return "No data", "#9fc2cc"
-    if value >= WQI_GOOD:
-        return "Good", "#2ecc71"
-    if value >= WQI_MODERATE:
-        return "Moderate", "#f5c542"
-    return "Poor", "#e0563d"
 
 
 # ---------------------------------------------------------------------
@@ -222,12 +213,6 @@ beach_names = [b["name"] for b in BEACHES]
 default_index = beach_names.index(DEFAULT_LOCATION) if DEFAULT_LOCATION in beach_names else 0
 
 with side_col:
-    layer_choice = st.radio(
-        "Layer",
-        ["Overall Water Quality", "Chlorophyll"],
-        horizontal=True,
-        label_visibility="collapsed",
-    )
     selected_name = st.selectbox("Location", beach_names, index=default_index)
 
 with map_col:
@@ -245,15 +230,10 @@ with map_col:
     ).add_to(m)
     folium.TileLayer(tiles="OpenStreetMap", name="Roadmap").add_to(m)
 
-    if "🌊 WQI" in layers:
-        folium.TileLayer(
-            tiles=layers["🌊 WQI"], attr="Satalize", name="Overall Water Quality",
-            overlay=True, show=(layer_choice == "Overall Water Quality"),
-        ).add_to(m)
     if "🌿 MCI (Chlorophyll)" in layers:
         folium.TileLayer(
             tiles=layers["🌿 MCI (Chlorophyll)"], attr="Satalize", name="Chlorophyll",
-            overlay=True, show=(layer_choice == "Chlorophyll"),
+            overlay=True, show=True,
         ).add_to(m)
 
     for f in FACILITIES:
@@ -289,17 +269,17 @@ with map_col:
     )
 
 with side_col:
-    wqi_value = lookup_wqi(selected_name)
-    category, color = wqi_category(wqi_value)
-    value_text = f"{wqi_value:.0f} / 100" if wqi_value is not None else "--"
-
+    legend_items = "".join(
+        f'<span style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;">'
+        f'<i style="width:11px;height:11px;border-radius:3px;background:{color};display:inline-block;"></i>'
+        f'<span style="color:white;font-size:0.85rem;">{label}</span></span>'
+        for label, color in CHLOROPHYLL_LEGEND
+    )
     st.markdown(
         f"""
         <div class="satalize-card">
-            <p style="color:#9fc2cc;font-size:0.8rem;margin:0 0 12px;">Selected location</p>
-            <h2 style="color:white;margin:0 0 4px;">{selected_name}</h2>
-            <div style="font-size:2.1rem;font-weight:800;color:white;">{value_text}</div>
-            <span class="satalize-badge" style="background:{color}22;color:{color};">{category}</span>
+            <p style="color:#9fc2cc;font-size:0.8rem;margin:0 0 12px;">{selected_name} &middot; Chlorophyll</p>
+            <div>{legend_items}</div>
         </div>
         """,
         unsafe_allow_html=True,
