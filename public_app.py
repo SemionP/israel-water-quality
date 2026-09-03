@@ -1,6 +1,6 @@
 """
-Satalize -- Coastal Chlorophyll Monitor (public teaser)
-=========================================================
+Satalize -- Coastal Water Status (public teaser)
+=================================================
 
 A separate, minimal, externally-branded public page -- NOT a modification
 of the existing app.py (that stays the internal "MEDI Platform" research
@@ -10,70 +10,52 @@ tool stay cleanly separated:
 
     Streamlit Cloud -> New app -> same repo -> main file path: public_app.py
 
-Chlorophyll-only: this page shows the chlorophyll (MCI) satellite layer
-plus a True Color (RGB) reference map, a click-to-query MCI value, and a
-gradient legend -- no "Overall Water Quality" / WQI toggle, no numeric WQI
-value or score, and no other apps on this Streamlit account are linked or
-referenced from this page. It reuses your real, already-working GEE
-pipeline (gee_processing.py, config.py) instead of the mock data from the
-HTML demo, so the map layers shown here are live.
+It reuses your real, already-working GEE pipeline (gee_processing.py,
+config.py) instead of the mock data from the HTML demo, so the numbers
+shown here are live.
 
-BEFORE THIS WILL RUN, check in the deployed app's settings:
-  Secrets: copy the same `gee_credentials` secret from the main app's
-  Streamlit Cloud settings into this new app's settings (init_gee()
-  reads st.secrets["gee_credentials"]).
-
-CHL_PALETTE/CHL_MIN/CHL_MAX below are copied verbatim from
-gee_processing.get_satellite_layers()'s "MCI (Chlorophyll)" tile
-(mci.getMapId({"min":-2,"max":12,"palette":CHL_PALETTE})) so the legend
-matches what's actually rendered -- keep them in sync if that palette/range
-ever changes in gee_processing.py. This page also depends on
-compute_point_mci() in gee_processing.py (added alongside this update) for
-the click-to-query feature, and on the _MED_COAST_COORDS fix in
-gee_processing.py that corrects a Gaza-area clipping bug.
+BEFORE THIS WILL RUN, check two things in the deployed app's settings:
+  1. Secrets: copy the same `gee_credentials` secret from the main app's
+     Streamlit Cloud settings into this new app's settings (init_gee()
+     reads st.secrets["gee_credentials"]).
+  2. `beach_df` column names: process_israel_wqi() is documented to return
+     a beach DataFrame with a "wqi" column, sampled at the BEACHES from
+     config.py. This file assumes the name column is literally "name"
+     (matching config.BEACHES' own key) -- if the real column is spelled
+     differently, fix BEACH_NAME_COL below; everything else adapts.
 
 This was written without a live Streamlit/GEE environment to test against
 (only the public GitHub source of app.py/gee_processing.py/config.py was
-available), so treat it as a strong draft -- run it, and send back the
-traceback/screenshot for anything that doesn't line up with the real
-function signatures or render as expected.
+available), so treat it as a strong first draft -- run it, and send back
+the traceback for anything that doesn't line up with the real function
+signatures.
 """
 
 import base64
-from datetime import date, timedelta
+from datetime import date
 
 import folium
 import streamlit as st
 from streamlit_folium import st_folium
 
 from config import BEACHES
-from gee_processing import compute_point_mci, get_satellite_layers, init_gee
+from gee_processing import get_satellite_layers, init_gee, process_israel_wqi
 
 # ---------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------
 
+BEACH_NAME_COL = "name"    # column in beach_df matching config.BEACHES' "name" key
 DEFAULT_LOCATION = "Tel Aviv"
 
-# How many days back the date slider (and the "latest available" search) will
-# look. S-3 OLCI coverage/clouds mean "today" often has no usable pixels yet.
-MAX_LOOKBACK_DAYS = 14
+WQI_GOOD, WQI_MODERATE = 80, 60   # >=80 good, >=60 moderate, else poor
 
 CONTACT_EMAIL = "info@satalize.com"
-
-# Exact palette + display range used by gee_processing.get_satellite_layers()
-# for the "MCI (Chlorophyll)" tile (mci.getMapId({"min":-2,"max":12,"palette":
-# CHL_PALETTE})) -- kept in sync here so the sidebar legend matches what's
-# actually rendered on the map, instead of a guessed color scheme. This is a
-# raw MCI (Maximum Chlorophyll Index) value, NOT a calibrated chlorophyll-a
-# concentration in mg/m3 -- see the CMEMS discussion for the real thing.
-CHL_PALETTE = ["#f7fcf0", "#ccebc5", "#7bccc4", "#2b8cbe", "#084081"]
-CHL_MIN, CHL_MAX = -2, 12
 
 # National strategic coastal & marine engineering facilities.
 # Desalination + power station coordinates are well-documented and stable.
 # Marinas are best-effort. Beaches reuse config.BEACHES directly instead of
-# a separate list, so the location selector always matches config.py.
+# a separate list, so they always match what process_israel_wqi() samples.
 FACILITIES = [
     {"type": "desal", "name": "Hadera Desalination Plant", "lat": 32.4423, "lon": 34.8619},
     {"type": "desal", "name": "Palmachim Desalination Plant", "lat": 31.9358, "lon": 34.7889},
@@ -102,8 +84,8 @@ LOGO_B64 = "/9j/4AAQSkZJRgABAQEBLAEsAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYI
 # ---------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="Satalize -- Coastal Chlorophyll Monitor",
-    page_icon="🌿",
+    page_title="Satalize -- Coastal Water Status",
+    page_icon="🌊",
     layout="wide",
 )
 
@@ -182,9 +164,9 @@ with header_l:
 with header_r:
     st.markdown(
         """
-        <h1 style="color:white;margin:4px 0 2px;font-weight:700;">Coastal Chlorophyll Monitor</h1>
+        <h1 style="color:white;margin:4px 0 2px;font-weight:700;">Coastal Water Status</h1>
         <p style="color:#9fc2cc;margin:0;font-size:0.95rem;">
-            Satellite-based chlorophyll monitoring along the coast &middot; Public preview
+            Satellite-based monitoring of water quality and chlorophyll, powered by satellites &middot; Public preview
         </p>
         <p style="color:white;margin:4px 0 0;font-size:0.95rem;">
             Explore the coastline. The complete system offers full early&#8209;warning intelligence.
@@ -199,41 +181,35 @@ with header_r:
 # ---------------------------------------------------------------------
 
 init_gee()
-TODAY = date.today()
-EARLIEST_SELECTABLE = TODAY - timedelta(days=MAX_LOOKBACK_DAYS)
+target_date_str = date.today().strftime("%Y-%m-%d")
+
+layers = get_satellite_layers("S3", target_date_str)
+wqi_image, beach_df, wqi_error, age_hours = process_israel_wqi(target_date_str)
+
+layers_error = layers.get("error") if isinstance(layers, dict) else "unexpected response"
+if layers_error:
+    st.warning(f"Live satellite layer unavailable right now: {layers_error}")
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def _layers_for_date(date_str):
-    """Cached wrapper around get_satellite_layers so moving the date slider
-    doesn't re-hit GEE for a date already looked up in the last 30 min."""
-    return get_satellite_layers("S3", date_str)
+def lookup_wqi(beach_name):
+    """Returns the sampled WQI value for a beach name, or None if unavailable."""
+    if beach_df is None or BEACH_NAME_COL not in getattr(beach_df, "columns", []):
+        return None
+    match = beach_df[beach_df[BEACH_NAME_COL] == beach_name]
+    if match.empty or "wqi" not in match.columns:
+        return None
+    value = match.iloc[0]["wqi"]
+    return None if value is None else float(value)
 
 
-def _has_chlorophyll(result):
-    return (
-        isinstance(result, dict)
-        and not result.get("error")
-        and "🌿 MCI (Chlorophyll)" in result
-    )
-
-
-@st.cache_data(ttl=1800, show_spinner="Finding the most recent chlorophyll imagery...")
-def _latest_available_date():
-    """Walks backward from today up to MAX_LOOKBACK_DAYS looking for the
-    newest date that actually has usable S-3 OLCI coverage, so the page
-    defaults to real data instead of an empty "no data for today" map.
-    NOTE: this issues up to MAX_LOOKBACK_DAYS sequential GEE calls on first
-    load (cached per date afterwards) -- if that proves too slow in
-    practice, the real fix is a cheap "does date X have coverage" check in
-    gee_processing.py rather than this brute-force loop.
-    """
-    d = TODAY
-    for _ in range(MAX_LOOKBACK_DAYS + 1):
-        if _has_chlorophyll(_layers_for_date(d.strftime("%Y-%m-%d"))):
-            return d
-        d -= timedelta(days=1)
-    return TODAY  # nothing found anywhere in the window; fall back as before
+def wqi_category(value):
+    if value is None:
+        return "No data", "#9fc2cc"
+    if value >= WQI_GOOD:
+        return "Good", "#2ecc71"
+    if value >= WQI_MODERATE:
+        return "Moderate", "#f5c542"
+    return "Poor", "#e0563d"
 
 
 # ---------------------------------------------------------------------
@@ -246,64 +222,40 @@ beach_names = [b["name"] for b in BEACHES]
 default_index = beach_names.index(DEFAULT_LOCATION) if DEFAULT_LOCATION in beach_names else 0
 
 with side_col:
-    selected_date = st.slider(
-        "Date",
-        min_value=EARLIEST_SELECTABLE,
-        max_value=TODAY,
-        value=_latest_available_date(),
-        format="MMM D",
+    layer_choice = st.radio(
+        "Layer",
+        ["Overall Water Quality", "Chlorophyll"],
+        horizontal=True,
+        label_visibility="collapsed",
     )
     selected_name = st.selectbox("Location", beach_names, index=default_index)
 
-target_date_str = selected_date.strftime("%Y-%m-%d")
-layers = _layers_for_date(target_date_str)
+with map_col:
+    selected_beach = next(b for b in BEACHES if b["name"] == selected_name)
 
-layers_error = layers.get("error") if isinstance(layers, dict) else "unexpected response"
-if layers_error:
-    st.warning(f"No chlorophyll imagery for {target_date_str}: {layers_error}. Try an earlier date on the slider.")
-
-def _base_map(center):
-    m = folium.Map(location=center, zoom_start=11, tiles=None)
+    m = folium.Map(
+        location=[selected_beach["lat"], selected_beach["lon"]],
+        zoom_start=11,
+        tiles=None,
+    )
     folium.TileLayer(tiles="CartoDB dark_matter", name="Ocean (Dark)").add_to(m)
     folium.TileLayer(
         tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         attr="Esri", name="Satellite",
     ).add_to(m)
     folium.TileLayer(tiles="OpenStreetMap", name="Roadmap").add_to(m)
-    return m
 
-
-with map_col:
-    selected_beach = next(b for b in BEACHES if b["name"] == selected_name)
-    center = [selected_beach["lat"], selected_beach["lon"]]
-    beach_marker_icon = lambda: folium.Icon(color="white", icon_color="#22a99b", icon="tint", prefix="fa")
-
-    # --- Map 1: True Color (satellite RGB) ---------------------------------
-    st.markdown(
-        '<p style="color:#9fc2cc;font-size:0.8rem;margin:0 0 4px;">True Color (satellite RGB)</p>',
-        unsafe_allow_html=True,
-    )
-    m_rgb = _base_map(center)
-    if "🎨 True Color" in layers:
+    if "🌊 WQI" in layers:
         folium.TileLayer(
-            tiles=layers["🎨 True Color"], attr="Satalize", name="True Color",
-            overlay=True, show=True,
-        ).add_to(m_rgb)
-    folium.Marker(location=center, tooltip=selected_beach["name"], icon=beach_marker_icon()).add_to(m_rgb)
-    folium.LayerControl(collapsed=True).add_to(m_rgb)
-    st_folium(m_rgb, width=None, height=280, returned_objects=[], key="rgb_map")
-
-    # --- Map 2: Chlorophyll (click a point for its value) ------------------
-    st.markdown(
-        '<p style="color:#9fc2cc;font-size:0.8rem;margin:14px 0 4px;">Chlorophyll &middot; click the map for a value</p>',
-        unsafe_allow_html=True,
-    )
-    m_chl = _base_map(center)
+            tiles=layers["🌊 WQI"], attr="Satalize", name="Overall Water Quality",
+            overlay=True, show=(layer_choice == "Overall Water Quality"),
+        ).add_to(m)
     if "🌿 MCI (Chlorophyll)" in layers:
         folium.TileLayer(
             tiles=layers["🌿 MCI (Chlorophyll)"], attr="Satalize", name="Chlorophyll",
-            overlay=True, show=True,
-        ).add_to(m_chl)
+            overlay=True, show=(layer_choice == "Chlorophyll"),
+        ).add_to(m)
+
     for f in FACILITIES:
         folium.CircleMarker(
             location=[f["lat"], f["lon"]],
@@ -313,10 +265,17 @@ with map_col:
             fill_color=FACILITY_COLORS[f["type"]],
             fill_opacity=0.9,
             tooltip=f["name"],
-        ).add_to(m_chl)
-    folium.Marker(location=center, tooltip=selected_beach["name"], icon=beach_marker_icon()).add_to(m_chl)
-    folium.LayerControl(collapsed=True).add_to(m_chl)
-    chl_map_state = st_folium(m_chl, width=None, height=320, returned_objects=["last_clicked"], key="chl_map")
+        ).add_to(m)
+
+    folium.Marker(
+        location=[selected_beach["lat"], selected_beach["lon"]],
+        tooltip=selected_beach["name"],
+        icon=folium.Icon(color="white", icon_color="#22a99b", icon="tint", prefix="fa"),
+    ).add_to(m)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+
+    st_folium(m, width=None, height=560, returned_objects=[])
 
     legend_html = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:6px;margin-right:14px;">'
@@ -329,33 +288,18 @@ with map_col:
         unsafe_allow_html=True,
     )
 
-    clicked = (chl_map_state or {}).get("last_clicked")
-    if clicked:
-        click_lat, click_lon = clicked["lat"], clicked["lng"]
-        with st.spinner("Reading chlorophyll value..."):
-            mci_val = compute_point_mci(click_lat, click_lon, target_date_str)
-        if mci_val is not None:
-            st.markdown(
-                f'<div class="satalize-card" style="margin-top:10px;">'
-                f'<b style="color:white;">MCI at ({click_lat:.4f}, {click_lon:.4f}):</b> '
-                f'<span style="color:white;">{mci_val}</span> '
-                f'<span style="color:#9fc2cc;font-size:0.8rem;">(raw index, {CHL_MIN} to {CHL_MAX} scale &mdash; see legend)</span>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            st.caption(f"No water / satellite coverage at ({click_lat:.4f}, {click_lon:.4f}) for {target_date_str}.")
-
 with side_col:
-    gradient_css = ", ".join(CHL_PALETTE)
+    wqi_value = lookup_wqi(selected_name)
+    category, color = wqi_category(wqi_value)
+    value_text = f"{wqi_value:.0f} / 100" if wqi_value is not None else "--"
+
     st.markdown(
         f"""
         <div class="satalize-card">
-            <p style="color:#9fc2cc;font-size:0.8rem;margin:0 0 12px;">{selected_name} &middot; {selected_date:%b %d} &middot; Chlorophyll</p>
-            <div style="height:14px;border-radius:7px;background:linear-gradient(to right, {gradient_css});"></div>
-            <div style="display:flex;justify-content:space-between;margin-top:6px;color:white;font-size:0.8rem;">
-                <span>Low</span><span>Moderate</span><span>High (bloom risk)</span>
-            </div>
+            <p style="color:#9fc2cc;font-size:0.8rem;margin:0 0 12px;">Selected location</p>
+            <h2 style="color:white;margin:0 0 4px;">{selected_name}</h2>
+            <div style="font-size:2.1rem;font-weight:800;color:white;">{value_text}</div>
+            <span class="satalize-badge" style="background:{color}22;color:{color};">{category}</span>
         </div>
         """,
         unsafe_allow_html=True,
